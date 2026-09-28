@@ -15,6 +15,7 @@ WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan�
 - `比赛区/天翼AI电子科研Skill/wavebench/`：根项目的**独立快照**。与根目录同名的 467 个文件内容逐字节相同，另有 `skills/` 与根 `.agents/skills/` 重复；根目录缺少 `tool-of-rei/release-notes/`。改根目录不会影响它，反之亦然，要同步就整目录覆盖。
 - `比赛区/天翼AI电子科研Skill.zip`（8.66 MB）：作品包的打包副本。改目录后必须重新打包，否则内容漂移。
 - `测试区/.temp/full_discover.py`：临时脚本（pyvisa 枚举 + 硬编码网段 `10.17.216.0/24` 的 SCPI 端口扫描），不是测试套件。
+- `docs/project/`：项目带文档（不进入文档站）。当前开发任务的规范与执行清单在 `docs/project/design/WaveBench_自定义设备与协议支持规范.md` 与同名 TODO。
 - `.agents/skills/`：两个 Agent Skill 入口 —— `wavebench/SKILL.md`（真机操作、安全门、开发验证）和 `wavebench-docs/SKILL.md`（文档治理）。根 `SKILL.md` 只是指向前者的指针；排查真机行为时按需读 `wavebench/references/`，不要凭记忆推断。
 
 ## 命令（仓库根）
