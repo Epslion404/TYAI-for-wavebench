@@ -6,22 +6,54 @@ import argparse
 import json
 import sys
 
-from .core import analyze_samples, demo_waveform, discover_devices, inspect_device, load_waveform, measure_scope
+from .core import (
+    analyze_samples,
+    demo_waveform,
+    discover_devices,
+    inspect_device,
+    load_waveform,
+    measure_scope,
+    read_waveform,
+    write_waveform,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="天翼AI电子科研 TeleAgent Skill")
     sub = parser.add_subparsers(dest="command", required=True)
+
     discover = sub.add_parser("discover", help="扫描网段并读取 SCPI *IDN?")
     discover.add_argument("--subnet", required=True)
     discover.add_argument("--ports", default="5025,5555,4000,502")
-    inspect = sub.add_parser("inspect", help="只读检查设备")
+    discover.add_argument("--timeout", type=float, default=0.35, help="单次探测超时（秒）")
+
+    inspect = sub.add_parser("inspect", help="只读检查设备（身份、错误队列、通道状态）")
     inspect.add_argument("--address", required=True)
     inspect.add_argument("--port", type=int, default=5025)
-    measure = sub.add_parser("measure", help="读取示波器测量值")
+    inspect.add_argument("--timeout", type=float, default=2.0)
+
+    measure = sub.add_parser("measure", help="读取示波器测量值（方言探测 + 错误队列校验）")
     measure.add_argument("--address", required=True)
     measure.add_argument("--port", type=int, default=5025)
     measure.add_argument("--channel", default="CHAN1")
+    measure.add_argument("--timeout", type=float, default=2.0)
+    measure.add_argument(
+        "--no-fetch-fallback",
+        action="store_true",
+        help="全部指标不支持时不降级为「读波形 + 离线分析」",
+    )
+
+    fetch = sub.add_parser("fetch", help="读取原始波形（时间轴 + 离线指标）")
+    fetch.add_argument("--address", required=True)
+    fetch.add_argument("--port", type=int, default=5025)
+    fetch.add_argument("--channel", default="CHAN1")
+    fetch.add_argument("--timeout", type=float, default=5.0)
+    fetch.add_argument("--points", default="auto", help="采样点数，如 dmax；auto 表示不改动设备设置")
+    fetch.add_argument("--format", default="real", choices=("real", "ascii"))
+    fetch.add_argument("--sample-rate", type=float, help="显式采样率（header 不可信时使用）")
+    fetch.add_argument("--output", help="写入 *.csv 或 *.json；省略则只打印摘要")
+    fetch.add_argument("--include-samples", action="store_true", help="把完整样本内联到 stdout")
+
     analyze = sub.add_parser("analyze", help="离线分析波形")
     analyze.add_argument("--file")
     analyze.add_argument("--sample-rate", type=float, default=100_000)
@@ -40,11 +72,31 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "discover":
             ports = tuple(int(port.strip()) for port in args.ports.split(",") if port.strip())
-            result = {"devices": discover_devices(args.subnet, ports)}
+            result = {"devices": discover_devices(args.subnet, ports, args.timeout)}
         elif args.command == "inspect":
-            result = inspect_device(args.address, args.port)
+            result = inspect_device(args.address, args.port, args.timeout)
         elif args.command == "measure":
-            result = measure_scope(args.address, args.port, args.channel)
+            result = measure_scope(
+                args.address,
+                args.port,
+                args.channel,
+                args.timeout,
+                fetch_fallback=not args.no_fetch_fallback,
+            )
+        elif args.command == "fetch":
+            result = read_waveform(
+                args.address,
+                args.port,
+                args.channel,
+                args.timeout,
+                points=args.points,
+                waveform_format=args.format,
+                sample_rate=args.sample_rate,
+            )
+            if args.output:
+                result["output"] = write_waveform(result, args.output)
+            if not args.include_samples:
+                result.pop("samples", None)
         elif args.demo or not args.file:
             result = demo_waveform(args.sample_rate)
         else:

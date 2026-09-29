@@ -16,7 +16,7 @@
 ## 安装
 
 ```powershell
-cd C:\Users\Jsuperster\Desktop\天翼\比赛区\天翼AI电子科研Skill
+# 在本 Skill 目录下执行
 python -m venv .venv
 .venv\Scripts\python -m pip install -e .
 ```
@@ -35,6 +35,7 @@ python -m venv .venv
 .venv\Scripts\python -m tianyi_electronics_skill discover --subnet 192.168.1.0/24
 .venv\Scripts\python -m tianyi_electronics_skill inspect --address 192.168.1.20 --port 5025
 .venv\Scripts\python -m tianyi_electronics_skill measure --address 192.168.1.20 --port 5025 --channel CHAN1
+.venv\Scripts\python -m tianyi_electronics_skill fetch --address 192.168.1.20 --port 5025 --channel CHAN1 --output wave.csv
 ```
 
 输出统一为 JSON，可直接交给 TeleAgent 继续解释或保存到实验工作区。

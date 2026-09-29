@@ -19,7 +19,10 @@ metadata:
 - `discover`：扫描指定网段的常见仪器端口（默认 5025/5555/4000/502），尝试 `*IDN?`，输出 IP、端口和设备标识。
 - `inspect`：只读查询设备 ID、错误队列和示波器通道摘要。
 - `measure`：读取常见示波器测量值（频率、Vpp、Vmax、Vmin、Vavg、Vrms），也可以获取原始波形。
+- `fetch`：读取原始波形（二进制块或 ASCII），给出时间轴、一致性校验和离线指标，可落盘 CSV/JSON。
 - `analyze`：对 CSV/JSON 波形离线计算峰值、峰峰值、频率、RMS、占空比，硬件不可用时使用演示数据。
+
+所有命令的输出都包含 `device_errors`（设备错误队列），失败按 `unsupported`／`no_response`／`parse_error`／`transport_error` 分类，不把"命令被拒绝"写成"解析失败"。
 
 ## 推荐工作流
 
@@ -39,6 +42,7 @@ metadata:
 python -m tianyi_electronics_skill discover --subnet 192.168.1.0/24
 python -m tianyi_electronics_skill inspect --address 192.168.1.20 --port 5025
 python -m tianyi_electronics_skill measure --address 192.168.1.20 --port 5025 --channel CHAN1
+python -m tianyi_electronics_skill fetch --address 192.168.1.20 --port 5025 --channel CHAN1 --output wave.csv
 python -m tianyi_electronics_skill analyze --demo
 ```
 
