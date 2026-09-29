@@ -6,8 +6,9 @@ WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan�
 
 - `competition`（当前分支）是「天翼AI杯」作品提交分支：只有一条根提交，文件树基于上游 `44506c4`，再加 `比赛区/` 与后续 docs／advisor 改动。不要把上游历史 merge/rebase 进来，也不要从这个分支向母仓库 Scaxlibur/WaveBench 开 PR。
 - 远端：`origin` = `Epslion404/wavebench`（fork，上游 PR 的来源）；`tyai` = `Epslion404/TYAI-for-wavebench`（**private 比赛仓库**，默认分支 `master`，issue 与 PR 都在那里跟踪）。
-- `master`（fork 与 tyai 上）已经不只是上游镜像：它现在是「上游基座 + 比赛内容」（`68148a0` 天翼Start_1.0、`a9e49e3` add range of finding），并已用上游 PR #27 提出。改动 `master` 前先确认是否要让它继续保持干净镜像。
-- 其他在用分支：`feat/advisor-plugin-category`（advisor 线，基于 `master`，PR 见 tyai #9）；`docs/advisor-plugin-rfc`、`split/agent-scope-observe-advise` 分别是上游 PR #20／#4 的分支。
+- `master`（fork 与 tyai 上）已经不只是上游镜像：它现在是「上游基座 + 比赛内容 + advisor 实施」（`68148a0` 天翼Start_1.0、`a9e49e3` add range of finding、`6dc5263` RFC、`51d6136` 草案入仓、`514b76f` 同意门 + decision artifact），并已用上游 PR #27 提出（该 PR 因此也包含 advisor 实施）。改动 `master` 前先确认是否要让它继续保持干净镜像。
+- advisor 线不再单独开先遣分支：实现已直接合并进 `master`（tyai PR #9 已 merged，`feat/advisor-plugin-category` 已删除）。后续 Phase 4（插件类别抽象 + lifecycle + CLI）按需要新开分支或直接提交 `master`。
+- 上游 PR 分支：`docs/advisor-plugin-rfc`（#20）、`split/agent-scope-observe-advise`（#4）。
 - CI 只在 push 到 `master`/`main` 或 PR 时触发，推 `competition` 不会跑，本地检查要自己执行。
 
 ## 目录职责
