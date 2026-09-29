@@ -4,7 +4,7 @@ WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan�
 
 ## 分支定位
 
-- `master`（当前分支）是主线：`44506c4`（上游）→ `68148a0`／`a9e49e3`（比赛作品包）→ `6dc5263`／`51d6136`／`514b76f`（advisor：RFC、草案、同意门 + decision artifact）。它同时被上游 PR #27 提出——**往 `master` 提交前先想清楚是否要让上游看到这些内容**。
+- `master`（当前分支）是主线：`44506c4`（上游）→ `68148a0`／`a9e49e3`（比赛作品包）→ `6dc5263`／`51d6136`／`514b76f`（advisor：RFC、草案、同意门 + decision artifact）。**比赛内容不面向上游**：此前由它提出的上游 PR #27 已关闭，`master` 不再直接向上游提 PR；面向上游的改动一律从 `upstream/master` 拉聚焦分支（`upstream` remote 的 push URL 已设为 `no_push`）。
 - 远端：`origin` = `Epslion404/wavebench`（fork，上游 PR 的来源）；`tyai` = `Epslion404/TYAI-for-wavebench`（**private 比赛仓库**，默认分支 `master`，issue 与 PR 都在那里跟踪）。
 - `competition` 是另一条内容线（孤儿根提交）：含同一批 advisor 改动与文档，但**比赛作品包与 `master` 已经分叉**（见「已知不一致」）；它不向上游提 PR，只用于比赛提交。
 - 其他分支：`docs/advisor-plugin-rfc`（上游 PR #20）、`split/agent-scope-observe-advise`（上游 PR #4）。
