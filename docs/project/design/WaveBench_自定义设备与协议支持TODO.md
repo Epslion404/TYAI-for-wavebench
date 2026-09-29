@@ -2,18 +2,18 @@
 
 配套规范：[自定义设备与协议支持开发规范](WaveBench_自定义设备与协议支持规范.md)。状态用 `[ ]` 未开始、`[~]` 进行中、`[x]` 完成。
 
-## 已提上游 issue
+## 已提 issue（个人 fork）
 
-核心侧工作已在上游 `Scaxlibur/WaveBench` 建单跟踪，本页保留决策、顺序与验收记录：
+核心侧工作统一在 `Epslion404/wavebench` 跟踪，本页保留决策、顺序与验收记录；上游 `Scaxlibur/WaveBench` 不再保留同类 issue（此前误建的 6 条已关闭并指向这里）。
 
 | issue | 对应里程碑 |
 | --- | --- |
-| [#21 传输后端可扩展（CAN/CAN-FD、通用串口、可选 UDP）](https://github.com/Scaxlibur/WaveBench/issues/21) | M1 |
-| [#22 原始字节收发合同（按帧读写）](https://github.com/Scaxlibur/WaveBench/issues/22) | M2 |
-| [#23 串口连接配置从 DmmConfig 提升为通用连接配置](https://github.com/Scaxlibur/WaveBench/issues/23) | M1 |
-| [#24 声明式自定义协议描述（非 SCPI 帧定义）](https://github.com/Scaxlibur/WaveBench/issues/24) | M2 |
-| [#25 裁决是否新增设备 kind（如 bus_device）](https://github.com/Scaxlibur/WaveBench/issues/25) | M0／M3 |
-| [#26 枚举串口与 CAN 适配器，并标注端口协议](https://github.com/Scaxlibur/WaveBench/issues/26) | M1 |
+| [#1 传输后端可扩展（CAN/CAN-FD、通用串口、可选 UDP）](https://github.com/Epslion404/wavebench/issues/1) | M1 |
+| [#2 原始字节收发合同（按帧读写）](https://github.com/Epslion404/wavebench/issues/2) | M2 |
+| [#3 串口连接配置从 DmmConfig 提升为通用连接配置](https://github.com/Epslion404/wavebench/issues/3) | M1 |
+| [#4 声明式自定义协议描述（非 SCPI 帧定义）](https://github.com/Epslion404/wavebench/issues/4) | M2 |
+| [#5 裁决是否新增设备 kind（如 bus_device）](https://github.com/Epslion404/wavebench/issues/5) | M0／M3 |
+| [#6 枚举串口与 CAN 适配器，并标注端口协议](https://github.com/Epslion404/wavebench/issues/6) | M1 |
 
 **范围假设（需确认）**：需求中的「窗口设备」按**串口设备**理解（与「CAN 总线设备」并列的现场总线／有线接口）。若原意是网口设备或其它含义，先修正本行再执行 M1。
 
