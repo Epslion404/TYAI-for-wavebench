@@ -95,7 +95,8 @@ class ProtocolRegistry:
         for path in sorted(Path(directory).glob("*.json")):
             config = json.loads(path.read_text(encoding="utf-8"))
             if config.get("kind") == "binary-waveform":
-                self.adapters.append(BinaryManifestAdapter(config)); count += 1
+                self.adapters.append(BinaryManifestAdapter(config))
+                count += 1
         return count
     def identify(self, payload, metadata=None) -> dict:
         scores = sorted(({"protocol": adapter.name, "confidence": adapter.match(payload, metadata)} for adapter in self.adapters),
