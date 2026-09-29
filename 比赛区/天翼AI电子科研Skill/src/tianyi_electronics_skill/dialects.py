@@ -31,6 +31,7 @@ VENDOR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 DATA_HEADER_QUERY = "{channel}:DATA:HEAD?"
 DATA_QUERY = "{channel}:DATA?"
+AUTOSCALE_CANDIDATES: tuple[str, ...] = ("AUToscale", "AUTOSet EXECute", "AUToset", ":AUToscale")
 
 
 def detect_vendor(idn: str) -> str:
@@ -54,6 +55,7 @@ def measure_candidates(channel: str) -> tuple[tuple[str, str, str], ...]:
 __all__ = [
     "DATA_HEADER_QUERY",
     "DATA_QUERY",
+    "AUTOSCALE_CANDIDATES",
     "DIALECT_STYLES",
     "MEASUREMENT_ITEMS",
     "VENDOR_PATTERNS",

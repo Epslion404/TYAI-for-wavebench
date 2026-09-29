@@ -47,3 +47,11 @@ python -m tianyi_electronics_skill analyze --demo
 ```
 
 完整 WaveBench 源码、驱动和示例计划位于 `wavebench/`，可用于高级 run plan、报告和仪器插件。
+
+## Competition extensions
+
+- `autoscale` probes vendor commands first and only writes after explicit `--apply`.
+- `discover` supports protocol labels, configurable timeout/workers, a 4096-host safety gate, optional mDNS, and non-SCPI port hints.
+- `plot` and `fetch --plot-output` create an escaped SVG single-frame artifact; analysis includes hysteresis frequency, rise time, overshoot, DFT and THD.
+- `protocol identify/decode` selects JSON, CAN, or declarative vendor-binary manifests. Arm Linux SocketCAN is available through the optional `python-can` extra.
+- `bridge serve/expose/connect` provides a reverse TCP path when the device host and Agent host are not on one LAN. A reachable relay, VPN, or SSH tunnel is still required.

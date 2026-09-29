@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .analysis import analyze_samples, demo_waveform
-from .dialects import MEASUREMENT_ITEMS, detect_vendor, measure_candidates
-from .scpi import ScpiSession, parse_first_float, query_once
+from .dialects import AUTOSCALE_CANDIDATES, MEASUREMENT_ITEMS, detect_vendor, measure_candidates
+from .scpi import ScpiSession, parse_first_float
 from .waveform import (
     load_waveform,
     read_waveform,
@@ -22,30 +23,72 @@ from .waveform import (
 )
 
 COMMON_PORTS = (5025, 5555, 4000, 502)
+PORT_PROTOCOLS = {5025: "SCPI/TCP", 5555: "SCPI/TCP", 4000: "instrument TCP", 502: "Modbus/TCP", 1715: "VXI-11", 4880: "HiSLIP"}
 
 
-def discover_devices(subnet: str, ports: Iterable[int] = COMMON_PORTS, timeout: float = 0.35) -> list[dict]:
-    """扫描 CIDR 网段并尝试读取 *IDN?，返回可序列化设备记录。"""
+def discover_devices(
+    subnet: str,
+    ports: Iterable[int] = COMMON_PORTS,
+    timeout: float = 0.35,
+    *,
+    force: bool = False,
+    max_targets: int = 4096,
+    workers: int = 64,
+    probe_non_scpi: bool = False,
+) -> list[dict]:
+    """扫描 CIDR 网段，区分 SCPI、Modbus、VXI-11、HiSLIP 等端口。
+
+    大网段必须显式 `force=True`，避免 Agent 在误解用户意图时扫描整个校园网。
+    """
     network = ipaddress.ip_network(subnet, strict=False)
-    targets = [(str(ip), int(port)) for ip in network.hosts() for port in ports]
+    hosts = list(network.hosts())
+    if len(hosts) > max_targets and not force:
+        raise ValueError(f"目标数 {len(hosts)} 超过上限 {max_targets}；确认扫描范围后使用 --force")
+    normalized_ports = tuple(dict.fromkeys(int(port) for port in ports))
+    targets = [(str(ip), port) for ip in hosts for port in normalized_ports]
 
     def probe(target: tuple[str, int]) -> dict | None:
         host, port = target
+        protocol = PORT_PROTOCOLS.get(port, "unknown TCP")
         try:
-            ident = query_once(host, port, "*IDN?", timeout)
-            return {"ip": host, "port": port, "protocol": "SCPI/TCP", "idn": ident or None,
-                    "reachable": True, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        except (OSError, UnicodeError):
+            if protocol == "SCPI/TCP" or probe_non_scpi:
+                with ScpiSession(host, port, timeout) as session:
+                    ident = session.query("*IDN?")
+                return {"ip": host, "port": port, "protocol": protocol, "idn": ident or None,
+                        "reachable": True, "probe": "idn", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            with socket.create_connection((host, port), timeout=timeout):
+                pass
+            return {"ip": host, "port": port, "protocol": protocol, "idn": None,
+                    "reachable": True, "probe": "tcp-connect-only", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        except (OSError, UnicodeError, ConnectionError):
             return None
 
     found: list[dict] = []
-    with ThreadPoolExecutor(max_workers=min(64, max(1, len(targets)))) as pool:
+    with ThreadPoolExecutor(max_workers=min(max(1, workers), max(1, len(targets)))) as pool:
         futures = [pool.submit(probe, target) for target in targets]
         for future in as_completed(futures):
             result = future.result()
             if result:
                 found.append(result)
     return sorted(found, key=lambda item: (item["ip"], item["port"]))
+
+
+def discover_mdns(timeout: float = 1.0) -> list[dict]:
+    """发送最小 DNS-SD PTR 查询，返回响应主机；不猜测服务端口。"""
+    name = b"\x05_scpi\x04_tcp\x05local\x00"
+    query = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x0c\x00\x01"
+    results: list[dict] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+        sock.settimeout(timeout)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        sock.sendto(query, ("224.0.0.251", 5353))
+        while True:
+            try:
+                _, address = sock.recvfrom(9000)
+            except TimeoutError:
+                break
+            results.append({"ip": address[0], "port": None, "protocol": "mDNS/DNS-SD", "service": "_scpi._tcp.local", "reachable": True})
+    return results
 
 
 def inspect_device(host: str, port: int = 5025, timeout: float = 2.0) -> dict:
@@ -162,14 +205,77 @@ def measure_scope(
     return result
 
 
+def autoscale_scope(
+    host: str,
+    port: int = 5025,
+    channel: str = "CHAN1",
+    timeout: float = 2.0,
+    *,
+    apply: bool = False,
+) -> dict:
+    """探测厂商 autoset；全部不支持时用波形推导安全建议。
+
+    `apply=False` 只返回建议，不改变仪器；真实写入必须显式 `apply=True`。
+    """
+    result = {"address": f"{host}:{port}", "channel": channel, "applied": False,
+              "commands": [], "unsupported": [], "device_errors": [], "suggestions": {}, "errors": []}
+    try:
+        with ScpiSession(host, port, timeout) as session:
+            result["idn"] = session.query("*IDN?")
+            result["vendor"] = detect_vendor(result["idn"] or "")
+            for command in AUTOSCALE_CANDIDATES:
+                if not apply:
+                    result["unsupported"].append({"command": command, "reason": "dry_run"})
+                    continue
+                session.write(command)
+                errors = session.drain_errors()
+                result["device_errors"].extend(errors)
+                if errors:
+                    result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
+                    continue
+                result["commands"].append(command)
+                result["applied"] = True
+                return result
+            waveform = read_waveform_in_session(session, channel, sample_rate=None)
+            metrics = waveform.get("metrics") or {}
+            frequency = metrics.get("frequency_hz")
+            vpp = metrics.get("peak_to_peak_v")
+            if frequency and frequency > 0:
+                result["suggestions"]["timebase_range_s"] = 5.0 / frequency
+            if metrics.get("minimum_v") is not None and metrics.get("maximum_v") is not None:
+                result["suggestions"]["channel_offset_v"] = -(metrics["minimum_v"] + metrics["maximum_v"]) / 2.0
+            if vpp:
+                result["suggestions"]["vertical_range_v"] = max(vpp * 1.25, 1e-6)
+            result["waveform"] = {"sample_count": waveform.get("sample_count", 0), "metrics": metrics,
+                                  "warnings": waveform.get("warnings", []), "errors": waveform.get("errors", [])}
+            if apply and result["suggestions"]:
+                writes = []
+                if "timebase_range_s" in result["suggestions"]:
+                    writes.append(f"TIMebase:RANGe {result['suggestions']['timebase_range_s']:.12g}")
+                if "channel_offset_v" in result["suggestions"]:
+                    writes.append(f":{channel}:OFFS {result['suggestions']['channel_offset_v']:.12g}")
+                for command in writes:
+                    session.write(command)
+                    errors = session.drain_errors()
+                    result["device_errors"].extend(errors)
+                    if not errors:
+                        result["commands"].append(command)
+                result["applied"] = bool(result["commands"])
+    except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
+        result["errors"].append(f"{type(exc).__name__}: {exc}")
+    return result
+
+
 __all__ = [
     "COMMON_PORTS",
     "analyze_samples",
     "demo_waveform",
     "discover_devices",
+    "discover_mdns",
     "inspect_device",
     "load_waveform",
     "measure_scope",
+    "autoscale_scope",
     "read_waveform",
     "write_waveform",
 ]

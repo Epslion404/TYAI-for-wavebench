@@ -39,3 +39,18 @@ python -m venv .venv
 ```
 
 输出统一为 JSON，可直接交给 TeleAgent 继续解释或保存到实验工作区。
+
+## Competition extensions
+
+Protocol compatibility is handled by `protocols.py`. Use JSON manifests in `examples/protocols/` for vendor binary frames, and use `protocol capture-can` with `python-can` on Arm Linux. The Agent can identify a payload before decoding it.
+
+For hosts that are not on the same LAN, use `bridge serve` on a reachable relay, `bridge expose` on the device host, and `bridge connect` on the Agent host. The bridge forwards bytes without assuming SCPI.
+
+Use `plot --file input.json --output frame.svg` or `fetch --plot-output frame.svg` to create a dependency-free, annotated single-frame waveform artifact. `analysis.py` adds hysteresis frequency, rise time, overshoot, DFT and THD.
+
+Autoscale is explicit and safe by default:
+
+```powershell
+python -m tianyi_electronics_skill autoscale --address 192.168.1.20 --channel CHAN1
+python -m tianyi_electronics_skill autoscale --address 192.168.1.20 --channel CHAN1 --apply
+```
