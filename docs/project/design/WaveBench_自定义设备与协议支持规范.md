@@ -53,6 +53,7 @@
 
 - GitHub 操作手动带代理：`git -c http.proxy=http://127.0.0.1:7897 push|fetch|ls-remote`，不写进 `git config`。
 - 仓库不提交 `.venv`；本机系统 `python` 未必是 3.11／3.12，先建 venv 再装 `.[dev,analysis,tui]`。
+- 本机基线（2026-09-29，Python 3.12.10 + `.[dev,analysis,tui,docs]`，勿把这些当成自己的改动）：全量 `pytest` 为 2459 passed／2 failed／4 skipped——`tests/test_analysis_execution.py::test_windows_job_rejects_allocation` 稳定失败（numpy 2.5.3 的 OpenBLAS 报内存分配失败而非 `MemoryError`，且错误记录无 `cause`），`tests/test_mcp_http.py::McpHttpTests::test_mcp_jsonrpc_requires_token` 只在全量并发跑时偶发 `WinError 10053`（单独跑 20 passed）。`ruff check .` 在比赛分支会因 `测试区/.temp/full_discover.py` 报 6 个错误（该脚本来自比赛提交，不在上游）。
 - 推荐配合的 skill：`planning-with-files`（多阶段任务）、`tdd`（先写失败测试）、`systematic-debugging`／`diagnose`（协议与时序问题）、`opensrc` + `find-docs`／`get-api-docs`（确认 python-can／pyserial 等真实 API 与版本，不靠记忆）、`windows-shell`（命令与编码坑）、`hardware-design-flow`（CAN 收发器、终端电阻、电平这类硬件侧判断）、`humanizer-zh`（中文文档表达）；仓库内固定使用 `.agents/skills/wavebench`（安全门与开发验证）与 `.agents/skills/wavebench-docs`（文档治理）。
 
 ## 禁止事项
