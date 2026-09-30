@@ -5,8 +5,8 @@ WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan�
 ## 分支定位
 
 - `competition`（当前分支）是「天翼AI杯」作品提交分支：只有一条根提交，文件树基于上游 `44506c4`，再加 `比赛区/` 与后续 docs／advisor 改动。不要把上游历史 merge/rebase 进来，也不要从这个分支向母仓库 Scaxlibur/WaveBench 开 PR。
-- 远端：`origin` = `Epslion404/wavebench`（fork）；`tyai` = `Epslion404/TYAI-for-wavebench`（**private 比赛仓库**，默认分支 `master`，issue 与 PR 都在那里跟踪）；`upstream` = `Scaxlibur/WaveBench`（只读，push URL 为 `no_push`）。
-- `master`（fork 与 tyai 上）已经不只是上游镜像：它现在是「上游基座 + 比赛内容 + advisor 实施」（`68148a0` 天翼Start_1.0、`a9e49e3` add range of finding、`6dc5263` RFC、`51d6136` 草案入仓、`514b76f` 同意门 + decision artifact）。**比赛内容不面向上游**：此前由它提出的上游 PR #27 已关闭；面向上游的改动一律从 `upstream/master` 拉聚焦分支（`upstream` remote 的 push URL 为 `no_push`）。
+- 远端：`origin` = `Epslion404/wavebench`（公开 fork；`master` 已强推回上游状态 `44506c4`，等于上游镜像，已不含比赛包）；`tyai` = `Epslion404/TYAI-for-wavebench`（**private 比赛仓库**，默认分支 `master`，issue 与 PR 都在那里跟踪）；`upstream` = `Scaxlibur/WaveBench`（只读，push URL 为 `no_push`）。
+- `master`（本地与 `tyai`）是比赛主线：「上游基座 + 比赛内容 + advisor 实施」（`68148a0` 天翼Start_1.0、`a9e49e3` add range of finding、`6dc5263` RFC、`51d6136` 草案入仓、`514b76f` 同意门 + decision artifact）。公开 fork 已清空这条路：**比赛内容只存在于本地与 `tyai`**；面向上游的改动从 `upstream/master` 拉聚焦分支，**不要把 `master` 推到 `origin`**（会把比赛内容重新推回公开 fork）。
 - advisor 线不再单独开先遣分支：实现已直接合并进 `master`（tyai PR #9 已 merged，`feat/advisor-plugin-category` 已删除）。后续 Phase 4（插件类别抽象 + lifecycle + CLI）按需要新开分支或直接提交 `master`。
 - 上游 PR 分支：`docs/advisor-plugin-rfc`（#20）、`split/agent-scope-observe-advise`（#4）。
 - CI 只在 push 到 `master`/`main` 或 PR 时触发，推 `competition` 不会跑，本地检查要自己执行。
