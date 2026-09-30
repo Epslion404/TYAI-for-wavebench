@@ -3,11 +3,35 @@
 from __future__ import annotations
 
 import json
+import math
 import struct
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+MAX_PROTOCOL_PAYLOAD_BYTES = 64 * 1024 * 1024
+SAMPLE_FORMATS = {"f32": "f", "f64": "d", "i16": "h", "u16": "H", "i32": "i", "u32": "I"}
+
+
+def _samples(values: Any) -> list[float]:
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("samples 必须是数组")
+    samples = [float(value) for value in values]
+    if not samples:
+        raise ValueError("samples 不能为空")
+    if any(not math.isfinite(value) for value in samples):
+        raise ValueError("samples 不能包含 NaN 或无穷大")
+    return samples
+
+
+def _sample_rate(value: Any) -> float | None:
+    if value is None:
+        return None
+    rate = float(value)
+    if not math.isfinite(rate) or rate <= 0:
+        raise ValueError("sample_rate_hz 必须是有限正数")
+    return rate
 
 
 @dataclass
@@ -21,7 +45,8 @@ class NormalizedFrame:
 
     def as_dict(self) -> dict[str, Any]:
         return {"protocol": self.protocol, "source": self.source, "timestamp": self.timestamp,
-                "samples": self.samples, "sample_rate_hz": self.sample_rate_hz, "metadata": self.metadata}
+                "samples": self.samples, "sample_rate_hz": self.sample_rate_hz, "metadata": self.metadata,
+                "device_errors": []}
 
 
 class Adapter:
@@ -44,8 +69,8 @@ class JsonWaveformAdapter(Adapter):
             return 0.0
     def decode(self, payload, source, metadata=None):
         value = payload if isinstance(payload, dict) else json.loads(payload.decode("utf-8"))
-        return NormalizedFrame(self.name, source, time.time(), [float(v) for v in value["samples"]],
-                               float(value["sample_rate_hz"]) if value.get("sample_rate_hz") else None,
+        return NormalizedFrame(self.name, source, time.time(), _samples(value["samples"]),
+                               _sample_rate(value.get("sample_rate_hz")),
                                {**(metadata or {}), **value.get("metadata", {})})
 
 
@@ -59,43 +84,89 @@ class CanAdapter(Adapter):
         if not isinstance(payload, dict):
             payload = json.loads(payload.decode("utf-8"))
         raw = payload.get("data", [])
-        data = bytes.fromhex(raw.replace("0x", "")) if isinstance(raw, str) else bytes(int(v) & 0xff for v in raw)
+        try:
+            data = bytes.fromhex(raw.replace("0x", "")) if isinstance(raw, str) else bytes(int(v) for v in raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("CAN data 必须是十六进制字符串或 0..255 字节数组") from exc
+        can_id = int(payload.get("can_id", payload.get("arbitration_id")))
+        if not 0 <= can_id <= 0x1FFFFFFF:
+            raise ValueError("CAN ID 必须位于 0..0x1FFFFFFF")
         samples = payload.get("samples", list(data))
-        return NormalizedFrame(self.name, source, time.time(), [float(v) for v in samples],
-                               payload.get("sample_rate_hz"), {**(metadata or {}), "can_id": payload.get("can_id", payload.get("arbitration_id")), "data_hex": data.hex()})
+        return NormalizedFrame(self.name, source, time.time(), _samples(samples),
+                               _sample_rate(payload.get("sample_rate_hz")),
+                               {**(metadata or {}), "can_id": can_id, "data_hex": data.hex()})
 
 
 class BinaryManifestAdapter(Adapter):
     def __init__(self, config: dict[str, Any]):
         self.config = config
-        self.name = str(config["name"])
+        self.name = str(config.get("name", "")).strip()
+        if not self.name:
+            raise ValueError("协议 manifest 缺少非空 name")
         match = config.get("match", {})
-        self.magic = bytes.fromhex(match.get("magic_hex", "")) if match.get("magic_hex") else b""
+        try:
+            self.magic = bytes.fromhex(match.get("magic_hex", "")) if match.get("magic_hex") else b""
+        except ValueError as exc:
+            raise ValueError(f"协议 {self.name} 的 magic_hex 非法") from exc
+        if not self.magic:
+            raise ValueError(f"协议 {self.name} 必须声明 magic_hex，避免误识别任意二进制数据")
         payload = config.get("payload", {})
         self.header_bytes = int(payload.get("header_bytes", len(self.magic)))
-        self.fmt = {"f32": "f", "f64": "d", "i16": "h", "u16": "H", "i32": "i", "u32": "I"}[payload.get("sample_type", "f32")]
-        self.endian = ">" if payload.get("endian", "big").lower() == "big" else "<"
+        if self.header_bytes < len(self.magic):
+            raise ValueError(f"协议 {self.name} 的 header_bytes 不能小于 magic 长度")
+        sample_type = str(payload.get("sample_type", "f32"))
+        if sample_type not in SAMPLE_FORMATS:
+            raise ValueError(f"协议 {self.name} 的 sample_type 不受支持: {sample_type}")
+        self.fmt = SAMPLE_FORMATS[sample_type]
+        endian = str(payload.get("endian", "big")).lower()
+        if endian not in {"big", "little"}:
+            raise ValueError(f"协议 {self.name} 的 endian 必须是 big 或 little")
+        self.endian = ">" if endian == "big" else "<"
         self.scale, self.offset = float(payload.get("scale", 1)), float(payload.get("offset", 0))
-        self.rate = payload.get("sample_rate_hz")
+        if not math.isfinite(self.scale) or not math.isfinite(self.offset):
+            raise ValueError(f"协议 {self.name} 的 scale/offset 必须是有限数")
+        self.rate = _sample_rate(payload.get("sample_rate_hz"))
+        self.max_payload_bytes = int(payload.get("max_payload_bytes", MAX_PROTOCOL_PAYLOAD_BYTES))
+        if self.max_payload_bytes <= 0 or self.max_payload_bytes > MAX_PROTOCOL_PAYLOAD_BYTES:
+            raise ValueError(f"协议 {self.name} 的 max_payload_bytes 超出允许范围")
     def match(self, payload, metadata=None) -> float:
         return 0.98 if isinstance(payload, bytes) and self.magic and payload.startswith(self.magic) else 0.0
     def decode(self, payload, source, metadata=None):
+        if not isinstance(payload, bytes):
+            raise TypeError("二进制协议适配器需要 bytes")
+        if not payload.startswith(self.magic):
+            raise ValueError(f"数据不匹配协议 {self.name} 的 magic")
+        if len(payload) > self.max_payload_bytes:
+            raise ValueError(f"协议负载 {len(payload)} 字节超过上限 {self.max_payload_bytes}")
+        if len(payload) < self.header_bytes:
+            raise ValueError(f"协议负载短于 header_bytes={self.header_bytes}")
         body = payload[self.header_bytes:]
         size = struct.calcsize(self.fmt)
-        body = body[:len(body) - len(body) % size]
+        if not body:
+            raise ValueError("协议负载不包含样本数据")
+        if len(body) % size:
+            raise ValueError(f"样本区长度 {len(body)} 不是元素大小 {size} 的整数倍")
         values = [self.offset + self.scale * v for v in struct.unpack(f"{self.endian}{len(body)//size}{self.fmt}", body)]
-        return NormalizedFrame(self.name, source, time.time(), values, float(self.rate) if self.rate else None, metadata or {})
+        return NormalizedFrame(self.name, source, time.time(), _samples(values), self.rate, metadata or {})
 
 
 class ProtocolRegistry:
     def __init__(self):
         self.adapters: list[Adapter] = [JsonWaveformAdapter(), CanAdapter()]
     def load_manifests(self, directory: str | Path) -> int:
+        root = Path(directory)
+        if not root.is_dir():
+            raise ValueError(f"protocol manifest 目录不存在: {root}")
         count = 0
-        for path in sorted(Path(directory).glob("*.json")):
+        names = {adapter.name for adapter in self.adapters}
+        for path in sorted(root.glob("*.json")):
             config = json.loads(path.read_text(encoding="utf-8"))
             if config.get("kind") == "binary-waveform":
-                self.adapters.append(BinaryManifestAdapter(config))
+                adapter = BinaryManifestAdapter(config)
+                if adapter.name in names:
+                    raise ValueError(f"重复的协议名称: {adapter.name}")
+                self.adapters.append(adapter)
+                names.add(adapter.name)
                 count += 1
         return count
     def identify(self, payload, metadata=None) -> dict:
@@ -103,20 +174,34 @@ class ProtocolRegistry:
                         key=lambda item: item["confidence"], reverse=True)
         return {"selected": scores[0] if scores and scores[0]["confidence"] else None, "candidates": scores}
     def decode(self, payload, source="unknown", metadata=None) -> NormalizedFrame:
-        ranked = sorted(self.adapters, key=lambda adapter: adapter.match(payload, metadata), reverse=True)
-        if not ranked or ranked[0].match(payload, metadata) <= 0:
+        ranked = sorted(
+            ((adapter.match(payload, metadata), adapter) for adapter in self.adapters),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        if not ranked or ranked[0][0] <= 0:
             raise ValueError("没有匹配的协议适配器，请提供 protocol manifest")
-        return ranked[0].decode(payload, source, metadata)
+        return ranked[0][1].decode(payload, source, metadata)
 
 
-def read_payload(path: str | Path) -> bytes | dict[str, Any]:
-    raw = Path(path).read_bytes()
-    if Path(path).suffix.lower() == ".json":
+def read_payload(path: str | Path, max_bytes: int = MAX_PROTOCOL_PAYLOAD_BYTES) -> bytes | dict[str, Any]:
+    file_path = Path(path)
+    size = file_path.stat().st_size
+    if size > max_bytes:
+        raise ValueError(f"输入文件 {size} 字节超过上限 {max_bytes}")
+    raw = file_path.read_bytes()
+    if file_path.suffix.lower() == ".json":
         return json.loads(raw.decode("utf-8"))
     return raw
 
 
 def capture_socketcan(channel: str = "can0", count: int = 16, timeout: float = 1.0) -> list[dict[str, Any]]:
+    if not channel.strip():
+        raise ValueError("SocketCAN channel 不能为空")
+    if count <= 0:
+        raise ValueError("count 必须大于 0")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout 必须是有限正数")
     try:
         import can  # type: ignore
     except ImportError as exc:
