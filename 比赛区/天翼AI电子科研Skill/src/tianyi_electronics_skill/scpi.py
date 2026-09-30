@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import math
 from collections.abc import Callable
 
 MAX_TEXT_BYTES = 64 * 1024
@@ -14,6 +15,17 @@ Reader = Callable[[int], bytes]
 def encode_command(command: str) -> bytes:
     """把命令编码为设备可接受的一行（统一 LF 结尾）。"""
     return (command.rstrip() + "\n").encode("ascii", "replace")
+
+
+def classify_exception(exc: BaseException) -> str:
+    """把传输异常稳定映射为对 Agent 有意义的失败类别。"""
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(exc, (ConnectionError, OSError)):
+        return "transport_error"
+    if isinstance(exc, (ValueError, UnicodeError)):
+        return "parse_error"
+    return "internal_error"
 
 
 def parse_first_float(text: str) -> float | None:
@@ -105,6 +117,12 @@ class ScpiSession:
     """单条 TCP 连接内复用查询，避免每条命令重新握手。"""
 
     def __init__(self, host: str, port: int = 5025, timeout: float = 2.0) -> None:
+        if not host:
+            raise ValueError("host 不能为空")
+        if not 1 <= int(port) <= 65535:
+            raise ValueError("port 必须位于 1..65535")
+        if not math.isfinite(float(timeout)) or float(timeout) <= 0:
+            raise ValueError("timeout 必须是有限正数")
         self.host = host
         self.port = int(port)
         self.timeout = float(timeout)
@@ -157,6 +175,8 @@ class ScpiSession:
             if not data:
                 break
             buffer += data
+        if b"\n" not in buffer and len(buffer) >= MAX_TEXT_BYTES:
+            raise ValueError(f"SCPI 文本响应超过上限 {MAX_TEXT_BYTES} 字节或缺少行结束符")
         return buffer.decode("utf-8", "replace").strip()
 
     def query_block(self, command: str, max_bytes: int = DEFAULT_MAX_BLOCK_BYTES) -> bytes:
@@ -187,6 +207,7 @@ __all__ = [
     "DEFAULT_MAX_BLOCK_BYTES",
     "MAX_TEXT_BYTES",
     "ScpiSession",
+    "classify_exception",
     "encode_command",
     "parse_block_header",
     "parse_first_float",
