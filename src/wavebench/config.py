@@ -127,6 +127,26 @@ class PowerConfig:
     access: AccessMode = "read_write"
 
 @dataclass(frozen=True)
+class SerialConnectionConfig:
+    """通用串口连接参数（不绑定设备类别）。
+
+    串口 transport 只依赖本配置；`DmmConfig` 等具体设备配置负责把自己的参数转换过来，
+    网关／自定义协议设备也可以直接声明它。
+    """
+
+    resource: str | None = None
+    baudrate: int = 9600
+    bytesize: int = 8
+    parity: str = "N"
+    stopbits: float = 1.0
+    timeout_ms: int = 1000
+    write_termination: str = "lf"
+    read_termination: str = "lf"
+    xonxoff: bool = False
+    rtscts: bool = False
+    dsrdtr: bool = False
+
+@dataclass(frozen=True)
 class DmmConfig:
     driver: str
     resource: str | None
@@ -145,6 +165,22 @@ class DmmConfig:
     rtscts: bool = False
     dsrdtr: bool = False
     access: AccessMode = "read_write"
+
+    def serial_connection(self) -> SerialConnectionConfig:
+        """把 DMM 的串口参数转换为通用串口配置（DMM 行为保持不变）。"""
+        return SerialConnectionConfig(
+            resource=self.resource,
+            baudrate=self.baudrate,
+            bytesize=self.bytesize,
+            parity=self.parity,
+            stopbits=self.stopbits,
+            timeout_ms=self.timeout_ms,
+            write_termination=self.write_termination,
+            read_termination=self.read_termination,
+            xonxoff=self.xonxoff,
+            rtscts=self.rtscts,
+            dsrdtr=self.dsrdtr,
+        )
 
 @dataclass(frozen=True)
 class AdvisorConfig:
