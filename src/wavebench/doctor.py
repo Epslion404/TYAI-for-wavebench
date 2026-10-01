@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
-from .config import DmmConfig, WaveBenchConfig
+from .config import SerialConnectionConfig, WaveBenchConfig
 from .discovery import DEFAULT_DISCOVERY_PORTS, DiscoveryResult, discover_instruments
 from .errors import ConfigError, ResourceBusyError
 from .instruments.registry import resolve_instrument_descriptor
@@ -18,7 +18,7 @@ class DoctorTarget:
     driver: str
     resource: str | None
     expected_idn_tokens: tuple[str, ...] = ()
-    serial_config: DmmConfig | None = None
+    serial_config: SerialConnectionConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -220,7 +220,11 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.dmm.driver,
                 resource=config.dmm.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.dmm.driver),
-                serial_config=config.dmm if config.dmm.backend.strip().lower() == "serial" else None,
+                serial_config=(
+                    config.dmm.serial_connection()
+                    if config.dmm.backend.strip().lower() == "serial"
+                    else None
+                ),
             )
         )
     return targets

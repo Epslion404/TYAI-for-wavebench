@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import time
 from typing import Any
 
-from wavebench.config import DmmConfig
+from wavebench.config import SerialConnectionConfig
 from wavebench.errors import ConfigError, ConnectionError, SessionCloseError, TransportIOError
 from wavebench.logging import CommandLogger
 
@@ -47,7 +47,7 @@ class SerialTransport:
     @classmethod
     def open(
         cls,
-        config: DmmConfig,
+        config: SerialConnectionConfig,
         logger: CommandLogger | None = None,
         *,
         read_retry_attempts: int = 1,
