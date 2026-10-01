@@ -7,5 +7,6 @@
 - 查询 run plan 字段：[run plan Reference](../reference/run-schema.md)
 - 查看 RFC 与历史：[现有 RFC 索引](rfcs/README.md)和[更新日志](../../CHANGELOG.md)
 - advisor 插件类别：[RFC](../project/rfcs/WaveBench_advisor插件RFC.md)与[草案目录](design/advisor-draft/README.md)
+- 协作规则：[仓库协作与分支约定](design/仓库协作与分支约定.md)
 
 具体型号、SCPI、profile、quirk 和实机 evidence 由[仪器插件仓库](https://github.com/Scaxlibur/wavebench-instrument-plugins)维护。
