@@ -16,7 +16,6 @@ WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan�
 - `比赛区/`：**不在 master 上**。比赛作品包（TeleAgent Skill，含 `tianyi_electronics_skill` 与内嵌 wavebench 快照）只存在于 `competition` 分支与 Release 产物；要改包先 `git checkout competition`。
 - `测试区/`：上游内容（`git rm` 掉的那个临时发现脚本已移出仓库，备份在仓库外 `D:\Documents\Code\TY_AI\tools\scratch\full_discover.py`）。
 - `docs/project/`：项目带文档（不进入文档站）。advisor 线见 `docs/project/rfcs/WaveBench_advisor插件RFC.md` 与 `docs/project/design/advisor-draft/`（seam 草案、阶段 1 骨架、规划文件）；自定义设备与协议支持的规范／TODO 只在 `competition` 分支上。
-- `docs/project/`：项目带文档（不进入文档站）。advisor 线见 `docs/project/rfcs/WaveBench_advisor插件RFC.md` 与 `docs/project/design/advisor-draft/`（seam 草案、阶段 1 骨架、规划文件）；自定义设备与协议支持的规范／TODO 只在 `competition` 分支上。
 - `.agents/skills/`：两个 Agent Skill 入口 —— `wavebench/SKILL.md`（真机操作、安全门、开发验证）和 `wavebench-docs/SKILL.md`（文档治理）。根 `SKILL.md` 只是指向前者的指针；排查真机行为时按需读 `wavebench/references/`，不要凭记忆推断。
 
 ## 命令（仓库根）
