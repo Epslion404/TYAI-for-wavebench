@@ -282,6 +282,11 @@ def _open_pyvisa(request: TransportRequest) -> InstrumentTransport:
 
 
 def _open_rsinstrument(request: TransportRequest) -> InstrumentTransport:
+    """`rsinstrument` 后端保持原样：不传 `select_visa`（既有兼容路径）。"""
+    return RsInstrumentTransport.open(request.connection, logger=request.logger)
+
+
+def _open_rsinstrument_visa(request: TransportRequest) -> InstrumentTransport:
     return RsInstrumentTransport.open(
         request.connection,
         logger=request.logger,
@@ -301,9 +306,9 @@ TRANSPORT_FACTORIES: dict[str, TransportFactory] = {
     "serial": _open_serial,
     "pyvisa": _open_pyvisa,
     "rsinstrument": _open_rsinstrument,
-    "rsinstrument-socket": _open_rsinstrument,
-    "rsinstrument-rsvisa": _open_rsinstrument,
-    "rsinstrument-pyvisa-py": _open_rsinstrument,
+    "rsinstrument-socket": _open_rsinstrument_visa,
+    "rsinstrument-rsvisa": _open_rsinstrument_visa,
+    "rsinstrument-pyvisa-py": _open_rsinstrument_visa,
 }
 
 
