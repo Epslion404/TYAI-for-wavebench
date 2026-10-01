@@ -22,7 +22,7 @@ metadata:
 - `fetch`：读取原始波形（二进制块或 ASCII），给出时间轴、一致性校验和离线指标，可落盘 CSV/JSON。
 - `analyze`：对 CSV/JSON 波形离线计算峰值、峰峰值、频率、RMS、占空比，硬件不可用时使用演示数据。
 
-所有命令的输出都包含 `device_errors`（设备错误队列），失败按 `unsupported`／`no_response`／`parse_error`／`transport_error` 分类，不把"命令被拒绝"写成"解析失败"。
+所有命令的输出都包含 `device_errors`（设备错误队列），失败条目同时写进 `failures`（含 `category` 与 `message`），不把"命令被拒绝"写成"解析失败"。`category` 取值：`unsupported`（设备拒绝该命令）／`no_response`（空响应）／`parse_error`（响应无法解析）／`configuration_error`（本地参数或配置非法）／`transport_error`（网络与传输层）／`timeout`（超时）／`error_queue_unavailable`（读取错误队列本身失败）／`internal_error`（未归类的内部错误）。
 
 ## 推荐工作流
 
