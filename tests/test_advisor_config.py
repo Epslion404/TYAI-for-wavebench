@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wavebench.config import load_config
+from wavebench.config import AdvisorConfig, load_config
 from wavebench.errors import ConfigError
 
 BASE = """\
@@ -61,6 +61,10 @@ review = 0.4
             self._load(
                 "\n[advisor]\naccept = 0.2\nreview = 0.9\n"
             )
+
+    def test_direct_config_construction_uses_consistent_threshold_errors(self):
+        with self.assertRaisesRegex(ConfigError, "threshold accept must be a number"):
+            AdvisorConfig(accept="0.8")  # type: ignore[arg-type]
 
     def test_endpoint_hosts_must_be_an_array_of_strings(self):
         with self.assertRaisesRegex(ConfigError, "endpoint_hosts must be an array of strings"):

@@ -96,6 +96,10 @@ Core 拥有这些名字与各自答案契约（Choice / Score / Noul 形状）�
 
 - 默认关闭；由配置与 CLI 显式开启；
 - 发送前必须能产出完整预览（payload、字节数、sha256、逐条 untrusted span 与来源），预览不联网；
+- 预览先脱敏、再计算 `payload_sha256`／`payload_bytes`，**脱敏结果即实际外发内容**：`state.untrusted` 中 span 的
+  正文（`text`／`raw`／`content`／`payload`）不外发，只保留来源；键名按大小写与 `-`／`_` 变体归一化后命中
+  `api_key`／`authorization`／`credential`／`password`／`secret`／`token` 的值，以及字符串中的 `token=...` 形态，
+  一律替换为 `[REDACTED]`。因此预览只呈现将要外发的内容，原始 state 需在外发前本地核对；
 - 同意记录落盘：`granted` / `valid_for` / `run_id` / `granted_by` / `granted_at` /
   `endpoint_hosts` / `allowed_state_fields` / `payload_sha256` / `payload_bytes`；
 - 同意**绑定 endpoint 集合与允许字段集**：任一变化即失效并要求重新确认，避免旧配置在插件声明
