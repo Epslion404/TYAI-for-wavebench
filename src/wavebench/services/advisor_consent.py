@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Collection, Mapping, Sequence
 
@@ -25,16 +26,100 @@ STATUS_REFUSED = "refused"
 STATUS_PREVIEW_ONLY = "preview_only"
 
 REASON_DISABLED = "advisor_disabled"
+REASON_NON_INTERACTIVE = "non_interactive_consent_not_allowed"
 REASON_NOT_GRANTED = "external_state_consent_not_granted"
 REASON_PREVIEW_ONLY = "preview_only"
+REASON_ALLOWLIST_MISSING = "registered_allowlist_missing"
 REASON_ENDPOINT_NOT_REGISTERED = "endpoint_not_registered"
 REASON_FIELD_NOT_REGISTERED = "state_field_not_registered"
+REASON_INVALID_SCOPE = "invalid_consent_scope"
 REASON_ENDPOINT_CHANGED = "consent_invalidated_by_endpoint_change"
 REASON_FIELD_CHANGED = "consent_invalidated_by_allowed_field_change"
 REASON_RUN_REQUIRED = "run_scoped_consent_requires_run_target"
 REASON_RUN_CHANGED = "consent_invalidated_by_run_change"
 
 VALID_SCOPES = ("invocation", "run")
+
+_SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
+_SENSITIVE_TEXT = re.compile(
+    r"(?i)\b(?:api[_-]?key|authorization|credential|password|secret|token)\b\s*[:=]\s*(?:bearer\s+)?\S+"
+)
+
+
+class _FrozenDict(dict):
+    """JSON-compatible recursive immutable mapping used by preview payloads."""
+
+    def _immutable(self, *_: Any, **__: Any) -> None:
+        raise TypeError("preview payload is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+
+def _is_sensitive_key(key: object) -> bool:
+    normalized = str(key).lower().replace("-", "_")
+    return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
+
+
+def _redact_sensitive_text(value: str) -> str:
+    return _SENSITIVE_TEXT.sub("[REDACTED]", value)
+
+
+def redact_sensitive(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): "[REDACTED]" if _is_sensitive_key(key) else redact_sensitive(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [redact_sensitive(item) for item in value]
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    return value
+
+
+def _redact_untrusted_text(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Untrusted spans may contain arbitrary instrument/operator text, so omit their bodies."""
+    copied = dict(state)
+    spans = copied.get("untrusted")
+    if not isinstance(spans, (list, tuple)):
+        return copied
+    safe_spans: list[Any] = []
+    for span in spans:
+        if not isinstance(span, Mapping):
+            safe_spans.append(redact_sensitive(span))
+            continue
+        safe = dict(span)
+        for key in tuple(safe):
+            if str(key).lower() in {"text", "raw", "content", "payload"}:
+                safe[key] = "[REDACTED_UNTRUSTED_TEXT]"
+        safe_spans.append(safe)
+    copied["untrusted"] = safe_spans
+    return copied
+
+
+def _freeze_payload(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        frozen = _FrozenDict()
+        dict.update(frozen, {str(key): _freeze_payload(item) for key, item in value.items()})
+        return frozen
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_payload(item) for item in value)
+    return value
 
 
 def normalize_names(values: Sequence[str], *, label: str) -> tuple[str, ...]:
@@ -58,7 +143,7 @@ class PreviewPayload:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "payload": dict(self.payload),
+            "payload": json.loads(json.dumps(self.payload, ensure_ascii=False)),
             "payload_sha256": self.payload_sha256,
             "payload_bytes": self.payload_bytes,
             "untrusted_sources": list(self.untrusted_sources),
@@ -71,8 +156,17 @@ def build_preview(
     state: Mapping[str, Any],
     questions: Mapping[str, Any],
 ) -> PreviewPayload:
-    """构造预览：内容、字节数与 sha256 都由本函数确定，调用方不能跳过。"""
-    body = {"model": model, "state": dict(state), "questions": dict(questions)}
+    """构造预览：脱敏后才计算字节数/sha256，调用方不能跳过。
+
+    键名按大小写、`-`/`_` 变体递归脱敏，字符串中的 ``token=...`` 等也会擦除；
+    `state.untrusted` 的正文一律不外发，只保留来源。字段白名单随后由
+    :func:`resolve_consent` 针对调用方声明的字段名校验，脱敏不改变该校验输入。
+    """
+    body = _freeze_payload(
+        redact_sensitive(
+            {"model": model, "state": _redact_untrusted_text(state), "questions": dict(questions)}
+        )
+    )
     encoded = json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")
     sources: list[str] = []
     for span in state.get("untrusted", ()) or ():
@@ -187,10 +281,13 @@ def consent_covers(
     endpoint_hosts: Sequence[str],
     allowed_state_fields: Sequence[str],
     run_id: str | None,
+    interactive: bool = False,
 ) -> tuple[bool, str | None]:
-    """判断已有同意是否覆盖本次调用；返回 (是否覆盖, 失效原因)。"""
+    """判断已有同意是否覆盖本次外发；非交互路径不得复用任何同意。"""
     if not consent.granted:
         return False, REASON_NOT_GRANTED
+    if not interactive:
+        return False, REASON_NON_INTERACTIVE
     if set(consent.endpoint_hosts) != set(endpoint_hosts):
         return False, REASON_ENDPOINT_CHANGED
     if set(consent.allowed_state_fields) != set(allowed_state_fields):
@@ -210,6 +307,7 @@ def resolve_consent(
     endpoint_hosts: Sequence[str],
     state_fields: Collection[str],
     enabled: bool,
+    interactive: bool = False,
     registered_endpoint_hosts: Sequence[str] = (),
     registered_state_fields: Collection[str] = (),
     run_id: str | None = None,
@@ -221,8 +319,9 @@ def resolve_consent(
 ) -> ConsentOutcome:
     """Core 侧的同意门。
 
-    拒绝顺序（对应 RFC 验收门里"外部调用次数必须为 0"的五种情况）：未开启 → 未注册字段 →
-    未注册 endpoint → 仅预览 → 未确认。"仅预览"与"拒绝"都不返回可用同意，调用方不得外发。
+    预览不联网，因而在开启后优先返回 ``preview_only``，不要求交互标志或完整白名单；它也绝不
+    返回可复用同意。实际外发的拒绝顺序：未开启 → 非交互 → 白名单缺失 → 未注册字段 → 未注册
+    endpoint → 未确认。白名单校验使用调用方声明的字段/主机集合，而 preview 已先完成脱敏与哈希。
     """
     hosts = normalize_names(endpoint_hosts, label="endpoint_hosts")
     fields = normalize_names(tuple(state_fields), label="state_fields")
@@ -239,16 +338,6 @@ def resolve_consent(
     if not enabled:
         return refused(REASON_DISABLED)
 
-    unregistered = unregistered_state_fields(fields, registered_state_fields)
-    if registered_state_fields and unregistered:
-        return refused(f"{REASON_FIELD_NOT_REGISTERED}: {', '.join(unregistered)}")
-
-    if registered_endpoint_hosts:
-        allowed_hosts = set(normalize_names(registered_endpoint_hosts, label="registered_endpoint_hosts"))
-        unknown_hosts = tuple(sorted(set(hosts) - allowed_hosts))
-        if unknown_hosts:
-            return refused(f"{REASON_ENDPOINT_NOT_REGISTERED}: {', '.join(unknown_hosts)}")
-
     if preview_only:
         return ConsentOutcome(
             status=STATUS_PREVIEW_ONLY,
@@ -258,11 +347,32 @@ def resolve_consent(
             allowed_state_fields=fields,
         )
 
+    if not interactive:
+        return refused(REASON_NON_INTERACTIVE)
+
+    registered_fields = normalize_names(
+        tuple(registered_state_fields), label="registered_state_fields"
+    )
+    registered_hosts = normalize_names(
+        registered_endpoint_hosts, label="registered_endpoint_hosts"
+    )
+    if not registered_fields or not registered_hosts:
+        return refused(REASON_ALLOWLIST_MISSING)
+
+    unregistered = unregistered_state_fields(fields, registered_fields)
+    if unregistered:
+        return refused(f"{REASON_FIELD_NOT_REGISTERED}: {', '.join(unregistered)}")
+
+    allowed_hosts = set(registered_hosts)
+    unknown_hosts = tuple(sorted(set(hosts) - allowed_hosts))
+    if unknown_hosts:
+        return refused(f"{REASON_ENDPOINT_NOT_REGISTERED}: {', '.join(unknown_hosts)}")
+
     if not accepted:
         return refused(REASON_NOT_GRANTED)
 
     if valid_for not in VALID_SCOPES:
-        return refused(REASON_NOT_GRANTED)
+        return refused(REASON_INVALID_SCOPE)
     if valid_for == "run" and not run_id:
         return refused(REASON_RUN_REQUIRED)
 
@@ -287,13 +397,16 @@ def resolve_consent(
 
 __all__ = [
     "ADVISOR_CONSENT_SCHEMA",
+    "REASON_ALLOWLIST_MISSING",
     "REASON_DISABLED",
     "REASON_ENDPOINT_CHANGED",
     "REASON_ENDPOINT_NOT_REGISTERED",
     "REASON_FIELD_CHANGED",
     "REASON_FIELD_NOT_REGISTERED",
     "REASON_NOT_GRANTED",
+    "REASON_NON_INTERACTIVE",
     "REASON_PREVIEW_ONLY",
+    "REASON_INVALID_SCOPE",
     "REASON_RUN_CHANGED",
     "REASON_RUN_REQUIRED",
     "STATUS_GRANTED",
@@ -306,6 +419,7 @@ __all__ = [
     "build_preview",
     "consent_covers",
     "normalize_names",
+    "redact_sensitive",
     "resolve_consent",
     "unregistered_state_fields",
 ]

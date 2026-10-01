@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import socket
 import time
 from collections.abc import Iterable
@@ -14,7 +15,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from .analysis import analyze_samples, demo_waveform
 from .dialects import AUTOSCALE_CANDIDATES, MEASUREMENT_ITEMS, detect_vendor, measure_candidates
-from .scpi import ScpiSession, classify_exception, parse_first_float
+from .scpi import ConfigurationError, ScpiSession, classify_exception, parse_first_float
 from .waveform import (
     load_waveform,
     read_waveform,
@@ -26,14 +27,26 @@ COMMON_PORTS = (5025, 5555, 4000, 502)
 PORT_PROTOCOLS = {5025: "SCPI/TCP", 5555: "SCPI/TCP", 4000: "instrument TCP", 502: "Modbus/TCP", 1715: "VXI-11", 4880: "HiSLIP"}
 
 
+def _positive_float(value: object, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(f"{label} 必须是有限正数") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ConfigurationError(f"{label} 必须是有限正数")
+    return number
+
+
+def _positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigurationError(f"{label} 必须是正整数")
+    return value
+
+
 def _host_count(network: ipaddress.IPv4Network | ipaddress.IPv6Network) -> int:
-    if network.prefixlen == network.max_prefixlen:
-        return 1
-    if isinstance(network, ipaddress.IPv4Network) and network.prefixlen == 31:
-        return 2
     if isinstance(network, ipaddress.IPv4Network) and network.prefixlen <= 30:
         return max(0, network.num_addresses - 2)
-    return max(0, network.num_addresses - 1)
+    return network.num_addresses
 
 
 def discover_devices(
@@ -50,22 +63,25 @@ def discover_devices(
 
     大网段必须显式 `force=True`，避免 Agent 在误解用户意图时扫描整个校园网。
     """
-    if timeout <= 0:
-        raise ValueError("timeout 必须大于 0")
-    if workers <= 0:
-        raise ValueError("workers 必须大于 0")
-    if max_targets <= 0:
-        raise ValueError("max_targets 必须大于 0")
-    network = ipaddress.ip_network(subnet, strict=False)
+    timeout = _positive_float(timeout, "timeout")
+    workers = _positive_int(workers, "workers")
+    max_targets = _positive_int(max_targets, "max_targets")
+    try:
+        network = ipaddress.ip_network(subnet, strict=False)
+    except ValueError as exc:
+        raise ConfigurationError(f"无效网段: {subnet!r}") from exc
     host_count = _host_count(network)
     if host_count > max_targets and not force:
-        raise ValueError(f"目标数 {host_count} 超过上限 {max_targets}；确认扫描范围后使用 --force")
-    normalized_ports = tuple(dict.fromkeys(int(port) for port in ports))
+        raise ConfigurationError(f"目标数 {host_count} 超过上限 {max_targets}；确认扫描范围后使用 --force")
+    try:
+        normalized_ports = tuple(dict.fromkeys(int(port) for port in ports))
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("端口必须是 1..65535 的整数") from exc
     if not normalized_ports:
-        raise ValueError("至少需要一个扫描端口")
+        raise ConfigurationError("至少需要一个扫描端口")
     invalid_ports = [port for port in normalized_ports if not 1 <= port <= 65535]
     if invalid_ports:
-        raise ValueError(f"端口必须位于 1..65535: {invalid_ports}")
+        raise ConfigurationError(f"端口必须位于 1..65535: {invalid_ports}")
     targets = ((str(ip), port) for ip in network.hosts() for port in normalized_ports)
 
     def probe(target: tuple[str, int]) -> dict | None:
@@ -110,8 +126,7 @@ def discover_devices(
 
 def discover_mdns(timeout: float = 1.0) -> list[dict]:
     """发送最小 DNS-SD PTR 查询，返回响应主机；不猜测服务端口。"""
-    if timeout <= 0:
-        raise ValueError("timeout 必须大于 0")
+    timeout = _positive_float(timeout, "timeout")
     name = b"\x05_scpi\x04_tcp\x05local\x00"
     query = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x0c\x00\x01"
     results: dict[str, dict] = {}

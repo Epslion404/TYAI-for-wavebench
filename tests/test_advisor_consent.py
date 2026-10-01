@@ -10,7 +10,7 @@ from pathlib import Path
 from wavebench.services import advisor_consent as consent
 
 MODULE_PATH = Path(consent.__file__)
-ALLOWED_IMPORTS = {"__future__", "dataclasses", "hashlib", "json", "typing"}
+ALLOWED_IMPORTS = {"__future__", "dataclasses", "hashlib", "json", "re", "typing"}
 
 STATE = {"fields": {"run_status": "failed", "cycles_bucket": "few_cycles"}}
 QUESTIONS = {"route": {"kind": "choice", "options": ["run check", "run verify"]}}
@@ -32,6 +32,7 @@ class AdvisorConsentTests(unittest.TestCase):
             "enabled": True,
             "registered_endpoint_hosts": ("api.typesafe.ai",),
             "registered_state_fields": ("run_status", "cycles_bucket"),
+            "interactive": True,
             "accepted": True,
         }
         kwargs.update(overrides)
@@ -94,6 +95,58 @@ class AdvisorConsentTests(unittest.TestCase):
         self.assertEqual(outcome.reason, consent.REASON_NOT_GRANTED)
         self.assertIsNone(outcome.decision)
 
+    def test_public_gate_fails_closed_without_registered_allowlists(self):
+        outcome = self._resolve(
+            registered_endpoint_hosts=(),
+            registered_state_fields=(),
+            endpoint_hosts=("evil.example",),
+            state_fields=("run_status", "secret_field"),
+        )
+
+        self.assertEqual(outcome.status, consent.STATUS_REFUSED)
+        self.assertEqual(outcome.reason, consent.REASON_ALLOWLIST_MISSING)
+        self.assertFalse(outcome.granted)
+
+    def test_non_interactive_and_invalid_scope_have_distinct_reasons(self):
+        non_interactive = self._resolve(interactive=False)
+        invalid_scope = self._resolve(valid_for="forever")
+
+        self.assertEqual(non_interactive.reason, consent.REASON_NON_INTERACTIVE)
+        self.assertEqual(invalid_scope.reason, consent.REASON_INVALID_SCOPE)
+
+    def test_preview_is_immutable_and_redacts_sensitive_values(self):
+        preview = self._preview(
+            state={
+                "apiKey": "not-for-preview",
+                "nested": [{"API_KEY": "hidden"}, {"api-key": "also-hidden"}],
+                "untrusted": [{"source": "instrument.response", "text": "token=raw-value"}],
+            },
+            questions={"prompt": "authorization: Bearer secret-value"},
+        )
+
+        self.assertEqual(preview.payload["state"]["apiKey"], "[REDACTED]")
+        self.assertEqual(preview.payload["state"]["nested"][0]["API_KEY"], "[REDACTED]")
+        self.assertEqual(preview.payload["state"]["nested"][1]["api-key"], "[REDACTED]")
+        self.assertEqual(preview.payload["state"]["untrusted"][0]["text"], "[REDACTED_UNTRUSTED_TEXT]")
+        with self.assertRaises(TypeError):
+            preview.payload["state"]["apiKey"] = "changed"
+        serialized = json.dumps(preview.as_dict(), ensure_ascii=False)
+        self.assertNotIn("not-for-preview", serialized)
+        self.assertNotIn("raw-value", serialized)
+        self.assertNotIn("secret-value", serialized)
+
+    def test_preview_only_is_available_without_interaction_or_allowlists(self):
+        outcome = self._resolve(
+            interactive=False,
+            registered_endpoint_hosts=(),
+            registered_state_fields=(),
+            preview_only=True,
+        )
+
+        self.assertEqual(outcome.status, consent.STATUS_PREVIEW_ONLY)
+        self.assertEqual(outcome.reason, consent.REASON_PREVIEW_ONLY)
+        self.assertFalse(outcome.granted)
+
     def test_granted_consent_records_scope_and_allowlists(self):
         outcome = self._resolve(granted_by="operator", granted_at="2026-09-29T10:00:00Z")
 
@@ -124,6 +177,7 @@ class AdvisorConsentTests(unittest.TestCase):
             endpoint_hosts=("api.typesafe.ai",),
             allowed_state_fields=("cycles_bucket", "run_status"),
             run_id="20260929_0800_other_run",
+            interactive=True,
         )
         self.assertFalse(covered)
         self.assertEqual(reason, consent.REASON_RUN_CHANGED)
@@ -137,6 +191,7 @@ class AdvisorConsentTests(unittest.TestCase):
             endpoint_hosts=("api.typesafe.ai", "cdn.typesafe.ai"),
             allowed_state_fields=("cycles_bucket", "run_status"),
             run_id=None,
+            interactive=True,
         )
         self.assertFalse(covered)
         self.assertEqual(reason, consent.REASON_ENDPOINT_CHANGED)
@@ -146,6 +201,7 @@ class AdvisorConsentTests(unittest.TestCase):
             endpoint_hosts=("api.typesafe.ai",),
             allowed_state_fields=("run_status",),
             run_id=None,
+            interactive=True,
         )
         self.assertFalse(covered)
         self.assertEqual(reason, consent.REASON_FIELD_CHANGED)
@@ -159,6 +215,7 @@ class AdvisorConsentTests(unittest.TestCase):
             endpoint_hosts=("api.typesafe.ai",),
             allowed_state_fields=("cycles_bucket", "run_status"),
             run_id=None,
+            interactive=True,
         )
         self.assertTrue(covered)
         self.assertIsNone(reason)
@@ -171,9 +228,25 @@ class AdvisorConsentTests(unittest.TestCase):
             endpoint_hosts=("api.typesafe.ai",),
             allowed_state_fields=(),
             run_id=None,
+            interactive=True,
         )
         self.assertFalse(covered)
         self.assertEqual(reason, consent.REASON_NOT_GRANTED)
+
+    def test_run_scoped_consent_cannot_be_reused_non_interactively(self):
+        granted = self._resolve(valid_for="run", run_id="20261001_run")
+        assert granted.decision is not None
+
+        covered, reason = consent.consent_covers(
+            granted.decision,
+            endpoint_hosts=("api.typesafe.ai",),
+            allowed_state_fields=("cycles_bucket", "run_status"),
+            run_id="20261001_run",
+            interactive=False,
+        )
+
+        self.assertFalse(covered)
+        self.assertEqual(reason, consent.REASON_NON_INTERACTIVE)
 
     def test_consent_record_contains_required_keys_without_secrets(self):
         record = self._resolve().as_payload()

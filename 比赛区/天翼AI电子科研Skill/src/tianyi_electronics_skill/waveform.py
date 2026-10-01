@@ -19,6 +19,7 @@ FORMAT_COMMANDS: dict[str, tuple[str, ...]] = {
     "real": ("FORM REAL", "FORM:BORD LSBF"),
     "ascii": ("FORM ASC",),
 }
+ERROR_QUEUE_UNAVAILABLE = "error_queue_unavailable"
 
 
 class UnsupportedCommandError(RuntimeError):
@@ -241,8 +242,8 @@ def read_waveform_in_session(
     finally:
         try:
             result["device_errors"].extend(session.drain_errors())
-        except (OSError, ConnectionError, TimeoutError):
-            pass
+        except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
+            _append_failure(result, ERROR_QUEUE_UNAVAILABLE, f"SYST:ERR?: {exc}")
     return result
 
 

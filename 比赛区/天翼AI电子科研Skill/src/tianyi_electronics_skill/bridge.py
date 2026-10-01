@@ -202,8 +202,10 @@ def run_expose(server: str, token: str, local: str, *, reconnect_delay: float = 
                     _close(device)
         except OSError:
             pass
-        if reconnect_delay:
-            time.sleep(reconnect_delay)
+        finally:
+            # REGISTER/READY 的握手失败同样需要退避；否则服务端拒绝时会形成重连风暴。
+            if reconnect_delay:
+                time.sleep(reconnect_delay)
 
 
 def run_connect(server: str, token: str, listen: str) -> None:

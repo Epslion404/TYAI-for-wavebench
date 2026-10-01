@@ -9,6 +9,7 @@ import tomllib
 from .errors import ConfigError
 from .services.access_policy import AccessMode, normalize_access_mode
 from .services.advisor_consent import normalize_names
+from .services.decision_artifacts import DecisionArtifactError, ThresholdPolicy
 
 WAVEFORM_POINTS_ALIASES = {
     "def": "DEF",
@@ -160,10 +161,15 @@ class AdvisorConfig:
     review: float = 0.35
 
     def __post_init__(self) -> None:
-        if isinstance(self.accept, bool) or isinstance(self.review, bool):
-            raise ConfigError("advisor thresholds must be numbers")
-        if not 0.0 <= float(self.review) <= float(self.accept) <= 1.0:
-            raise ConfigError("advisor thresholds must satisfy 0 <= review <= accept <= 1")
+        try:
+            thresholds = ThresholdPolicy(accept=self.accept, review=self.review)
+        except DecisionArtifactError as exc:
+            message = str(exc)
+            if message == "review threshold must not exceed accept threshold":
+                message = "advisor thresholds must satisfy 0 <= review <= accept <= 1"
+            raise ConfigError(message) from exc
+        object.__setattr__(self, "accept", float(thresholds.accept))
+        object.__setattr__(self, "review", float(thresholds.review))
         object.__setattr__(
             self, "endpoint_hosts", normalize_names(self.endpoint_hosts, label="advisor.endpoint_hosts")
         )

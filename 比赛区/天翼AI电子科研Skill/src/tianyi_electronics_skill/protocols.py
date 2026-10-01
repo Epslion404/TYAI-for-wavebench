@@ -34,6 +34,21 @@ def _sample_rate(value: Any) -> float | None:
     return rate
 
 
+def _device_errors(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or any(not isinstance(item, str) for item in value):
+        raise ValueError("device_errors 必须是字符串数组")
+    return list(value)
+
+
+def _metadata_with_errors(metadata: dict[str, Any] | None, payload_errors: Any = None) -> tuple[dict[str, Any], list[str]]:
+    copied = dict(metadata or {})
+    metadata_errors = _device_errors(copied.pop("device_errors", None))
+    errors = list(dict.fromkeys(metadata_errors + _device_errors(payload_errors)))
+    return copied, errors
+
+
 @dataclass
 class NormalizedFrame:
     protocol: str
@@ -42,11 +57,12 @@ class NormalizedFrame:
     samples: list[float] = field(default_factory=list)
     sample_rate_hz: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    device_errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {"protocol": self.protocol, "source": self.source, "timestamp": self.timestamp,
                 "samples": self.samples, "sample_rate_hz": self.sample_rate_hz, "metadata": self.metadata,
-                "device_errors": []}
+                "device_errors": list(self.device_errors)}
 
 
 class Adapter:
@@ -69,9 +85,18 @@ class JsonWaveformAdapter(Adapter):
             return 0.0
     def decode(self, payload, source, metadata=None):
         value = payload if isinstance(payload, dict) else json.loads(payload.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("JSON 波形必须是对象")
+        embedded_metadata = value.get("metadata", {})
+        if not isinstance(embedded_metadata, dict):
+            raise ValueError("metadata 必须是对象")
+        embedded_metadata = dict(embedded_metadata)
+        embedded_errors = embedded_metadata.pop("device_errors", None)
+        outer_metadata, device_errors = _metadata_with_errors(metadata, value.get("device_errors"))
+        device_errors = list(dict.fromkeys(device_errors + _device_errors(embedded_errors)))
         return NormalizedFrame(self.name, source, time.time(), _samples(value["samples"]),
                                _sample_rate(value.get("sample_rate_hz")),
-                               {**(metadata or {}), **value.get("metadata", {})})
+                               {**outer_metadata, **embedded_metadata}, device_errors)
 
 
 class CanAdapter(Adapter):
@@ -83,18 +108,21 @@ class CanAdapter(Adapter):
     def decode(self, payload, source, metadata=None):
         if not isinstance(payload, dict):
             payload = json.loads(payload.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("CAN payload 必须是对象")
         raw = payload.get("data", [])
         try:
             data = bytes.fromhex(raw.replace("0x", "")) if isinstance(raw, str) else bytes(int(v) for v in raw)
+            can_id = int(payload.get("can_id", payload.get("arbitration_id")))
         except (TypeError, ValueError) as exc:
-            raise ValueError("CAN data 必须是十六进制字符串或 0..255 字节数组") from exc
-        can_id = int(payload.get("can_id", payload.get("arbitration_id")))
+            raise ValueError("CAN data 必须是十六进制字符串或 0..255 字节数组，且必须提供 CAN ID") from exc
         if not 0 <= can_id <= 0x1FFFFFFF:
             raise ValueError("CAN ID 必须位于 0..0x1FFFFFFF")
         samples = payload.get("samples", list(data))
+        outer_metadata, device_errors = _metadata_with_errors(metadata, payload.get("device_errors"))
         return NormalizedFrame(self.name, source, time.time(), _samples(samples),
                                _sample_rate(payload.get("sample_rate_hz")),
-                               {**(metadata or {}), "can_id": can_id, "data_hex": data.hex()})
+                               {**outer_metadata, "can_id": can_id, "data_hex": data.hex()}, device_errors)
 
 
 class BinaryManifestAdapter(Adapter):
@@ -147,7 +175,10 @@ class BinaryManifestAdapter(Adapter):
         if len(body) % size:
             raise ValueError(f"样本区长度 {len(body)} 不是元素大小 {size} 的整数倍")
         values = [self.offset + self.scale * v for v in struct.unpack(f"{self.endian}{len(body)//size}{self.fmt}", body)]
-        return NormalizedFrame(self.name, source, time.time(), _samples(values), self.rate, metadata or {})
+        frame_metadata, device_errors = _metadata_with_errors(metadata)
+        return NormalizedFrame(
+            self.name, source, time.time(), _samples(values), self.rate, frame_metadata, device_errors
+        )
 
 
 class ProtocolRegistry:
