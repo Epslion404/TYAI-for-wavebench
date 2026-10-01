@@ -99,10 +99,20 @@ class DecisionArtifactTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), content, f"{path.name} must not change")
             self.assertEqual(sorted(p.name for p in run_dir.iterdir()), ["decisions", "run.json", "steps", "summary.csv"])
 
-            with self.assertRaises(FileExistsError):
+            with self.assertRaises(artifacts.DecisionArtifactError):
                 artifacts.write_artifact(
                     _artifact(), run_dir, advisor_id="typesafe.jev", timestamp="20260929T104827Z"
                 )
+
+    def test_artifact_redacts_sensitive_values(self):
+        payload = _artifact(
+            state={"api_key": "must-not-leave", "nested": {"token": "also-hidden"}}
+        ).as_dict()
+
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("must-not-leave", serialized)
+        self.assertNotIn("also-hidden", serialized)
+        self.assertIn("[REDACTED]", serialized)
 
     def test_write_artifact_without_run_dir_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:

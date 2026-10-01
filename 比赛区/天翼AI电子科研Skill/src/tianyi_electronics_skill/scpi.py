@@ -12,6 +12,14 @@ DEFAULT_MAX_BLOCK_BYTES = 8 * 1024 * 1024
 Reader = Callable[[int], bytes]
 
 
+class ConfigurationError(ValueError):
+    """调用参数非法；仅用于调用方输入，不用于设备响应解析。"""
+
+
+class ScpiConfigurationError(ConfigurationError):
+    """SCPI 客户端参数非法，与设备响应解析失败区分开。"""
+
+
 def encode_command(command: str) -> bytes:
     """把命令编码为设备可接受的一行（统一 LF 结尾）。"""
     return (command.rstrip() + "\n").encode("ascii", "replace")
@@ -23,7 +31,9 @@ def classify_exception(exc: BaseException) -> str:
         return "timeout"
     if isinstance(exc, (ConnectionError, OSError)):
         return "transport_error"
-    if isinstance(exc, (ValueError, UnicodeError)):
+    if isinstance(exc, ConfigurationError):
+        return "configuration_error"
+    if isinstance(exc, ValueError):
         return "parse_error"
     return "internal_error"
 
@@ -117,15 +127,23 @@ class ScpiSession:
     """单条 TCP 连接内复用查询，避免每条命令重新握手。"""
 
     def __init__(self, host: str, port: int = 5025, timeout: float = 2.0) -> None:
-        if not host:
-            raise ValueError("host 不能为空")
-        if not 1 <= int(port) <= 65535:
-            raise ValueError("port 必须位于 1..65535")
-        if not math.isfinite(float(timeout)) or float(timeout) <= 0:
-            raise ValueError("timeout 必须是有限正数")
+        if not isinstance(host, str) or not host.strip():
+            raise ScpiConfigurationError("host 不能为空")
+        try:
+            port_value = int(port)
+        except (TypeError, ValueError) as exc:
+            raise ScpiConfigurationError("port 必须位于 1..65535") from exc
+        if not 1 <= port_value <= 65535:
+            raise ScpiConfigurationError("port 必须位于 1..65535")
+        try:
+            timeout_value = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ScpiConfigurationError("timeout 必须是有限正数") from exc
+        if not math.isfinite(timeout_value) or timeout_value <= 0:
+            raise ScpiConfigurationError("timeout 必须是有限正数")
         self.host = host
-        self.port = int(port)
-        self.timeout = float(timeout)
+        self.port = port_value
+        self.timeout = timeout_value
         self._socket: socket.socket | None = None
 
     def open(self) -> ScpiSession:
@@ -137,6 +155,12 @@ class ScpiSession:
     def close(self) -> None:
         if self._socket is not None:
             try:
+                # 先半关闭写端，让已经 sendall 的无响应 SCPI 命令以 FIN 结束，
+                # 避免 Windows 上直接 close 偶发以 RST 丢弃最后一条命令。
+                try:
+                    self._socket.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
                 self._socket.close()
             finally:
                 self._socket = None
@@ -205,7 +229,9 @@ def _is_no_error(text: str) -> bool:
 
 __all__ = [
     "DEFAULT_MAX_BLOCK_BYTES",
+    "ConfigurationError",
     "MAX_TEXT_BYTES",
+    "ScpiConfigurationError",
     "ScpiSession",
     "classify_exception",
     "encode_command",

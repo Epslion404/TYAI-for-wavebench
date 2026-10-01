@@ -85,10 +85,20 @@ def _rise_time(values: list[float], low_level: float, high_level: float, sample_
 
 def compute_dft_metrics(values: list[float], sample_rate_hz: float | None, fundamental_hz: float | None) -> dict:
     if sample_rate_hz is None or fundamental_hz is None or len(values) > MAX_DFT_SAMPLES or fundamental_hz <= 0:
-        return {"available": False, "reason": f"需要采样率、基波频率且样本数不超过 {MAX_DFT_SAMPLES}"}
+        return {
+            "available": False,
+            "reason": f"需要采样率、基波频率且样本数不超过 {MAX_DFT_SAMPLES}",
+            "thd_available": False,
+            "thd_percent": None,
+        }
     nyquist_hz = sample_rate_hz / 2.0
     if fundamental_hz >= nyquist_hz:
-        return {"available": False, "reason": "基波频率必须低于奈奎斯特频率"}
+        return {
+            "available": False,
+            "reason": "基波频率必须低于奈奎斯特频率",
+            "thd_available": False,
+            "thd_percent": None,
+        }
     mean = statistics.fmean(values)
     centered = [value - mean for value in values]
     count = len(centered)
@@ -106,9 +116,14 @@ def compute_dft_metrics(values: list[float], sample_rate_hz: float | None, funda
         if fundamental_hz * index < nyquist_hz
     ]
     harmonics = {str(index): amplitude(index) for index in harmonic_numbers}
-    thd = math.sqrt(sum(value * value for value in harmonics.values())) / fundamental * 100 if fundamental else None
+    thd = (
+        math.sqrt(sum(value * value for value in harmonics.values())) / fundamental * 100
+        if fundamental and harmonics
+        else None
+    )
     return {"available": True, "fundamental_hz": fundamental_hz, "fundamental_amplitude": fundamental,
-            "nyquist_hz": nyquist_hz, "harmonics": harmonics, "thd_percent": thd}
+            "nyquist_hz": nyquist_hz, "harmonics": harmonics,
+            "thd_available": bool(harmonics), "thd_percent": thd}
 
 
 def analyze_samples(samples: Iterable[float], sample_rate_hz: float | None, *, hysteresis: float = 0.05) -> dict:
@@ -132,7 +147,8 @@ def analyze_samples(samples: Iterable[float], sample_rate_hz: float | None, *, h
         low_level + 0.9 * span,
         sample_rate_hz,
     )
-    decision_level = (low_level + high_level) / 2.0
+    # 保持早期分析接口的均值阈值语义；P10/P90 仅用于边沿/过冲，避免偏置波形的 duty 悄然漂移。
+    decision_level = mean
     result = {
         "samples": len(values), "sample_rate_hz": sample_rate_hz,
         "peak_v": peak, "peak_to_peak_v": max(values) - min(values),
@@ -148,6 +164,7 @@ def analyze_samples(samples: Iterable[float], sample_rate_hz: float | None, *, h
     result["dft"] = compute_dft_metrics(values, sample_rate_hz, frequency)
     result["fft"] = result["dft"]
     result["rise_time_s"] = rise_time
+    result["thd_available"] = bool(result["dft"].get("thd_available"))
     result["thd_percent"] = result["dft"].get("thd_percent")
     return result
 

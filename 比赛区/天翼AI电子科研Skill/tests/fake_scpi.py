@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 from collections.abc import Callable, Iterable
 
 Response = bytes | str | Callable[[str], bytes | str | None]
@@ -49,6 +50,7 @@ class FakeScpiServer:
         self._socket: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._received_event = threading.Event()
 
     @property
     def address(self) -> tuple[str, int]:
@@ -75,6 +77,17 @@ class FakeScpiServer:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
+
+    def wait_for_commands(self, count: int, timeout: float = 1.0) -> bool:
+        """等待服务端实际解析指定数量命令，供只写命令测试消除关闭竞态。"""
+        deadline = time.monotonic() + timeout
+        while len(self.received) < count:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self._received_event.wait(remaining)
+            self._received_event.clear()
+        return True
 
     def _serve(self) -> None:
         assert self._socket is not None
@@ -106,6 +119,7 @@ class FakeScpiServer:
                 if not command:
                     continue
                 self.received.append(command)
+                self._received_event.set()
                 self._queue_command_error(command)
                 payload = self._response_for(command)
                 if not payload:

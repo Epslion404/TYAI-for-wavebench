@@ -95,4 +95,5 @@ def test_session_write_only_command_reads_nothing():
         host, port = server.address
         with ScpiSession(host, port, timeout=1.0) as session:
             session.write("FORM REAL")
-    assert server.received == ["FORM REAL"]
+        assert server.wait_for_commands(1)
+        assert server.received == ["FORM REAL"]

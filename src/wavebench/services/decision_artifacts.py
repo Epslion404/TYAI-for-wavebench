@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from .advisor_consent import redact_sensitive
+
 ADVISOR_SCHEMA = "wavebench.decision.v1"
 DECISIONS_DIRNAME = "decisions"
 
@@ -106,18 +108,18 @@ class DecisionArtifact:
             "advisory_only": self.advisory_only,
             "status": self.status,
             "reason": self.reason,
-            "target": dict(self.target) if self.target is not None else None,
+            "target": redact_sensitive(dict(self.target)) if self.target is not None else None,
             "advisory": {
                 "requested_model": self.requested_model,
                 "reported_model": self.reported_model,
                 "duration_ms": self.duration_ms,
             },
-            "consent": dict(self.consent) if self.consent is not None else None,
-            "state": dict(self.state),
-            "questions": dict(self.questions),
-            "answers": dict(self.answers),
-            "thresholds": dict(self.thresholds),
-            "recommendations": [dict(item) for item in self.recommendations],
+            "consent": redact_sensitive(dict(self.consent)) if self.consent is not None else None,
+            "state": redact_sensitive(dict(self.state)),
+            "questions": redact_sensitive(dict(self.questions)),
+            "answers": redact_sensitive(dict(self.answers)),
+            "thresholds": redact_sensitive(dict(self.thresholds)),
+            "recommendations": redact_sensitive([dict(item) for item in self.recommendations]),
         }
 
     def to_json(self) -> str:
@@ -159,8 +161,11 @@ def write_artifact(
         return None
     path = artifact_path(run, advisor_id=advisor_id, timestamp=timestamp or utc_stamp())
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:
-        handle.write(artifact.to_json())
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(artifact.to_json())
+    except FileExistsError as exc:
+        raise DecisionArtifactError(f"decision artifact already exists: {path}") from exc
     return path
 
 

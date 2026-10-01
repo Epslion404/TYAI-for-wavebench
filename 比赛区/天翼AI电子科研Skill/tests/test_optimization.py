@@ -1,11 +1,19 @@
 import json
+import ipaddress
+import socket
 import struct
+import threading
+import time
 
 import pytest
 
-from tianyi_electronics_skill.analysis import analyze_samples
+from tianyi_electronics_skill.analysis import analyze_samples, compute_dft_metrics
+from tianyi_electronics_skill.bridge import run_expose
+from tianyi_electronics_skill.core import _host_count
 from tianyi_electronics_skill.plot import waveform_svg
-from tianyi_electronics_skill.protocols import ProtocolRegistry
+from tianyi_electronics_skill.protocols import CanAdapter, JsonWaveformAdapter, ProtocolRegistry
+from tianyi_electronics_skill.scpi import ConfigurationError, ScpiConfigurationError, ScpiSession, classify_exception
+from tianyi_electronics_skill import waveform
 
 
 def test_hysteresis_and_dft_metrics_are_reported():
@@ -34,3 +42,116 @@ def test_vendor_binary_manifest(tmp_path):
     frame = registry.decode(b"WAVE" + struct.pack("<4f", 1, -1, 1, -1))
     assert frame.protocol == "vendor"
     assert frame.samples == [1.0, -1.0, 1.0, -1.0]
+
+
+def test_protocol_adapters_preserve_reported_device_errors():
+    with pytest.raises(ValueError):
+        CanAdapter().decode({"data": [1, 2, 3]}, "test")
+
+    json_frame = JsonWaveformAdapter().decode(
+        {"samples": [1], "device_errors": ["json-error"]}, "test"
+    )
+    can_frame = CanAdapter().decode(
+        {"can_id": 1, "data": [1], "device_errors": ["can-error"]}, "test"
+    )
+    registry = ProtocolRegistry()
+    registry.adapters.append(
+        __import__("tianyi_electronics_skill.protocols", fromlist=["BinaryManifestAdapter"]).BinaryManifestAdapter(
+            {"name": "bin", "match": {"magic_hex": "42494e"},
+             "payload": {"header_bytes": 3, "sample_type": "i16", "endian": "little"}}
+        )
+    )
+    binary_frame = registry.decode(b"BIN" + struct.pack("<h", 1), metadata={"device_errors": ["bin-error"]})
+
+    assert json_frame.as_dict()["device_errors"] == ["json-error"]
+    assert can_frame.as_dict()["device_errors"] == ["can-error"]
+    assert binary_frame.as_dict()["device_errors"] == ["bin-error"]
+
+
+def test_dft_does_not_report_zero_thd_when_no_harmonic_is_observable():
+    metrics = compute_dft_metrics([0.0, 1.0, 0.0, -1.0] * 16, 100.0, 30.0)
+
+    assert metrics["available"] is True
+    assert metrics["harmonics"] == {}
+    assert metrics["thd_available"] is False
+    assert metrics["thd_percent"] is None
+    assert analyze_samples([0.0, 1.0, 0.0, -1.0] * 16, 100.0)["thd_available"] is False
+
+
+def test_duty_cycle_uses_the_signal_mean_as_its_decision_level():
+    samples = [0.0] * 90 + [1.0] * 9 + [100.0]
+
+    assert analyze_samples(samples, 1_000)["duty_cycle_percent"] == pytest.approx(1.0)
+
+
+def test_ipv6_host_count_matches_ipaddress_hosts():
+    network = ipaddress.ip_network("2001:db8::/127")
+
+    assert _host_count(network) == len(list(network.hosts())) == 2
+
+
+def test_waveform_error_drain_is_reported_without_masking_the_read_failure(monkeypatch):
+    class Session:
+        host = "127.0.0.1"
+        port = 5025
+
+        @staticmethod
+        def drain_errors():
+            raise ValueError("oversized response")
+
+    def fail_collect(*_args, **_kwargs):
+        raise ValueError("invalid waveform")
+
+    monkeypatch.setattr(waveform, "_collect_waveform", fail_collect)
+    result = waveform.read_waveform_in_session(Session())
+
+    assert [failure["category"] for failure in result["failures"]] == ["parse_error", "error_queue_unavailable"]
+    assert "invalid waveform" in result["failures"][0]["message"]
+    assert "SYST:ERR?" in result["failures"][1]["message"]
+
+
+def test_scpi_configuration_error_is_not_a_response_parse_error():
+    with pytest.raises(ScpiConfigurationError) as raised:
+        ScpiSession("", timeout=1.0)
+
+    assert classify_exception(raised.value) == "configuration_error"
+    assert classify_exception(ConfigurationError("bad scan input")) == "configuration_error"
+
+
+def test_expose_rejection_honours_reconnect_delay():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(0.05)
+        host, port = listener.getsockname()[:2]
+        attempts = 0
+        stop = threading.Event()
+
+        def reject_registrations():
+            nonlocal attempts
+            while not stop.is_set():
+                try:
+                    connection, _ = listener.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    return
+                with connection:
+                    connection.recv(512)
+                    attempts += 1
+                    connection.sendall(b"ERROR invalid-handshake\n")
+
+        thread = threading.Thread(target=reject_registrations, daemon=True)
+        thread.start()
+        threading.Thread(
+            target=run_expose,
+            args=(f"{host}:{port}", "device-1", "127.0.0.1:9"),
+            kwargs={"reconnect_delay": 0.1},
+            daemon=True,
+        ).start()
+        time.sleep(0.35)
+        stop.set()
+        thread.join(timeout=1.0)
+
+    assert 1 <= attempts <= 5
