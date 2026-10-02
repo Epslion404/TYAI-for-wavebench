@@ -37,6 +37,7 @@ from .cli_output import (
     _print_dmm_measurement_profile,
     _print_dmm_reading,
     _print_dmm_system_interface_status,
+    _print_advisor_list,
     _print_dmm_trigger_status,
     _print_dmm_voltage_range_configuration,
     _print_market_plugin_info,
@@ -110,7 +111,14 @@ from .plugins.market import load_market_index
 from .plugins.lifecycle import PluginLifecycle
 from .plugins.package_inspect import inspect_plugin_package
 from .plugins.api import PluginDoctorRecord
-from .plugins.registry import build_plugin_registry, has_doctor_errors, plugin_doctor_records
+from .plugins.registry import (
+    advisor_doctor_records,
+    build_advisor_registry,
+    build_plugin_registry,
+    has_advisor_doctor_errors,
+    has_doctor_errors,
+    plugin_doctor_records,
+)
 from .plugins.scpi import has_scpi_doctor_errors, load_scpi_plugin, probe_scpi_plugin, scpi_plugin_doctor_records
 from .services.scope_service import ScopeService
 from .services.source_service import SourceService
@@ -831,6 +839,33 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)
     try:
         if args.domain == "plugin":
+            if getattr(args, "category", "instrument") == "advisor" and args.command in (
+                "list",
+                "doctor",
+            ):
+                if getattr(args, "kind", None) is not None:
+                    raise ConfigError(
+                        "--kind filters instrument plugins; use --category instrument / "
+                        "--kind 只用于仪器插件，请改用 --category instrument"
+                    )
+                if getattr(args, "load", False):
+                    raise ConfigError(
+                        "--load loads executable instrument plugins; use --category instrument / "
+                        "--load 只用于仪器插件，请改用 --category instrument"
+                    )
+                advisor_result = build_advisor_registry(
+                    include_entry_points=getattr(args, "include_entry_points", False)
+                )
+                if args.command == "list":
+                    _print_advisor_list(advisor_result.registry.list_advisors())
+                    for error in advisor_result.load_errors:
+                        print(f"error\t{error.source}\t{error.message}")
+                    return 2 if advisor_result.load_errors else 0
+                records = advisor_doctor_records(
+                    advisor_result.registry, load_errors=advisor_result.load_errors
+                )
+                _print_plugin_doctor(records)
+                return 2 if has_advisor_doctor_errors(records) else 0
             lifecycle_commands = {
                 "install",
                 "installed",

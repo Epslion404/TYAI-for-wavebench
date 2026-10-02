@@ -182,6 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="List available instrument plugins / 列出可用仪器插件",
     )
     plugin_list.add_argument(
+        "--category",
+        choices=("instrument", "advisor"),
+        default="instrument",
+        help=(
+            "Plugin category to list; 'advisor' makes --include-entry-points load the "
+            "wavebench.advisor group / 要列出的插件类别；advisor 类别下 --include-entry-points 加载 wavebench.advisor"
+        ),
+    )
+    plugin_list.add_argument(
         "--kind",
         choices=("scope", "source", "rf_source", "power", "dmm"),
         default=None,
@@ -268,6 +277,15 @@ def build_parser() -> argparse.ArgumentParser:
     plugin_doctor = plugin_sub.add_parser(
         "doctor",
         help="Validate plugin registry metadata / 检查插件注册表元数据",
+    )
+    plugin_doctor.add_argument(
+        "--category",
+        choices=("instrument", "advisor"),
+        default="instrument",
+        help=(
+            "Plugin category to validate; 'advisor' makes --include-entry-points load the "
+            "wavebench.advisor group / 要检查的插件类别；advisor 类别下 --include-entry-points 加载 wavebench.advisor"
+        ),
     )
     plugin_doctor.add_argument(
         "--include-entry-points",

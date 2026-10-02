@@ -47,7 +47,7 @@ from .instruments.models import (
     SourceStatus,
     WaveformData,
 )
-from .plugins.api import InstrumentPlugin, PluginDoctorRecord
+from .plugins.api import AdvisorPlugin, InstrumentPlugin, PluginDoctorRecord
 from .plugins.market import MarketPlugin
 from .plugins.lifecycle import InstalledPlugin, LifecycleResult
 from .plugins.package_inspect import PluginPackage
@@ -68,6 +68,18 @@ def _print_plugin_list(plugins: list[InstrumentPlugin]) -> None:
         print(
             f"{plugin.driver_id}	{plugin.kind}	{plugin.origin}	"
             f"{plugin.model_text}	{plugin.capability_text}"
+        )
+
+
+def _print_advisor_list(advisors: list[AdvisorPlugin]) -> None:
+    if not advisors:
+        print("no_advisors_found / 未发现 advisor")
+        return
+    print("advisor_id	provider	origin	transmits_off_machine	capabilities")
+    for advisor in advisors:
+        print(
+            f"{advisor.advisor_id}	{advisor.provider}	{advisor.origin}	"
+            f"{advisor.transmits_off_machine}	{advisor.capability_text}"
         )
 
 
