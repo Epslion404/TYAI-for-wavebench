@@ -27,6 +27,45 @@ COMMON_PORTS = (5025, 5555, 4000, 502)
 PORT_PROTOCOLS = {5025: "SCPI/TCP", 5555: "SCPI/TCP", 4000: "instrument TCP", 502: "Modbus/TCP", 1715: "VXI-11", 4880: "HiSLIP"}
 
 
+def advise_next_step(request: str) -> dict:
+    """Give a deterministic local recommendation without touching equipment.
+
+    The fixed catalog is intentionally code-owned: an LLM or an untrusted request
+    cannot synthesize a shell command, SCPI command, or write operation.
+    """
+    if not isinstance(request, str) or not request.strip():
+        raise ConfigurationError("request 必须是非空文本")
+    text = request.casefold()
+    if any(word in text for word in ("离线", "波形", "采集", "分析", "inspect", "capture")):
+        recommendation = {
+            "action": "analyze",
+            "summary": "先对已有波形执行离线分析，核对频率、峰峰值和 RMS。",
+            "command_template": "python -m tianyi_electronics_skill analyze --file <waveform.json>",
+            "may_write_device": False,
+        }
+    elif any(word in text for word in ("发现", "设备", "地址", "网段", "discover")):
+        recommendation = {
+            "action": "discover",
+            "summary": "先在已确认的网段内发现设备；大网段仍需显式确认。",
+            "command_template": "python -m tianyi_electronics_skill discover --subnet <cidr>",
+            "may_write_device": False,
+        }
+    else:
+        recommendation = {
+            "action": "inspect",
+            "summary": "先只读检查设备身份、错误队列和通道状态，再决定下一步。",
+            "command_template": "python -m tianyi_electronics_skill inspect --address <host>",
+            "may_write_device": False,
+        }
+    return {
+        "mode": "offline_rule_baseline",
+        "external_call_count": 0,
+        "advisory_only": True,
+        "recommendations": [recommendation],
+        "device_errors": [],
+    }
+
+
 def _positive_float(value: object, label: str) -> float:
     try:
         number = float(value)
@@ -391,6 +430,7 @@ __all__ = [
     "load_waveform",
     "measure_scope",
     "autoscale_scope",
+    "advise_next_step",
     "read_waveform",
     "write_waveform",
 ]

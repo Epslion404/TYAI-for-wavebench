@@ -29,6 +29,18 @@ python -m venv .venv
 .venv\Scripts\python -m tianyi_electronics_skill analyze --demo
 ```
 
+## 离线决策建议
+
+没有设备、网络或 API Key 时，也可以让 Skill 用内置确定性基线给出下一步建议：
+
+```powershell
+.venv\Scripts\python -m tianyi_electronics_skill advise --request "检查已有的离线波形"
+```
+
+该命令只从代码持有的封闭选项集返回 `discover`、`inspect` 或 `analyze` 建议；不会连接网络、
+读取设备、执行命令或更改仪器状态。JSON 中的 `external_call_count` 固定为 `0`，
+`may_write_device` 固定为 `false`。
+
 ## 连接示波器
 
 ```powershell
