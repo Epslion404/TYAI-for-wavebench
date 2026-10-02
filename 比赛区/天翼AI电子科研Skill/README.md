@@ -29,6 +29,8 @@ python -m venv .venv
 .venv\Scripts\python -m tianyi_electronics_skill analyze --demo
 ```
 
+示例数据与更多离线用法（`analyze --file`、`advise`）见 `examples/README.md`。
+
 ## 离线决策建议
 
 没有设备、网络或 API Key 时，也可以让 Skill 用内置确定性基线给出下一步建议：
