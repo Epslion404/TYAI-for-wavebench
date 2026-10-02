@@ -9,6 +9,28 @@ class InstrumentTransport(Protocol):
     def record_event(self, direction: str, text: str) -> None: ...
     def write(self, command: str) -> None: ...
     def write_bytes(self, command: bytes) -> None: ...
+    def send_frame(
+        self,
+        frame: bytes,
+        *,
+        max_bytes: int,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> None: ...
+    def read_exact(
+        self,
+        size: int,
+        *,
+        timeout_ms: int | None = None,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> bytes: ...
+    def read_until(
+        self,
+        delimiter: bytes,
+        *,
+        max_bytes: int,
+        timeout_ms: int | None = None,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> bytes: ...
     def query(
         self,
         command: str,
