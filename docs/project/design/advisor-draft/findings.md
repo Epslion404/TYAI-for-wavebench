@@ -37,7 +37,7 @@
 - 规格：64k 上下文（`state` + 最长问题 ≤32k）；**仅文本输入**；限流 250k tok/s、1200 req/min
   且官方标注"动态调整、可能无预警变化"；$0.042/Mtok 输入、输出免费；延迟 70–500 ms（美西本机测得）
 - Python SDK：`typesafe-sdk` 0.7.2，`requires-python>=3.10`，依赖 `httpx2/pydantic/pydantic-core/tenacity`；
-  **PyPI license 字段为空**
+  **许可证为 MIT**（PyPI `info.license` 是空的旧字段，`info.license_expression` 与 classifier 均为 MIT）
 - 数据：托管美国、不用输入训练、企业档可谈 ZDR；英文最强，**CJK 可用但不等同英文**
 - 官方已知缺陷（`jev-1.13 jaggedness`，2026-09-17 复核）：数字/计数/日期比较不可靠（要求放回代码）；
   间接层数越多越差；**context rot**；`state` 对抗性内容能推动答案；**不保证结构不变式**
@@ -77,7 +77,7 @@ Scope: this is a development decision record for Issue #17. It does not claim a 
 | Check | Evidence | Result |
 | --- | --- | --- |
 | Python SDK identity | `https://pypi.org/pypi/typesafe-sdk/json`, retrieved 2026-10-02 | `typesafe-sdk` is version `0.7.2`, requires Python `>=3.10`, and links to TypeSafe documentation and source repository. |
-| SDK license | Same PyPI JSON `info.license` field | Not proven: the field is `null`. No license conclusion is made from repository adjacency or package name. |
+| SDK license | Same PyPI JSON: `info.license_expression` and classifiers (2026-10-02 re-check) | **MIT**: `info.license` is `null` because it is PyPI's legacy field, but `info.license_expression` is `MIT` and the classifiers include `License :: OSI Approved :: MIT License`. |
 | On-prem availability | Official quickstart and models pages, retrieved 2026-10-02 | Not proven: these checked pages contain no on-prem deployment claim. |
 | Mainland-China latency | No approved region-specific test and no API credential | Not measured. The previously cited non-local latency is not evidence for this deployment. |
 | Chinese/CJK accuracy | No labeled Chinese evaluation corpus and no API credential | Not measured. No accuracy or parity claim is made. |
@@ -114,5 +114,5 @@ The required labeled comparisons do not exist in this repository, and no live ex
 
 ## 未核验
 
-- `typesafe-sdk` license、是否有 on-prem、中国大陆实测延迟、中文精度实测值
+- `typesafe-sdk` license（2026-10-02 判定为 MIT）、是否有 on-prem、中国大陆实测延迟、中文精度实测值
 - 真实 Jev 调用（无 API key；seam 按官方 HTTP 形状实现，未实调）

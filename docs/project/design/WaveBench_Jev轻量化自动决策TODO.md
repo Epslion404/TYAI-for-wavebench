@@ -49,7 +49,9 @@
 - [ ] 接线：`[advisor]` 配置 + 同意门 + 落盘 `<run>/decisions/<ts>-<advisor>.json`
 - [ ] 验收：`advisor ask --preview` 不联网；未同意／未注册字段／仅预览／endpoint 变化／字段集变化 → **外部调用次数为 0**；advisor 结果不影响 `run.json.status`、质量门与 `auto_recover`
 
-### J1b 生命周期与包校验（#19，单独评审）
+### J1b 生命周期与包校验（#19，单独评审，当前**挂起**）
+
+挂起理由：J3 已决定停止外部集成（见上），没有第三方 advisor 包要安装、校验或做漂移检测，因此这套按类别分派的包校验暂时没有消费方。issue 与验收门保留，重开条件随 J3 一起。
 
 - [ ] `plugins/package_inspect.py`：entry point 组集合 → 类别（裁定 2a），缺类别／混装分别报错
 - [ ] `plugins/lifecycle.py`：安装／卸载／漂移／恢复／postflight／inventory 按类别分派校验
@@ -66,12 +68,18 @@
 
 ## J3 候选决策功能与 kill criteria
 
-- [ ] 外部核验：`typesafe-sdk` license、是否有 on-prem、中国大陆实测延迟、中文精度实测值
-- [ ] 三个候选功能各自对照确定性基线，**打不过就不做**：
-  - 候选 1 `advisor.route`：run 失败后，从代码持有的封闭选项集里选下一步检查入口
-  - 候选 2 `advisor.cause`：采集质量异常的候选归因与概率（原因表由代码持有）
-  - 候选 3 `advisor.triage`：对 run／采集给出有序档位或「人工复核」
-- [ ] 结论写回本节（继续／停止／改范围），并同步 RFC 状态
+已收尾（合并 PR #25 → `ff40c50`，`Closes #17`；里程碑 J3 已关闭）：
+
+- [x] 外部核验：`typesafe-sdk` **已判定为 MIT**（PyPI `info.license_expression` + classifier；`info.license` 的 null 是旧字段）；on-prem 在官方 quickstart／models 两页无任何说法（记为 not proven）；中国大陆延迟与中文精度无凭据无法实测（记为 unmeasured）
+- [x] 三个候选功能各自对照确定性基线——结论是**无法证明打得过基线**，因此停止外部集成：
+  - 候选 1 `advisor.route`：保留内置离线基线，不接外部（不做 SDK、不加网络路径）
+  - 候选 2 `advisor.cause`：不做
+  - 候选 3 `advisor.triage`：不做
+- [x] 结论写回 RFC 的 `J3 external-candidate decision` 段；维护者已接受，重开条件（版本锁定提供方 + 本地标注语料 + 可复现指标 + 既有同意门）写在同一段
+
+注意措辞：这是「没有证据支持，所以不做」，不是「候选输了」——重开不需要推翻实验结果，只需要补齐实验。
+
+连带影响：#19（J1b 生命周期与包校验）随之**挂起**——没有第三方 advisor 包要装。
 
 ## J4 比赛作品包侧的接入
 
