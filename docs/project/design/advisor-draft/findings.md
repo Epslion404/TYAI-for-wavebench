@@ -68,6 +68,33 @@
 | 首版禁止一个 wheel 同时提供两类插件（建议） | 降低账本与文件所有权冲突检测复杂度 |
 | 【已裁定 2026-09-28】1a 类别抽象 / 2a 禁止混装 / 3a 依赖只从 `Requires-Dist` 读且 install 不变 / 4c 同意绑定 endpoint+字段集 / 5b 不动 access policy / 6a 不进 run report | 用户裁定；落地后果与验收门已写回 RFC 与 README |
 
+## J3 Candidate Review and Kill Criteria (2026-10-02)
+
+Scope: this is a development decision record for Issue #17. It does not claim a released external-advisor feature.
+
+### Reproducible external checks
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Python SDK identity | `https://pypi.org/pypi/typesafe-sdk/json`, retrieved 2026-10-02 | `typesafe-sdk` is version `0.7.2`, requires Python `>=3.10`, and links to TypeSafe documentation and source repository. |
+| SDK license | Same PyPI JSON `info.license` field | Not proven: the field is `null`. No license conclusion is made from repository adjacency or package name. |
+| On-prem availability | Official quickstart and models pages, retrieved 2026-10-02 | Not proven: these checked pages contain no on-prem deployment claim. |
+| Mainland-China latency | No approved region-specific test and no API credential | Not measured. The previously cited non-local latency is not evidence for this deployment. |
+| Chinese/CJK accuracy | No labeled Chinese evaluation corpus and no API credential | Not measured. No accuracy or parity claim is made. |
+| Live API behavior | No API credential; Core offline test constraint | Not called. No network client is added. |
+
+Sources checked: [PyPI JSON](https://pypi.org/pypi/typesafe-sdk/json), [TypeSafe quickstart](https://docs.typesafe.ai/introduction/quickstart), and [TypeSafe models](https://docs.typesafe.ai/models). A page not containing a claim is recorded as **not proven**, not as evidence that the capability is unavailable.
+
+### Candidate decisions
+
+| Candidate | Deterministic baseline / required evidence | Decision | Current scope |
+| --- | --- | --- | --- |
+| `advisor.route` | `builtin.rule_advisor` with its closed routing option set; a version-pinned, labeled offline comparison showing a material improvement without violating the same closed set | **Stop external integration** | Keep the built-in, offline route advisor only. No network adapter or SDK dependency. |
+| `advisor.cause` | A deterministic closed cause table plus labeled quality-anomaly corpus, calibration and error analysis better than the baseline | **Stop / do not start** | No cause capability implementation or external call. |
+| `advisor.triage` | A deterministic tiering baseline plus labeled run/acquisition corpus, threshold calibration, and a defined human-review error budget | **Stop / do not start** | No triage capability implementation or external call. |
+
+The required labeled comparisons do not exist in this repository, and no live external result exists. Therefore none of the three candidates demonstrates an advantage over a deterministic baseline. The fallback is intentional: `advisor.route` remains advisory-only and offline; `cause` and `triage` remain unimplemented. This decision must be reopened only with a version-pinned provider, a reviewable local evaluation corpus, reproducible metrics against the named baseline, and the existing egress-consent contract.
+
 ## Issues Encountered
 
 | Issue | Resolution |

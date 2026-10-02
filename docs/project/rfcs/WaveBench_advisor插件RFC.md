@@ -155,6 +155,30 @@ wavebench advisor ask --advisor <id> --question route --state <fixture.json> \
 
 上述结论是本提案的裁决建议，`Draft` 状态下尚不构成对外承诺；第 5、6 条是未来设计，不作为当前能力。
 
+## J3 external-candidate decision (2026-10-02)
+
+**RFC status remains `Draft`; external-provider integration is stopped.** The advisor category and its deterministic
+`builtin.rule_advisor` route baseline are separate from this decision. They do not authorize a TypeSafe client, an SDK
+dependency, or any network egress.
+
+Issue #17 requires each external candidate to beat a named deterministic baseline. The review records the following:
+
+| Candidate | Baseline and evidence gate | Decision |
+| --- | --- | --- |
+| `advisor.route` | The built-in closed-set route advisor; a version-pinned, labeled offline evaluation must show a material improvement while returning only the same closed options | Stop external integration; retain the built-in offline baseline. |
+| `advisor.cause` | A deterministic closed cause table plus labeled anomaly corpus, calibration, and error analysis | Stop; no capability or client is added. |
+| `advisor.triage` | A deterministic tiering baseline plus labeled run/acquisition corpus, threshold calibration, and human-review error budget | Stop; no capability or client is added. |
+
+The external check used the public PyPI metadata for `typesafe-sdk` 0.7.2 and the official TypeSafe quickstart/models
+pages on 2026-10-02. PyPI's `license` field is null; on-prem availability is not established by those checked pages;
+mainland-China latency and Chinese accuracy are unmeasured; and no live API call was made because no credential or
+approved evaluation exists. These are missing evidence, not negative product claims. Since no candidate has a
+reproducible comparison that beats its baseline, the RFC does not authorize external advisor work.
+
+Reopening requires all of: version-pinned provider evidence, license/deployment review, a local labeled evaluation
+corpus, reproducible comparative metrics, and the existing explicit egress-consent gate. Until then, external calls,
+SDK dependencies, and route/cause/triage adapters remain out of scope.
+
 ## 验收门
 
 - 离线：全部测试无网络、无 API key、无第三方 SDK；
