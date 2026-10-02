@@ -16,7 +16,7 @@ WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan�
 - `src/wavebench/`：核心实现（cli、services、drivers、transport、plugins、tui）。行为事实源依次为实现、`--help`、`run schema`、`run template --list`、`wavebench.example.toml`；文档和技能正文不能覆盖它们。
 - `比赛区/`：**不在 master 上**。比赛作品包（TeleAgent Skill，含 `tianyi_electronics_skill` 与内嵌 wavebench 快照）只存在于 `competition` 分支与 Release 产物；要改包先 `git checkout competition`。
 - `测试区/`：上游内容（`git rm` 掉的那个临时发现脚本已移出仓库，备份在仓库外 `D:\Documents\Code\TY_AI\tools\scratch\full_discover.py`）。
-- `docs/project/`：项目带文档（不进入文档站）。两条线的记录都在这里：自定义设备与协议支持见 `docs/project/rfcs/WaveBench_自定义设备与协议支持RFC.md` 与 `docs/project/design/WaveBench_自定义设备与协议支持规范.md`／同名 TODO；advisor 见 `docs/project/rfcs/WaveBench_advisor插件RFC.md` 与 `docs/project/design/advisor-draft/`（seam 草案、阶段 1 骨架、规划文件）。**协作与分支规则先读 `docs/project/design/仓库协作与分支约定.md`**。
+- `docs/project/`：项目带文档（不进入文档站）。**两条扩展支线的执行清单**：`docs/project/design/WaveBench_自定义设备与协议支持TODO.md`（配套 `docs/project/rfcs/WaveBench_自定义设备与协议支持RFC.md` 与同名规范）、`docs/project/design/WaveBench_Jev轻量化自动决策TODO.md`（配套 `docs/project/rfcs/WaveBench_advisor插件RFC.md` 与 `docs/project/design/advisor-draft/`）。**协作与分支规则先读 `docs/project/design/仓库协作与分支约定.md`**。
 - `.agents/skills/`：两个 Agent Skill 入口 —— `wavebench/SKILL.md`（真机操作、安全门、开发验证）和 `wavebench-docs/SKILL.md`（文档治理）。根 `SKILL.md` 只是指向前者的指针；排查真机行为时按需读 `wavebench/references/`，不要凭记忆推断。
 
 ## 命令（仓库根）
