@@ -10,7 +10,7 @@ python -m wavebench run --help
 python -m wavebench --json <domain> <command> ...
 ```
 
-一级命令域包括 `scope`、`source`、`rf-source`、`power`、`dmm`、`sweep`、`run`、`capture`、`mcp`、`tui`、`net`、`doctor`、`plugin`、`capability` 和 `lock`。`run` 的当前子命令由 `python -m wavebench run --help` 输出。
+一级命令域包括 `scope`、`source`、`rf-source`、`power`、`dmm`、`sweep`、`run`、`capture`、`mcp`、`tui`、`net`、`doctor`、`plugin`、`advisor`、`capability` 和 `lock`。`run` 的当前子命令由 `python -m wavebench run --help` 输出。
 
 ## 副作用
 
@@ -22,6 +22,12 @@ python -m wavebench --json <domain> <command> ...
 | 可能改变状态或触发采集 | 输出和 setter、`scope auto`／`scope capture`、非 fake TUI、`run plan` | 可能写入仪器、触发采集或切换输出。 |
 
 `scope fetch` 读取已有波形，但仍是仪器 I/O；不要把它当作离线命令。每次硬件操作前确认接线、输入阻抗、输出状态和安全限制。WaveBench 不会自动执行 `*RST`，也不会因设置电压、幅度或频率而自动开启输出。
+
+## advisor 决策入口
+
+`advisor ask` 是离线决策入口：它读取本地 state fixture 与 `[advisor]` 配置，默认只打印脱敏后的预览，不发起任何外发；只有显式 `--accept-external-state` 且通过同意门（endpoint 与字段白名单）时才可能把状态发出本机，`--run-dir` 指定 decision artifact 的落点。它不连接仪器，也不参与写路径、安全门、质量门或 `auto_recover`。
+
+实现状态：开发线已实现，未随正式版本发布。合同见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)，实现流程见[advisor 插件开发](../development/advisor-plugin-development.md)。
 
 ## JSON 输出与退出码
 
