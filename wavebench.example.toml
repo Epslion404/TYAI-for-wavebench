@@ -9,6 +9,20 @@
 # are rsinstrument, rsinstrument-rsvisa, and rsinstrument-pyvisa-py.
 backend = "lan"
 
+# Use "serial" only when the selected descriptor declares that backend.  These
+# framing fields then apply to the scope and any configured source/power driver;
+# each instrument keeps its own resource field.  The DMM retains its separate
+# backend and serial configuration below for backward compatibility.
+# baudrate = 9600
+# bytesize = 8
+# parity = "N"
+# stopbits = 1
+# write_termination = "lf"
+# read_termination = "lf"
+# xonxoff = false
+# rtscts = false
+# dsrdtr = false
+
 # VISA resource string for the oscilloscope.
 # Replace the IP address with your oscilloscope LAN address. For the external
 # RTM2000 SocketIO path, this INSTR form is opened as TCPIP::<host>::5025::SOCKET.

@@ -22,6 +22,7 @@ WAVEFORM_POINTS_ALIASES = {
 
 SCOPE_CONNECTION_BACKENDS = {
     "lan",
+    "serial",
     "visa",
     "pyvisa",
     "rsinstrument-socket",
@@ -61,6 +62,33 @@ class ConnectionConfig:
     opc_timeout_ms: int
     read_retry_attempts: int = 1
     read_retry_delay_ms: int = 200
+    # Serial fields are append-only so existing positional construction remains stable.
+    baudrate: int = 9600
+    bytesize: int = 8
+    parity: str = "N"
+    stopbits: float = 1.0
+    write_termination: str = "lf"
+    read_termination: str = "lf"
+    xonxoff: bool = False
+    rtscts: bool = False
+    dsrdtr: bool = False
+
+    def serial_connection(self, *, resource: str | None = None) -> "SerialConnectionConfig":
+        """Build serial settings for this connection or another declared instrument resource."""
+
+        return SerialConnectionConfig(
+            resource=self.resource if resource is None else resource,
+            baudrate=self.baudrate,
+            bytesize=self.bytesize,
+            parity=self.parity,
+            stopbits=self.stopbits,
+            timeout_ms=self.timeout_ms,
+            write_termination=self.write_termination,
+            read_termination=self.read_termination,
+            xonxoff=self.xonxoff,
+            rtscts=self.rtscts,
+            dsrdtr=self.dsrdtr,
+        )
 
 @dataclass(frozen=True)
 class ScopeConfig:
@@ -466,6 +494,23 @@ def _advisor_config(raw: object) -> AdvisorConfig:
         review=_finite_number(raw.get("review", 0.35), path="advisor.review"),
     )
 
+
+def _validate_serial_connection(connection: SerialConnectionConfig, *, path: str) -> None:
+    if connection.baudrate <= 0:
+        raise ConfigError(f"{path}.baudrate must be > 0")
+    if connection.bytesize not in {7, 8}:
+        raise ConfigError(f"{path}.bytesize must be 7 or 8")
+    if connection.parity.upper() not in {"N", "O", "E", "NONE", "ODD", "EVEN"}:
+        raise ConfigError(f"{path}.parity must be N, O, E, NONE, ODD, or EVEN")
+    if connection.stopbits not in {1.0, 1.5, 2.0}:
+        raise ConfigError(f"{path}.stopbits must be 1, 1.5, or 2")
+    if connection.write_termination.strip().lower() not in {"lf", "crlf"}:
+        raise ConfigError(f"{path}.write_termination must be lf or crlf")
+    if connection.read_termination.strip().lower() not in {"lf", "crlf"}:
+        raise ConfigError(f"{path}.read_termination must be lf or crlf")
+    if connection.timeout_ms <= 0:
+        raise ConfigError(f"{path}.timeout_ms must be > 0")
+
 @dataclass(frozen=True)
 class WaveBenchConfig:
     connection: ConnectionConfig
@@ -705,6 +750,15 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
                 opc_timeout_ms=int(c.get("opc_timeout_ms", 30000)),
                 read_retry_attempts=int(c.get("read_retry_attempts", 1)),
                 read_retry_delay_ms=int(c.get("read_retry_delay_ms", 200)),
+                baudrate=int(c.get("baudrate", 9600)),
+                bytesize=int(c.get("bytesize", 8)),
+                parity=str(c.get("parity", "N")),
+                stopbits=float(c.get("stopbits", 1)),
+                write_termination=str(c.get("write_termination", "lf")),
+                read_termination=str(c.get("read_termination", "lf")),
+                xonxoff=_strict_bool(c, "xonxoff", False, path="connection"),
+                rtscts=_strict_bool(c, "rtscts", False, path="connection"),
+                dsrdtr=_strict_bool(c, "dsrdtr", False, path="connection"),
             ),
             scope=ScopeConfig(
                 driver=str(s.get("driver", "rtm2032")),
@@ -783,6 +837,8 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
         raise ConfigError("connection.read_retry_attempts must be >= 0")
     if config.connection.read_retry_delay_ms < 0:
         raise ConfigError("connection.read_retry_delay_ms must be >= 0")
+    if config.connection.backend.lower() == "serial":
+        _validate_serial_connection(config.connection.serial_connection(), path="connection")
     from wavebench.instruments.registry import validate_instrument_reference
 
     validate_instrument_reference(config.scope.driver, expected_kind="scope")
@@ -834,18 +890,7 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
         validate_instrument_reference(config.dmm.driver, expected_kind="dmm")
         if config.dmm.backend.lower() not in {"serial", "lan", "visa", "pyvisa"}:
             raise ConfigError("dmm.backend must be one of: serial, lan, visa, pyvisa")
-        if config.dmm.baudrate <= 0:
-            raise ConfigError("dmm.baudrate must be > 0")
-        if config.dmm.bytesize not in {7, 8}:
-            raise ConfigError("dmm.bytesize must be 7 or 8")
-        if config.dmm.parity.upper() not in {"N", "O", "E", "NONE", "ODD", "EVEN"}:
-            raise ConfigError("dmm.parity must be N, O, E, NONE, ODD, or EVEN")
-        if config.dmm.stopbits not in {1.0, 1.5, 2.0}:
-            raise ConfigError("dmm.stopbits must be 1, 1.5, or 2")
-        if config.dmm.write_termination.strip().lower() not in {"lf", "crlf"}:
-            raise ConfigError("dmm.write_termination must be lf or crlf")
-        if config.dmm.read_termination.strip().lower() not in {"lf", "crlf"}:
-            raise ConfigError("dmm.read_termination must be lf or crlf")
+        _validate_serial_connection(config.dmm.serial_connection(), path="dmm")
         if config.dmm.timeout_ms <= 0:
             raise ConfigError("dmm.timeout_ms must be > 0")
         if config.dmm.settle_ms_before_read < 0:
