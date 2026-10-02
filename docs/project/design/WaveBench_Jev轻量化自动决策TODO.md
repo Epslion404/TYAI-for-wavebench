@@ -28,6 +28,7 @@
 - [x] J1a 类别与注册表（`07e8db2`）：`AdvisorPlugin` / `EgressDeclaration` / advisor registry + `wavebench.advisor` 入口点 + doctor；内置 `rule_advisor` 元数据；`plugin list|doctor --category {instrument|advisor}`（**仪器插件路径零改动**）
 - [x] J1c `advisor ask` 端到端：`services/advisor_seam.py`（state → questions → answers → thresholds）、`services/advisor_rule.py`（内置确定性 client）、CLI `advisor ask [--preview | --accept-external-state]`；复用既有同意门与 decision artifact，未重复定义同名类型
 - 已知不一致：`[advisor] enabled = true` 目前强制要求**非空 `endpoint_hosts`**，即使选用完全不外发的内置基线也得登记一个用不到的 endpoint（因为配置在学校时还不知道会挂哪个 advisor）。这是 Phase 3 已落地的配置契约，放宽需单独裁决。
+- 已知不一致：[tyai PR #20](https://github.com/Epslion404/TYAI-for-wavebench/pull/20)（分支 `feat/advisor-ask`）另有一份 `advisor ask` 的并行实现，缺同意门、`[advisor]` 阈值来源与 decision artifact，路由选项集也是硬编码的 2 项。已在 PR 上留评审意见但**未关闭**（处置权留给作者）。**本支线以 master 的 `services/advisor_seam.py` + `services/advisor_rule.py`（`aba63e9`）为准**；#20 里唯一值得保留的是「CLI 默认输出结构化 JSON」这一输出层想法。
 
 ## J1 插件类别落 Core
 
