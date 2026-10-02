@@ -9,6 +9,8 @@
 
 ## 现状基线（改前必须核对的事实）
 
+> 进展（2026-10-02）：下面第 3、4 项已随 M1 阶段 1（[#4](https://github.com/Epslion404/TYAI-for-wavebench/issues/4)）与 M2 阶段 2（[#5](https://github.com/Epslion404/TYAI-for-wavebench/issues/5)）落地而改变——串口参数已进 `[connection]`（RFC §7 第 2 项已裁决），`InstrumentTransport` 已有 `send_frame`／`read_exact`／`read_until`。当前事实以代码与[配置 Reference](../../reference/configuration.md)为准；以下列表保留改前的核对基线。
+
 1. 传输后端在 Core 内硬编码：`src/wavebench/instruments/factory.py::_open_transport` 只接受 `serial`、`pyvisa`、`rsinstrument`、`rsinstrument-socket`、`rsinstrument-rsvisa`、`rsinstrument-pyvisa-py`，其它值抛 `ConfigError`。
 2. 插件拿不到自定义传输：`src/wavebench/instruments/api.py::DriverContext.open_transport` 由 Core 注入，且一次 factory 只允许打开一个传输（`factory.py` 的 "more than one transport" 分支）。
 3. 串口目前只对 DMM 打开：`_open_transport(serial_config: DmmConfig)` 是唯一入口，波特率／数据位／校验／停止位／流控／读写终止符定义在 `src/wavebench/config.py::DmmConfig`；`config.py` 只对 `dmm.backend` 允许 `serial`。

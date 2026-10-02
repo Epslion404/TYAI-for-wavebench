@@ -89,6 +89,7 @@
 
 ## 7. 待评审项
 
-- 2.2 的「不新增 kind」是否接受（若否，需要额外的 Core 全链路改动清单）。
-- 2.3 的串口配置命名与是否把串口参数也放到 `[connection]`（首版倾向放在 descriptor／插件侧，Core 只收 `SerialConnectionConfig`）。
-- CAN 的比特率／采样点与终端电阻等硬件约束是否需要在 Core 侧做前置校验（倾向：只在 descriptor 声明 + doctor 报告，不替用户判断硬件）。
+- 2.2 的「不新增 kind」是否接受 → **已裁决：接受**。首版不新增 `PluginKind`，复用 kind + descriptor 扩展 + 新 capability（记录见 [#2](https://github.com/Epslion404/TYAI-for-wavebench/issues/2)）。
+- 2.3 的串口配置命名与是否把串口参数也放到 `[connection]` → **已裁决：接受放进 `[connection]`**。实现见 [#23](https://github.com/Epslion404/TYAI-for-wavebench/issues/4)（master `a0a2b28`，2026-10-02）：`ConnectionConfig` 持有串口字段并通过 `serial_connection(resource=...)` 转成 `SerialConnectionConfig`；scope／source／power 在 `connection.backend = "serial"` 时把它交给同一个 Core 工厂，DMM 保留自己的 `dmm.*` 字段与校验路径。适用条件：只有描述符声明 `serial` backend 时才可用；字段表见[配置 Reference](../../reference/configuration.md)。
+  - 追溯说明：本项由实现先落地，评审意见发布于合并前 96 秒（`10:26:20Z` vs `10:27:56Z`）；经复核后**追认现状**，因此这是「接受已实现的结果」，不是「实现前批准」。
+- CAN 的比特率／采样点与终端电阻等硬件约束是否需要在 Core 侧做前置校验（倾向：只在 descriptor 声明 + doctor 报告，不替用户判断硬件）→ **仍待裁决**。

@@ -25,6 +25,25 @@ access = "read_only"
 
 示例中的 IP 地址是文档保留地址。真实资源、序列号、凭据和本地实验产物不得提交到公开仓库。
 
+## 串口连接
+
+`connection.backend = "serial"` 时，`[connection]` 直接持有串口参数；它们同时适用于 scope 与已配置的 source／power 驱动，每台仪器仍各用自己的 `resource`。只有选中的 descriptor 声明了 `serial` backend 时该值才可用，否则会在打开传输前被拒绝。DMM 保留独立的 `dmm.*` 串口字段（历史路径）。
+
+| 字段 | 默认值 | 约束 |
+| --- | --- | --- |
+| `resource` | 必填 | 串口设备路径，例如 `COM7`、`/dev/ttyUSB0`、`ASRL/dev/ttyUSB0::INSTR`；不接受 `TCPIP::`／`USB::`／`GPIB::` 等 LAN／USB／GPIB 形式 |
+| `baudrate` | `9600` | 必须大于 0 |
+| `bytesize` | `8` | 只能是 7 或 8 |
+| `parity` | `"N"` | `N`／`O`／`E`（也接受 `NONE`／`ODD`／`EVEN`） |
+| `stopbits` | `1` | 只能是 1、1.5 或 2 |
+| `write_termination` | `"lf"` | `lf` 或 `crlf` |
+| `read_termination` | `"lf"` | `lf` 或 `crlf` |
+| `xonxoff` | `false` | 软件流控 |
+| `rtscts` | `false` | 硬件流控 |
+| `dsrdtr` | `false` | 硬件流控 |
+
+字段、默认值与校验以 config model 为准；本表不替代 parser 的报错。
+
 ## Access policy
 
 `scope`、`source`、`rf_source`、`power` 和 `dmm` 配置可以使用以下 `access` 值：
