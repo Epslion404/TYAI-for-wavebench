@@ -54,6 +54,9 @@ def _parser() -> argparse.ArgumentParser:
     autoscale.add_argument("--timeout", type=float, default=2.0)
     autoscale.add_argument("--apply", action="store_true", help="明确授权后才写入设备设置")
 
+    advise = sub.add_parser("advise", help="离线给出下一步建议，不连接或控制设备")
+    advise.add_argument("--request", required=True, help="用户的实验或排障目标")
+
     fetch = sub.add_parser("fetch", help="读取原始波形（时间轴 + 离线指标）")
     fetch.add_argument("--address", required=True)
     fetch.add_argument("--port", type=int, default=5025)
@@ -134,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "autoscale":
             from .core import autoscale_scope
             result = autoscale_scope(args.address, args.port, args.channel, args.timeout, apply=args.apply)
+        elif args.command == "advise":
+            from .core import advise_next_step
+            result = advise_next_step(args.request)
         elif args.command == "fetch":
             result = read_waveform(
                 args.address,
