@@ -4,10 +4,11 @@ WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan�
 
 ## 分支定位
 
-- `master`（当前分支）是 Core 主线：`44506c4`（上游）→ 比赛作品包（`68148a0`／`a9e49e3`，**已在本分支移除**）→ advisor 实施（`6dc5263`／`51d6136`／`514b76f` 及后续修复）。它只存在于本地与 `tyai`：公开 fork 的 `master` 已强推回上游状态 `44506c4`。面向上游的改动从 `upstream/master` 拉聚焦分支（`upstream` remote 的 push URL 设为 `no_push`），**不要把 `master` 推到 `origin`**。
-- 远端：`origin` = `Epslion404/wavebench`（公开 fork；`master` 已强推回上游状态 `44506c4`，现在等于上游镜像）；`tyai` = `Epslion404/TYAI-for-wavebench`（**private 比赛仓库**，默认分支 `master`，issue 与 PR 都在那里跟踪）；`upstream` = `Scaxlibur/WaveBench`（只读，push URL 为 `no_push`）。
-- `competition` 是**比赛提交线**（孤儿根提交）：`比赛区/`（作品包）唯一事实源在这里，提交／打包／Release 都从它出；它不向上游提 PR。
-- 其他分支：`docs/advisor-plugin-rfc`（上游 PR #20）、`split/agent-scope-observe-advise`（上游 PR #4）。
+- **服务范围（2026-10-02 起）**：本会话与这两条分支只服务 `Epslion404/TYAI-for-wavebench`（`tyai`）——issue、PR、Release、打包与评审都在那里。`origin`（公开 fork）与 `upstream`（`Scaxlibur/WaveBench`）只作历史镜像与只读参考，**不再作为工作目标**：不为它们准备分支、不向上游提 PR。
+- `master`（当前分支）是 Core 主线：`44506c4`（上游）→ 比赛作品包（`68148a0`／`a9e49e3`，**已在本分支移除**）→ advisor 实施（`6dc5263`／`51d6136`／`514b76f` 及后续修复）。它只存在于本地与 `tyai`；**不要把 `master` 推到 `origin`**。
+- 远端：`origin` = `Epslion404/wavebench`（历史镜像；`master` 已是上游状态 `44506c4`）；`tyai` = `Epslion404/TYAI-for-wavebench`（**唯一服务对象**：private 比赛仓库，默认分支 `master`，issue／PR／Release 都在那里）；`upstream` = `Scaxlibur/WaveBench`（历史镜像，只读，push URL 为 `no_push`）。
+- `competition` 是**比赛提交线**（孤儿根提交）：`比赛区/`（作品包）唯一事实源在这里，提交／打包／Release 都从它出。
+- 历史：上游 `#20`（advisor RFC）与 `#4`（agent scope）保持现状，不由本会话跟进；`docs/advisor-plugin-rfc`、`split/agent-scope-observe-advise` 两个分支只作记录保留。
 - CI 只在 push 到 `master`/`main` 或 PR 时触发；`competition` 不跑，本地检查要自己执行（`tyai` 的 Actions 已关闭，避免空转失败）。
 
 ## 目录职责
