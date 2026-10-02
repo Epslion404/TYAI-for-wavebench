@@ -2,6 +2,15 @@
 
 第二条扩展支线（与[自定义设备与协议支持](WaveBench_自定义设备与协议支持TODO.md)并列）。契约见 [advisor 插件类别 RFC](../rfcs/WaveBench_advisor插件RFC.md)，设计与阶段记录见 [advisor-draft](advisor-draft/README.md)。
 
+## 平台跟踪（执行状态以 issue 为准）
+
+本页是**契约与验收清单**（稳定事实）；日常执行状态、讨论与进度看 tyai 的 issue：
+
+- 方向：[#14 [Direction] Jev 轻量化自动决策](https://github.com/Epslion404/TYAI-for-wavebench/issues/14)
+- 里程碑与任务：`J1 插件类别`（#15）／`J2 文档门禁`（#16）／`J3 候选功能与 kill criteria`（#17）／`J4 作品包接入`（#18）
+- 过滤视图：`is:open label:track:advisor`
+- 规则：**里程碑收尾时才回来更新勾选框**；平时不要在文件里勾进度，避免与 issue 漂移。
+
 ## 目标与边界
 
 - 目标：用 Jev 这类 System One 小模型，把「下一步做什么／哪里有问题／选哪个实验入口」变成**轻量、可解释、默认离线**的建议，并保证建议永远只是建议。

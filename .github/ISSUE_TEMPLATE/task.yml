@@ -1,0 +1,54 @@
+name: 任务（实现 / 测试 / 文档）
+description: 支线任务的默认模板：先指向契约，再写可检查的验收门
+title: "[Task] "
+labels: ["kind:impl"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        契约留在仓库文件里，执行状态放这里。先写清「契约来源」与「验收门」，再来做。
+  - type: dropdown
+    id: track
+    attributes:
+      label: 支线
+      options:
+        - 自定义设备与协议支持（track:device）
+        - Jev 轻量化自动决策（track:advisor）
+        - 比赛作品包（track:package）
+        - 仓库流程 / 文档
+    validations:
+      required: true
+  - type: input
+    id: contract
+    attributes:
+      label: 契约来源
+      description: RFC／规范／TODO 的路径加小节号；没有契约就先开 RFC
+      placeholder: docs/project/rfcs/WaveBench_xxxRFC.md §2.3
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收门
+      description: 可检查的完成判据：命令、预期输出、必须通过的测试
+      placeholder: |
+        - python -m pytest -q tests/test_xxx.py 通过
+        - 未声明的后端在真实 I/O 前抛 ConfigError
+    validations:
+      required: true
+  - type: checkboxes
+    id: guards
+    attributes:
+      label: 红线自检
+      options:
+        - label: 未新增默认安装的第三方依赖（可选依赖走 extras）
+        - label: 既有 SCPI／DMM 路径行为零变化，且有回归用例
+        - label: 全程可离线验证（假传输／虚拟总线），实机验收另行授权
+        - label: 不参与写路径、安全门、质量门与 capability 判定（advisor 类任务）
+  - type: textarea
+    id: notes
+    attributes:
+      label: 依赖与风险
+      description: 被什么阻塞、影响哪些既有路径、需要谁确认
+    validations:
+      required: false
