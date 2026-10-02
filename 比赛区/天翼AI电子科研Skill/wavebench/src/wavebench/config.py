@@ -5,9 +5,12 @@ from math import isfinite
 from pathlib import Path
 import re
 import tomllib
+from typing import Any
 
 from .errors import ConfigError
 from .services.access_policy import AccessMode, normalize_access_mode
+from .services.advisor_consent import normalize_names
+from .services.decision_artifacts import DecisionArtifactError, ThresholdPolicy
 
 WAVEFORM_POINTS_ALIASES = {
     "def": "DEF",
@@ -20,6 +23,7 @@ WAVEFORM_POINTS_ALIASES = {
 
 SCOPE_CONNECTION_BACKENDS = {
     "lan",
+    "serial",
     "visa",
     "pyvisa",
     "rsinstrument-socket",
@@ -59,6 +63,33 @@ class ConnectionConfig:
     opc_timeout_ms: int
     read_retry_attempts: int = 1
     read_retry_delay_ms: int = 200
+    # Serial fields are append-only so existing positional construction remains stable.
+    baudrate: int = 9600
+    bytesize: int = 8
+    parity: str = "N"
+    stopbits: float = 1.0
+    write_termination: str = "lf"
+    read_termination: str = "lf"
+    xonxoff: bool = False
+    rtscts: bool = False
+    dsrdtr: bool = False
+
+    def serial_connection(self, *, resource: str | None = None) -> "SerialConnectionConfig":
+        """Build serial settings for this connection or another declared instrument resource."""
+
+        return SerialConnectionConfig(
+            resource=self.resource if resource is None else resource,
+            baudrate=self.baudrate,
+            bytesize=self.bytesize,
+            parity=self.parity,
+            stopbits=self.stopbits,
+            timeout_ms=self.timeout_ms,
+            write_termination=self.write_termination,
+            read_termination=self.read_termination,
+            xonxoff=self.xonxoff,
+            rtscts=self.rtscts,
+            dsrdtr=self.dsrdtr,
+        )
 
 @dataclass(frozen=True)
 class ScopeConfig:
@@ -125,6 +156,26 @@ class PowerConfig:
     access: AccessMode = "read_write"
 
 @dataclass(frozen=True)
+class SerialConnectionConfig:
+    """通用串口连接参数（不绑定设备类别）。
+
+    串口 transport 只依赖本配置；`DmmConfig` 等具体设备配置负责把自己的参数转换过来，
+    网关／自定义协议设备也可以直接声明它。
+    """
+
+    resource: str | None = None
+    baudrate: int = 9600
+    bytesize: int = 8
+    parity: str = "N"
+    stopbits: float = 1.0
+    timeout_ms: int = 1000
+    write_termination: str = "lf"
+    read_termination: str = "lf"
+    xonxoff: bool = False
+    rtscts: bool = False
+    dsrdtr: bool = False
+
+@dataclass(frozen=True)
 class DmmConfig:
     driver: str
     resource: str | None
@@ -143,6 +194,55 @@ class DmmConfig:
     rtscts: bool = False
     dsrdtr: bool = False
     access: AccessMode = "read_write"
+
+    def serial_connection(self) -> SerialConnectionConfig:
+        """把 DMM 的串口参数转换为通用串口配置（DMM 行为保持不变）。"""
+        return SerialConnectionConfig(
+            resource=self.resource,
+            baudrate=self.baudrate,
+            bytesize=self.bytesize,
+            parity=self.parity,
+            stopbits=self.stopbits,
+            timeout_ms=self.timeout_ms,
+            write_termination=self.write_termination,
+            read_termination=self.read_termination,
+            xonxoff=self.xonxoff,
+            rtscts=self.rtscts,
+            dsrdtr=self.dsrdtr,
+        )
+
+@dataclass(frozen=True)
+class AdvisorConfig:
+    """advisor（外部判断模型）配置。
+
+    默认关闭；开启必须同时给出 endpoint 与字段白名单，避免"打开开关即放宽外发范围"。
+    概率阈值由 Core 拥有，插件不得自带。
+    """
+
+    enabled: bool = False
+    endpoint_hosts: tuple[str, ...] = ()
+    allowed_state_fields: tuple[str, ...] = ()
+    accept: float = 0.60
+    review: float = 0.35
+
+    def __post_init__(self) -> None:
+        try:
+            thresholds = ThresholdPolicy(accept=self.accept, review=self.review)
+        except DecisionArtifactError as exc:
+            message = str(exc)
+            if message == "review threshold must not exceed accept threshold":
+                message = "advisor thresholds must satisfy 0 <= review <= accept <= 1"
+            raise ConfigError(message) from exc
+        object.__setattr__(self, "accept", float(thresholds.accept))
+        object.__setattr__(self, "review", float(thresholds.review))
+        object.__setattr__(
+            self, "endpoint_hosts", normalize_names(self.endpoint_hosts, label="advisor.endpoint_hosts")
+        )
+        object.__setattr__(
+            self,
+            "allowed_state_fields",
+            normalize_names(self.allowed_state_fields, label="advisor.allowed_state_fields"),
+        )
 
 @dataclass(frozen=True)
 class OutputConfig:
@@ -364,6 +464,69 @@ def _instrument_options(raw: dict, section: str) -> dict[str, object]:
         raise ConfigError(f"{section}.options must be a TOML table")
     return dict(options)
 
+
+def _name_list(raw: dict, key: str, *, path: str) -> tuple[str, ...]:
+    values = raw.get(key, [])
+    if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple)):
+        raise ConfigError(f"{path}.{key} must be an array of strings")
+    for value in values:
+        if not isinstance(value, str) or not value or value.strip() != value:
+            raise ConfigError(f"{path}.{key} must contain non-empty, trimmed strings")
+    return tuple(dict.fromkeys(values))
+
+
+def _advisor_config(raw: object) -> AdvisorConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("advisor must be a TOML table")
+    enabled = _strict_bool(raw, "enabled", False, path="advisor")
+    endpoints = _name_list(raw, "endpoint_hosts", path="advisor")
+    fields = _name_list(raw, "allowed_state_fields", path="advisor")
+    if enabled and not fields:
+        raise ConfigError(
+            "advisor.enabled requires a non-empty advisor.allowed_state_fields allowlist"
+        )
+    if enabled and not endpoints:
+        raise ConfigError("advisor.enabled requires a non-empty advisor.endpoint_hosts allowlist")
+    return AdvisorConfig(
+        enabled=enabled,
+        endpoint_hosts=endpoints,
+        allowed_state_fields=fields,
+        accept=_finite_number(raw.get("accept", 0.60), path="advisor.accept"),
+        review=_finite_number(raw.get("review", 0.35), path="advisor.review"),
+    )
+
+
+def _validate_serial_resource(connection: SerialConnectionConfig, *, path: str) -> None:
+    """串口后端要求明确的串口设备路径。
+
+    只用于 `[connection]`：DMM 的历史路径保持原样，避免改变既有报错行为。
+    """
+    resource = (connection.resource or "").strip()
+    if not resource:
+        raise ConfigError(f"{path}.resource must be set when the backend is serial")
+    if re.match(r"(?i)^(tcpip|usb|gpib|hislip|vxi)\d*::", resource):
+        raise ConfigError(
+            f"{path}.resource must be a serial port path such as COM7, /dev/ttyUSB0 or "
+            f"ASRL...::INSTR; got {resource!r}"
+        )
+
+
+def _validate_serial_connection(connection: SerialConnectionConfig, *, path: str) -> None:
+    if connection.baudrate <= 0:
+        raise ConfigError(f"{path}.baudrate must be > 0")
+    if connection.bytesize not in {7, 8}:
+        raise ConfigError(f"{path}.bytesize must be 7 or 8")
+    if connection.parity.upper() not in {"N", "O", "E", "NONE", "ODD", "EVEN"}:
+        raise ConfigError(f"{path}.parity must be N, O, E, NONE, ODD, or EVEN")
+    if connection.stopbits not in {1.0, 1.5, 2.0}:
+        raise ConfigError(f"{path}.stopbits must be 1, 1.5, or 2")
+    if connection.write_termination.strip().lower() not in {"lf", "crlf"}:
+        raise ConfigError(f"{path}.write_termination must be lf or crlf")
+    if connection.read_termination.strip().lower() not in {"lf", "crlf"}:
+        raise ConfigError(f"{path}.read_termination must be lf or crlf")
+    if connection.timeout_ms <= 0:
+        raise ConfigError(f"{path}.timeout_ms must be > 0")
+
 @dataclass(frozen=True)
 class WaveBenchConfig:
     connection: ConnectionConfig
@@ -380,6 +543,7 @@ class WaveBenchConfig:
     tui: TuiConfig = TuiConfig()
     # Append-only: preserve the public positional layout of existing config fields.
     rf_source: RfSourceConfig | None = None
+    advisor: AdvisorConfig = AdvisorConfig()
 
     def with_connection_timeout_ms(self, timeout_ms: int) -> "WaveBenchConfig":
         if timeout_ms <= 0:
@@ -503,16 +667,29 @@ class WaveBenchConfig:
         )
         return _replace(self, rf_source=_replace(rf_source, resource=resource))
 
-def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
-    config_path = Path(path)
+def _read_toml_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise ConfigError(
             f"config file not found: {config_path}. Copy wavebench.example.toml to wavebench.toml first."
         )
     try:
-        raw = tomllib.loads(config_path.read_bytes().decode("utf-8-sig"))
+        return tomllib.loads(config_path.read_bytes().decode("utf-8-sig"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {config_path}: {exc}") from exc
+
+
+def load_advisor_config(path: str | Path = "wavebench.toml") -> AdvisorConfig:
+    """只读 `[advisor]` 段。
+
+    决策查询与仪器连接无关，因而不走 `load_config`——那会强制要求 `[connection]`、`[scope]`
+    等与决策无关的段存在。
+    """
+    return _advisor_config(_read_toml_config(Path(path)).get("advisor", {}))
+
+
+def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
+    config_path = Path(path)
+    raw = _read_toml_config(config_path)
 
     try:
         c = raw["connection"]
@@ -602,6 +779,15 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
                 opc_timeout_ms=int(c.get("opc_timeout_ms", 30000)),
                 read_retry_attempts=int(c.get("read_retry_attempts", 1)),
                 read_retry_delay_ms=int(c.get("read_retry_delay_ms", 200)),
+                baudrate=int(c.get("baudrate", 9600)),
+                bytesize=int(c.get("bytesize", 8)),
+                parity=str(c.get("parity", "N")),
+                stopbits=float(c.get("stopbits", 1)),
+                write_termination=str(c.get("write_termination", "lf")),
+                read_termination=str(c.get("read_termination", "lf")),
+                xonxoff=_strict_bool(c, "xonxoff", False, path="connection"),
+                rtscts=_strict_bool(c, "rtscts", False, path="connection"),
+                dsrdtr=_strict_bool(c, "dsrdtr", False, path="connection"),
             ),
             scope=ScopeConfig(
                 driver=str(s.get("driver", "rtm2032")),
@@ -666,6 +852,7 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
                 log_keep_lines_after_trim=int(tui_raw.get("log_keep_lines_after_trim", 1_000)),
             ),
             rf_source=rf_source,
+            advisor=_advisor_config(raw.get("advisor", {})),
         )
     except KeyError as exc:
         raise ConfigError(f"missing required config key: {exc}") from exc
@@ -679,6 +866,9 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
         raise ConfigError("connection.read_retry_attempts must be >= 0")
     if config.connection.read_retry_delay_ms < 0:
         raise ConfigError("connection.read_retry_delay_ms must be >= 0")
+    if config.connection.backend.lower() == "serial":
+        _validate_serial_connection(config.connection.serial_connection(), path="connection")
+        _validate_serial_resource(config.connection.serial_connection(), path="connection")
     from wavebench.instruments.registry import validate_instrument_reference
 
     validate_instrument_reference(config.scope.driver, expected_kind="scope")
@@ -730,18 +920,7 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
         validate_instrument_reference(config.dmm.driver, expected_kind="dmm")
         if config.dmm.backend.lower() not in {"serial", "lan", "visa", "pyvisa"}:
             raise ConfigError("dmm.backend must be one of: serial, lan, visa, pyvisa")
-        if config.dmm.baudrate <= 0:
-            raise ConfigError("dmm.baudrate must be > 0")
-        if config.dmm.bytesize not in {7, 8}:
-            raise ConfigError("dmm.bytesize must be 7 or 8")
-        if config.dmm.parity.upper() not in {"N", "O", "E", "NONE", "ODD", "EVEN"}:
-            raise ConfigError("dmm.parity must be N, O, E, NONE, ODD, or EVEN")
-        if config.dmm.stopbits not in {1.0, 1.5, 2.0}:
-            raise ConfigError("dmm.stopbits must be 1, 1.5, or 2")
-        if config.dmm.write_termination.strip().lower() not in {"lf", "crlf"}:
-            raise ConfigError("dmm.write_termination must be lf or crlf")
-        if config.dmm.read_termination.strip().lower() not in {"lf", "crlf"}:
-            raise ConfigError("dmm.read_termination must be lf or crlf")
+        _validate_serial_connection(config.dmm.serial_connection(), path="dmm")
         if config.dmm.timeout_ms <= 0:
             raise ConfigError("dmm.timeout_ms must be > 0")
         if config.dmm.settle_ms_before_read < 0:

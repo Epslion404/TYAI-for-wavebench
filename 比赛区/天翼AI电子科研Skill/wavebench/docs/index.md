@@ -54,6 +54,7 @@
 - [管理仪器插件](how-to/manage-plugins.md)
 - [插件 Reference](reference/plugins/index.md)
 - [插件开发](development/plugin-development.md)
+- [advisor 插件开发](development/advisor-plugin-development.md)
 - [新增仪器驱动](development/instrument-drivers.md)
 - [贡献 WaveBench](development/contributing.md)
 - [测试 WaveBench](development/testing.md)

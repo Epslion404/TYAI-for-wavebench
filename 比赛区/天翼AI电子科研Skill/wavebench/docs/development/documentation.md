@@ -13,7 +13,7 @@ WaveBench 文档采用 docs-as-code：文档和代码一起版本控制、review
 
 中文页面在结构、事实和边界确定后，再应用 `tech-doc-style-chinese`。该写作层不负责决定页面类别或信息架构。
 
-WaveBench 的受控术语豁免记录在 `docs/tech-doc-term-allowlist.json`。运行文案检查器时必须通过 `--term-allowlist docs/tech-doc-term-allowlist.json` 显式传入；检查器不会自动发现该文件。每个条目使用完整字面术语作为键，并附非空理由，不接受正则表达式或无理由豁免。
+WaveBench 的受控术语豁免记录在 `docs/tech-doc-term-allowlist.json`。它由中文文案检查器（`tech-doc-style-chinese` 的 `lint_copy_rules.py`）以 `--term-allowlist docs/tech-doc-term-allowlist.json` 读取，检查器不会自动发现该文件；仓库自带的 `audit_docs.py` 不接受该参数。每个条目使用完整字面术语作为键，并附非空理由，不接受正则表达式或无理由豁免。
 
 ## 机械检查
 

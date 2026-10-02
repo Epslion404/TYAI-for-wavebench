@@ -72,6 +72,11 @@ class PowerService(SessionStateAliasMixin):
             logger=self.logger,
             settings={"check_errors": power.check_errors},
             options=getattr(power, "options", {}),
+            serial_config=(
+                self.config.connection.serial_connection(resource=power.resource)
+                if self.config.connection.backend.strip().lower() == "serial"
+                else None
+            ),
             access=getattr(power, "access", "read_write"),
             lease=self.lease,
         )

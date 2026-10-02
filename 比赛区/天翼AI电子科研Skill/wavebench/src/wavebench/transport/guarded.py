@@ -138,6 +138,119 @@ class GuardedAuditedTransport:
             self.counters.binary_write_completed += 1
             self._record_success(authorization, "write_bytes")
 
+    def send_frame(
+        self,
+        frame: bytes,
+        *,
+        max_bytes: int,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> None:
+        with self.session_state.transaction_lock:
+            replay = ReplayPolicy(replay)
+            self.counters.binary_write_requests += 1
+            self._check_access("send_frame", write=True)
+            authorization = self._gate("send_frame")
+            backend_send = getattr(self.inner, "send_frame", None)
+            if not callable(backend_send):
+                raise self._frame_preflight_error("send_frame", replay, "raw_frame_unsupported")
+            self.counters.binary_write_attempts += 1
+            try:
+                backend_send(frame, max_bytes=max_bytes, replay=replay)
+            except Exception as exc:
+                self.counters.binary_write_outcome_unknown += 1
+                self._transition_after_failure(exc, authorization)
+                raise
+            self.counters.binary_write_transmitted += 1
+            self.counters.binary_write_completed += 1
+            self._record_success(authorization, "send_frame")
+
+    def read_exact(
+        self,
+        size: int,
+        *,
+        timeout_ms: int | None = None,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> bytes:
+        return self._read_frame(
+            "read_exact",
+            size,
+            timeout_ms=timeout_ms,
+            replay=replay,
+        )
+
+    def read_until(
+        self,
+        delimiter: bytes,
+        *,
+        max_bytes: int,
+        timeout_ms: int | None = None,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> bytes:
+        return self._read_frame(
+            "read_until",
+            delimiter,
+            max_bytes=max_bytes,
+            timeout_ms=timeout_ms,
+            replay=replay,
+        )
+
+    def _read_frame(
+        self,
+        operation: str,
+        first_argument: object,
+        *,
+        max_bytes: int | None = None,
+        timeout_ms: int | None,
+        replay: ReplayPolicy,
+    ) -> bytes:
+        with self.session_state.transaction_lock:
+            replay = ReplayPolicy(replay)
+            self._check_access(operation)
+            self.counters.binary_query_calls += 1
+            authorization = self._gate(operation)
+            backend_read = getattr(self.inner, operation, None)
+            if not callable(backend_read):
+                raise self._frame_preflight_error(operation, replay, "raw_frame_unsupported")
+            effective_timeout_ms = timeout_ms
+            if authorization is not None:
+                remaining_ms = int(max(authorization.deadline - time.monotonic(), 0.0) * 1000.0)
+                if remaining_ms < 1:
+                    raise self._deadline_preflight_error(operation, replay)
+                effective_timeout_ms = min(
+                    authorization.io_timeout_ms,
+                    remaining_ms,
+                    timeout_ms if timeout_ms is not None else authorization.io_timeout_ms,
+                )
+            kwargs: dict[str, object] = {
+                "timeout_ms": effective_timeout_ms,
+                "replay": replay,
+            }
+            if max_bytes is not None:
+                kwargs["max_bytes"] = max_bytes
+            try:
+                result = backend_read(first_argument, **kwargs)
+            except Exception as exc:
+                self._transition_after_failure(exc, authorization)
+                raise
+            if not isinstance(result, bytes):
+                error = TransportIOError(
+                    "raw frame backend returned an invalid response",
+                    operation=operation,
+                    phase=TransportPhase.PARSING,
+                    replay_policy=replay,
+                    command_transmission=CommandTransmission.SENT,
+                    response_progress=ResponseProgress.UNKNOWN,
+                    synchronization=Synchronization.UNPROVEN,
+                    attempts=1,
+                    reason_code="frame_response_invalid",
+                    consumed_bytes=0,
+                    discarded_bytes=0,
+                )
+                self._transition_after_failure(error, authorization)
+                raise error
+            self._record_success(authorization, operation)
+            return result
+
     def query(
         self,
         command: str,
@@ -449,7 +562,7 @@ class GuardedAuditedTransport:
                 self.counters.blocked_binary_write_requests += 1
             raise self._denied(operation)
         if not write and self.access == "disabled":
-            if operation in {"query_bin_block", "query_binary"}:
+            if operation in {"query_bin_block", "query_binary", "read_exact", "read_until"}:
                 self.counters.blocked_binary_query_calls += 1
             else:
                 self.counters.blocked_query_calls += 1
@@ -545,6 +658,26 @@ class GuardedAuditedTransport:
         return TransportIOError(
             "binary query was rejected before transmission",
             operation="query_binary",
+            phase=TransportPhase.BEFORE_SEND,
+            replay_policy=replay,
+            command_transmission=CommandTransmission.NOT_SENT,
+            response_progress=ResponseProgress.NONE,
+            synchronization=Synchronization.PROVEN,
+            attempts=0,
+            reason_code=reason_code,
+            consumed_bytes=0,
+            discarded_bytes=0,
+        )
+
+    @staticmethod
+    def _frame_preflight_error(
+        operation: str,
+        replay: ReplayPolicy,
+        reason_code: str,
+    ) -> TransportIOError:
+        return TransportIOError(
+            "raw frame operation was rejected before transmission",
+            operation=operation,
             phase=TransportPhase.BEFORE_SEND,
             replay_policy=replay,
             command_transmission=CommandTransmission.NOT_SENT,

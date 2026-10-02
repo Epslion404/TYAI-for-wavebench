@@ -1,0 +1,49 @@
+name: 缺陷
+description: 可复现的行为异常、回归或环境问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: track
+    attributes:
+      label: 支线
+      options:
+        - 自定义设备与协议支持（track:device）
+        - Jev 轻量化自动决策（track:advisor）
+        - 比赛作品包（track:package）
+        - Core 其他 / 环境
+    validations:
+      required: true
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 观察到什么，与期望差在哪
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 精确到命令、配置片段、数据文件；能离线复现最好
+      placeholder: |
+        1. git checkout competition
+        2. python -m pytest -q tests/test_xxx.py
+        3. 期望 …，实际 …
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: 报错原文、日志、JSON 输出片段；不要粘真实仪器地址与序列号
+    validations:
+      required: false
+  - type: checkboxes
+    id: environment
+    attributes:
+      label: 环境
+      options:
+        - label: 本机 Windows + `D:\Documents\Code\TY_AI\wavebench\.venv`
+        - label: 依赖与代码同上游一致（已用 `git diff` 排除本机基线问题）
+        - label: 可能是本机既有基线失败（memory／TUI flaky）

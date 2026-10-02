@@ -4,6 +4,7 @@ import argparse
 
 from .discovery import DEFAULT_DISCOVERY_PORTS
 from .mcp_http import DEFAULT_MCP_HOST, DEFAULT_MCP_PORT, DEFAULT_MCP_TOKEN_ENV
+from .plugins.builtin import RULE_ADVISOR_ID
 
 
 def add_runtime_options(parser: argparse.ArgumentParser) -> None:
@@ -176,10 +177,61 @@ def build_parser() -> argparse.ArgumentParser:
         help="Persist TUI debug log to this file / TUI 调试日志文件",
     )
 
+    advisor_parser = subparsers.add_parser(
+        "advisor",
+        help="Advisory-only decision support / 仅供参考的决策建议",
+    )
+    advisor_sub = advisor_parser.add_subparsers(dest="command", required=True)
+    advisor_ask = advisor_sub.add_parser(
+        "ask",
+        help="Ask one advisor for an advisory-only judgment / 向 advisor 征求仅供参考的判断",
+    )
+    advisor_ask.add_argument(
+        "--state",
+        required=True,
+        help="Decision state fixture JSON / 决策状态 fixture（JSON）",
+    )
+    advisor_ask.add_argument(
+        "--question",
+        default="route",
+        choices=("route",),
+        help="Question id to ask / 要问的问题 id",
+    )
+    advisor_ask.add_argument(
+        "--advisor",
+        default=RULE_ADVISOR_ID,
+        help="Advisor id from the advisor registry / advisor 注册表里的标识",
+    )
+    advisor_ask.add_argument(
+        "--run-dir",
+        help="Write the decision artifact under this run directory / 决策产物落到的 run 目录",
+    )
+    advisor_ask.add_argument("--config", default="wavebench.toml", help="Path to wavebench TOML config")
+    advisor_consent = advisor_ask.add_mutually_exclusive_group()
+    advisor_consent.add_argument(
+        "--preview",
+        action="store_true",
+        help="Print the redacted payload without calling out / 只预览脱敏后的内容，不外发",
+    )
+    advisor_consent.add_argument(
+        "--accept-external-state",
+        action="store_true",
+        help="Accept that the redacted state leaves this machine / 明确同意把脱敏后的 state 外发",
+    )
+
     plugin_sub = plugin_parser.add_subparsers(dest="command", required=True)
     plugin_list = plugin_sub.add_parser(
         "list",
         help="List available instrument plugins / 列出可用仪器插件",
+    )
+    plugin_list.add_argument(
+        "--category",
+        choices=("instrument", "advisor"),
+        default="instrument",
+        help=(
+            "Plugin category to list; 'advisor' makes --include-entry-points load the "
+            "wavebench.advisor group / 要列出的插件类别；advisor 类别下 --include-entry-points 加载 wavebench.advisor"
+        ),
     )
     plugin_list.add_argument(
         "--kind",
@@ -268,6 +320,15 @@ def build_parser() -> argparse.ArgumentParser:
     plugin_doctor = plugin_sub.add_parser(
         "doctor",
         help="Validate plugin registry metadata / 检查插件注册表元数据",
+    )
+    plugin_doctor.add_argument(
+        "--category",
+        choices=("instrument", "advisor"),
+        default="instrument",
+        help=(
+            "Plugin category to validate; 'advisor' makes --include-entry-points load the "
+            "wavebench.advisor group / 要检查的插件类别；advisor 类别下 --include-entry-points 加载 wavebench.advisor"
+        ),
     )
     plugin_doctor.add_argument(
         "--include-entry-points",

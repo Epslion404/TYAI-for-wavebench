@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
-from .config import DmmConfig, WaveBenchConfig
+from .config import SerialConnectionConfig, WaveBenchConfig
 from .discovery import DEFAULT_DISCOVERY_PORTS, DiscoveryResult, discover_instruments
 from .errors import ConfigError, ResourceBusyError
 from .instruments.registry import resolve_instrument_descriptor
@@ -18,7 +18,7 @@ class DoctorTarget:
     driver: str
     resource: str | None
     expected_idn_tokens: tuple[str, ...] = ()
-    serial_config: DmmConfig | None = None
+    serial_config: SerialConnectionConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -178,12 +178,14 @@ def _doctor_target(
 
 
 def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
+    serial = config.connection.backend.strip().lower() == "serial"
     targets = [
         DoctorTarget(
             name="scope",
             driver=config.scope.driver,
             resource=config.connection.resource,
             expected_idn_tokens=_scope_expected_tokens(config.scope.driver, config.scope.model_hint),
+            serial_config=config.connection.serial_connection() if serial else None,
         )
     ]
     if config.source is not None:
@@ -193,6 +195,11 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.source.driver,
                 resource=config.source.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.source.driver),
+                serial_config=(
+                    config.connection.serial_connection(resource=config.source.resource)
+                    if serial
+                    else None
+                ),
             )
         )
     if config.rf_source is not None:
@@ -211,6 +218,11 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.power.driver,
                 resource=config.power.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.power.driver),
+                serial_config=(
+                    config.connection.serial_connection(resource=config.power.resource)
+                    if serial
+                    else None
+                ),
             )
         )
     if config.dmm is not None:
@@ -220,7 +232,11 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.dmm.driver,
                 resource=config.dmm.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.dmm.driver),
-                serial_config=config.dmm if config.dmm.backend.strip().lower() == "serial" else None,
+                serial_config=(
+                    config.dmm.serial_connection()
+                    if config.dmm.backend.strip().lower() == "serial"
+                    else None
+                ),
             )
         )
     return targets

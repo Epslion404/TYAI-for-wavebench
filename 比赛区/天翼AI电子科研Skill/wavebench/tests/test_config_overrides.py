@@ -48,6 +48,93 @@ resource = "TCPIP::192.0.2.40::INSTR"
             with self.assertRaisesRegex(Exception, "connection.backend must be one of"):
                 load_config(path)
 
+    def test_loads_generic_serial_connection_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "serial"
+resource = "COM7"
+baudrate = 115200
+bytesize = 7
+parity = "E"
+stopbits = 2
+timeout_ms = 2500
+write_termination = "crlf"
+read_termination = "lf"
+xonxoff = true
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        serial = config.connection.serial_connection()
+        self.assertEqual(serial.resource, "COM7")
+        self.assertEqual(serial.baudrate, 115200)
+        self.assertEqual(serial.bytesize, 7)
+        self.assertEqual(serial.parity, "E")
+        self.assertEqual(serial.stopbits, 2)
+        self.assertEqual(serial.timeout_ms, 2500)
+        self.assertEqual(serial.write_termination, "crlf")
+        self.assertEqual(serial.read_termination, "lf")
+        self.assertTrue(serial.xonxoff)
+
+    def test_rejects_invalid_generic_serial_connection_before_opening_io(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "serial"
+resource = "COM7"
+baudrate = 0
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "connection.baudrate must be > 0"):
+                load_config(path)
+
+    def test_rejects_a_non_serial_resource_for_the_serial_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "serial"
+resource = "TCPIP::192.0.2.10::INSTR"
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "must be a serial port path"):
+                load_config(path)
+
+    def test_rejects_a_missing_serial_resource(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "serial"
+resource = ""
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "connection.resource must be set"):
+                load_config(path)
+
     def test_output_overrides_disable_csv_only(self):
         config = WaveBenchConfig(
             connection=ConnectionConfig("lan", "TCPIP::127.0.0.1::INSTR", 100, 100),

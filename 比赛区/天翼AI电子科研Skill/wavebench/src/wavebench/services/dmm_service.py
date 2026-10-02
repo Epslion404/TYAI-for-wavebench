@@ -86,7 +86,7 @@ class DmmService(SessionStateAliasMixin):
             read_retry_delay_ms=self.config.connection.read_retry_delay_ms,
             logger=self.logger,
             options=getattr(dmm, "options", {}),
-            serial_config=dmm,
+            serial_config=dmm.serial_connection(),
             access=getattr(dmm, "access", "read_write"),
             lease=self.lease,
         )

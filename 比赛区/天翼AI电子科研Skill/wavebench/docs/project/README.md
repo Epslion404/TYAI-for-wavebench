@@ -6,5 +6,9 @@
 - 执行实验：[执行一次实验](../how-to/run-an-experiment.md)
 - 查询 run plan 字段：[run plan Reference](../reference/run-schema.md)
 - 查看 RFC 与历史：[现有 RFC 索引](rfcs/README.md)和[更新日志](../../CHANGELOG.md)
+- 开发规范：[自定义设备与协议支持](design/WaveBench_自定义设备与协议支持规范.md)及[执行清单](design/WaveBench_自定义设备与协议支持TODO.md)
+- Jev 轻量化自动决策：[执行清单](design/WaveBench_Jev轻量化自动决策TODO.md)
+- 协作规则：[仓库协作与分支约定](design/仓库协作与分支约定.md)
+- advisor 插件类别：[RFC](../project/rfcs/WaveBench_advisor插件RFC.md)与[草案目录](design/advisor-draft/README.md)
 
 具体型号、SCPI、profile、quirk 和实机 evidence 由[仪器插件仓库](https://github.com/Scaxlibur/wavebench-instrument-plugins)维护。
