@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from wavebench.config import DmmConfig, SerialConnectionConfig
+from wavebench.config import ConnectionConfig, DmmConfig, SerialConnectionConfig
 from wavebench.errors import ConfigError
 from wavebench.instruments.factory import TRANSPORT_FACTORIES, _open_transport
 from wavebench.logging import CommandLogger
@@ -50,6 +50,24 @@ class SerialConnectionConfigTests(unittest.TestCase):
         self.assertFalse(connection.xonxoff)
         self.assertFalse(connection.rtscts)
         self.assertFalse(connection.dsrdtr)
+
+    def test_generic_connection_can_target_another_declared_serial_instrument(self):
+        connection = ConnectionConfig(
+            backend="serial",
+            resource="COM3",
+            timeout_ms=1000,
+            opc_timeout_ms=2000,
+            baudrate=57600,
+            parity="O",
+            rtscts=True,
+        )
+
+        serial = connection.serial_connection(resource="COM9")
+
+        self.assertEqual(serial.resource, "COM9")
+        self.assertEqual(serial.baudrate, 57600)
+        self.assertEqual(serial.parity, "O")
+        self.assertTrue(serial.rtscts)
 
 
 class TransportBackendDispatchTests(unittest.TestCase):
