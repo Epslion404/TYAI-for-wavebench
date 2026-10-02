@@ -49,7 +49,7 @@ mkdocs build --strict                        # 文档站，需 pip install -e ".
 
 ## 已知不一致
 
-- `docs/development/documentation.md` 要求给文档审计器传 `--term-allowlist`，但 `audit_docs.py` 已无该参数，照抄会报未知参数。
+- 文档审计器（`audit_docs.py`）只做确定性检查，不接受 `--term-allowlist`；`docs/tech-doc-term-allowlist.json` 是 `tech-doc-style-chinese` 中文文案检查器（`lint_copy_rules.py`）的输入，别把该参数传给审计器。
 - `master` 不含 `比赛区/`：包内容只保留在 `competition` 分支与 Release 产物中；历史提交（`68148a0`／`a9e49e3` 等）里仍可按 SHA 取到。
 - 比赛作品包不再把 zip 归档提交进仓库：以后的打包走 GitHub Release（Release 挂在 `tyai`）。
 - 提交信息沿用上游约定：`feat|fix|docs|test|chore|refactor|perf(scope): 说明`，正文以英文为主。

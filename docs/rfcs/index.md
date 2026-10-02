@@ -17,7 +17,9 @@ RFC 记录设计问题、约束、兼容性和验收门槛。它们不是当前�
 `Draft` 仍可修改，不能据此宣称接口已经提供。
 
 - [advisor 插件类别](../project/rfcs/WaveBench_advisor插件RFC.md)：`Draft`；提出插件类别抽象与
-  第二个类别 `advisor`，并把数据外发同意门与 decision artifact 收归 Core。
+  第二个类别 `advisor`，并把数据外发同意门与 decision artifact 收归 Core。实施状态：类别与注册表、
+  内置确定性基线和 `advisor ask` 已在开发线实现（未发布），包校验与安装生命周期仍在做；开发入口见
+  [advisor 插件开发](../development/advisor-plugin-development.md)。
 - [自定义设备与协议支持](../project/rfcs/WaveBench_自定义设备与协议支持RFC.md)：`Draft`；裁决串口／CAN
   等自定义设备的接入合同（按帧读写、后端分派、声明式协议描述），首版不新增设备 kind。
 

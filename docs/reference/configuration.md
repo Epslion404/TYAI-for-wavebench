@@ -43,7 +43,7 @@ access = "read_only"
 
 外发还需通过同意门：发送前产出完整预览（内容、字节数、sha256、逐条不可信来源），预览不联网；同意默认按次，可登记为同一 run 内有效，并绑定 endpoint 集合与允许字段集，任一变化即失效；非交互场景（run plan、CI、MCP）一律拒绝。结论写入对应 run 目录的 `decisions/`（schema `wavebench.decision.v1`），附加式，不影响 `run.json`、质量门或 `auto_recover`。
 
-实现状态与分期见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)（`Draft`）。
+开发线入口是 `python -m wavebench advisor ask --state <fixture> --config wavebench.toml [--preview | --accept-external-state]`；它只读取本表，不要求 `[connection]` 或 `[scope]`。实现状态与分期见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)（`Draft`），实现流程见[advisor 插件开发](../development/advisor-plugin-development.md)。
 
 ## 安全限制
 
