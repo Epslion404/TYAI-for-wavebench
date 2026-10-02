@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from wavebench.config import DmmConfig, SerialConnectionConfig
+from wavebench.config import ConnectionConfig, DmmConfig, SerialConnectionConfig
 from wavebench.errors import ConfigError
-from wavebench.instruments.factory import TRANSPORT_FACTORIES, _open_transport
+from wavebench.instruments.api import InstrumentDescriptor
+from wavebench.instruments.factory import TRANSPORT_FACTORIES, _open_transport, open_instrument_driver
 from wavebench.logging import CommandLogger
 
 
@@ -51,6 +53,24 @@ class SerialConnectionConfigTests(unittest.TestCase):
         self.assertFalse(connection.rtscts)
         self.assertFalse(connection.dsrdtr)
 
+    def test_generic_connection_can_target_another_declared_serial_instrument(self):
+        connection = ConnectionConfig(
+            backend="serial",
+            resource="COM3",
+            timeout_ms=1000,
+            opc_timeout_ms=2000,
+            baudrate=57600,
+            parity="O",
+            rtscts=True,
+        )
+
+        serial = connection.serial_connection(resource="COM9")
+
+        self.assertEqual(serial.resource, "COM9")
+        self.assertEqual(serial.baudrate, 57600)
+        self.assertEqual(serial.parity, "O")
+        self.assertTrue(serial.rtscts)
+
 
 class TransportBackendDispatchTests(unittest.TestCase):
     def test_backend_table_covers_the_known_transports(self):
@@ -91,6 +111,63 @@ class TransportBackendDispatchTests(unittest.TestCase):
                 logger=CommandLogger(),
                 serial_config=None,
             )
+
+    def test_declared_serial_scope_opens_through_core_factory(self):
+        captured = {}
+
+        class Driver:
+            def idn(self):
+                return "EXAMPLE,SERIAL"
+
+            def close(self):
+                pass
+
+        descriptor = InstrumentDescriptor(
+            driver_id="example.serial.scope",
+            kind="scope",
+            display_name="Example serial scope",
+            manufacturer="Example",
+            models=("SERIAL",),
+            aliases=(),
+            capabilities=("scope.idn",),
+            idn_patterns=("EXAMPLE,SERIAL",),
+            backends=("serial",),
+            resource_schemes=("com",),
+            option_specs=(),
+            permissions=("instrument.io",),
+            factory=lambda context: (context.open_transport(), Driver())[1],
+        )
+        concrete = object()
+
+        def open_serial(serial_config, **kwargs):
+            captured["serial_config"] = serial_config
+            return concrete
+
+        with (
+            patch(
+                "wavebench.instruments.factory.resolve_instrument_descriptor",
+                return_value=descriptor,
+            ),
+            patch("wavebench.instruments.factory.SerialTransport.open", side_effect=open_serial),
+        ):
+            opened = open_instrument_driver(
+                driver_reference="example.serial.scope",
+                expected_kind="scope",
+                resource="COM8",
+                configured_backend="serial",
+                timeout_ms=1000,
+                opc_timeout_ms=2000,
+                read_retry_attempts=1,
+                read_retry_delay_ms=0,
+                logger=CommandLogger(),
+                serial_config=ConnectionConfig(
+                    "serial", "COM8", 1000, 2000, baudrate=115200
+                ).serial_connection(),
+            )
+
+        self.assertEqual(opened.driver.idn(), "EXAMPLE,SERIAL")
+        self.assertIs(opened.transport.inner, concrete)
+        self.assertEqual(captured["serial_config"].baudrate, 115200)
 
 
 if __name__ == "__main__":

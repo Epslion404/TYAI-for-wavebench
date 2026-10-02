@@ -358,6 +358,11 @@ class ScopeService(SessionStateAliasMixin):
             logger=self.logger,
             settings={"check_errors": self.config.scope.check_errors},
             options=getattr(self.config.scope, "options", {}),
+            serial_config=(
+                self.config.connection.serial_connection()
+                if self.config.connection.backend.strip().lower() == "serial"
+                else None
+            ),
             access=getattr(self.config.scope, "access", "read_write"),
             lease=self.lease,
         )
