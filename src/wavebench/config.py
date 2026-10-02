@@ -5,6 +5,7 @@ from math import isfinite
 from pathlib import Path
 import re
 import tomllib
+from typing import Any
 
 from .errors import ConfigError
 from .services.access_policy import AccessMode, normalize_access_mode
@@ -495,6 +496,21 @@ def _advisor_config(raw: object) -> AdvisorConfig:
     )
 
 
+def _validate_serial_resource(connection: SerialConnectionConfig, *, path: str) -> None:
+    """串口后端要求明确的串口设备路径。
+
+    只用于 `[connection]`：DMM 的历史路径保持原样，避免改变既有报错行为。
+    """
+    resource = (connection.resource or "").strip()
+    if not resource:
+        raise ConfigError(f"{path}.resource must be set when the backend is serial")
+    if re.match(r"(?i)^(tcpip|usb|gpib|hislip|vxi)\d*::", resource):
+        raise ConfigError(
+            f"{path}.resource must be a serial port path such as COM7, /dev/ttyUSB0 or "
+            f"ASRL...::INSTR; got {resource!r}"
+        )
+
+
 def _validate_serial_connection(connection: SerialConnectionConfig, *, path: str) -> None:
     if connection.baudrate <= 0:
         raise ConfigError(f"{path}.baudrate must be > 0")
@@ -651,16 +667,29 @@ class WaveBenchConfig:
         )
         return _replace(self, rf_source=_replace(rf_source, resource=resource))
 
-def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
-    config_path = Path(path)
+def _read_toml_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise ConfigError(
             f"config file not found: {config_path}. Copy wavebench.example.toml to wavebench.toml first."
         )
     try:
-        raw = tomllib.loads(config_path.read_bytes().decode("utf-8-sig"))
+        return tomllib.loads(config_path.read_bytes().decode("utf-8-sig"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {config_path}: {exc}") from exc
+
+
+def load_advisor_config(path: str | Path = "wavebench.toml") -> AdvisorConfig:
+    """只读 `[advisor]` 段。
+
+    决策查询与仪器连接无关，因而不走 `load_config`——那会强制要求 `[connection]`、`[scope]`
+    等与决策无关的段存在。
+    """
+    return _advisor_config(_read_toml_config(Path(path)).get("advisor", {}))
+
+
+def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
+    config_path = Path(path)
+    raw = _read_toml_config(config_path)
 
     try:
         c = raw["connection"]
@@ -839,6 +868,7 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
         raise ConfigError("connection.read_retry_delay_ms must be >= 0")
     if config.connection.backend.lower() == "serial":
         _validate_serial_connection(config.connection.serial_connection(), path="connection")
+        _validate_serial_resource(config.connection.serial_connection(), path="connection")
     from wavebench.instruments.registry import validate_instrument_reference
 
     validate_instrument_reference(config.scope.driver, expected_kind="scope")

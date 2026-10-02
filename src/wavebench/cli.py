@@ -13,7 +13,7 @@ from tempfile import TemporaryFile
 
 import numpy as np
 
-from .config import load_config, vertical_scale_from_vpp
+from .config import load_advisor_config, load_config, vertical_scale_from_vpp
 from .data.packages import load_capture_package, load_run_package
 from .discovery import discover_instruments
 from .doctor import doctor_records, has_doctor_errors as has_config_doctor_errors
@@ -37,6 +37,8 @@ from .cli_output import (
     _print_dmm_measurement_profile,
     _print_dmm_reading,
     _print_dmm_system_interface_status,
+    _print_advisor_list,
+    _print_advisor_result,
     _print_dmm_trigger_status,
     _print_dmm_voltage_range_configuration,
     _print_market_plugin_info,
@@ -110,7 +112,14 @@ from .plugins.market import load_market_index
 from .plugins.lifecycle import PluginLifecycle
 from .plugins.package_inspect import inspect_plugin_package
 from .plugins.api import PluginDoctorRecord
-from .plugins.registry import build_plugin_registry, has_doctor_errors, plugin_doctor_records
+from .plugins.registry import (
+    advisor_doctor_records,
+    build_advisor_registry,
+    build_plugin_registry,
+    has_advisor_doctor_errors,
+    has_doctor_errors,
+    plugin_doctor_records,
+)
 from .plugins.scpi import has_scpi_doctor_errors, load_scpi_plugin, probe_scpi_plugin, scpi_plugin_doctor_records
 from .services.scope_service import ScopeService
 from .services.source_service import SourceService
@@ -144,6 +153,23 @@ from .services.frequency_response_calibration import (
     write_fixed_point_calibration,
 )
 from .services.sweep_service import SweepService, parse_frequency_list
+from .services.advisor_rule import advisor_client_for
+from .services.advisor_seam import (
+    DEFAULT_MODEL,
+    AdvisorAccess,
+    DecisionState,
+    RoutingOption,
+    SeamError,
+    advise,
+    build_questions,
+    build_routing_question,
+)
+from .services.decision_artifacts import (
+    DecisionTarget,
+    ThresholdPolicy,
+    utc_stamp,
+    write_artifact,
+)
 
 
 CLI_RESULT_SCHEMA = "wavebench.cli.result.v1"
@@ -822,6 +848,88 @@ def _run_plan_payload(plan) -> dict[str, object]:
 
 
 
+def _advisor_routing_options() -> tuple[RoutingOption, ...]:
+    """封闭的入口选项集：直接取自 CLI 域列表，避免与真实命令漂移。
+
+    argparse 没有"列出子命令及其 help"的公开接口，这里按惯例读 `_actions` /
+    `_choices_actions`——解析的是本进程自己构造的 parser，不涉及任何外部输入。
+    命令模板固定成 `--help`，建议只指向帮助，不会触发任何仪器动作。
+    """
+    for action in build_parser()._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        summaries = {
+            pseudo.dest: pseudo.help or pseudo.dest for pseudo in action._choices_actions
+        }
+        return tuple(
+            RoutingOption(
+                option_id=name,
+                summary=summaries.get(name, name),
+                command_template=f"wavebench {name} --help",
+                mutates_instrument=False,
+            )
+            for name in sorted(action.choices)
+        )
+    raise ConfigError("wavebench CLI exposes no domains for advisor routing")
+
+
+def _load_advisor_state(path: str) -> DecisionState:
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        raise ConfigError(f"decision state fixture is not readable: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"decision state fixture is not valid JSON: {exc}") from exc
+    try:
+        return DecisionState.from_payload(raw)
+    except SeamError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _run_advisor_ask(args: argparse.Namespace) -> int:
+    advisor_config = load_advisor_config(args.config)
+    plugin = build_advisor_registry(include_entry_points=True).registry.get(args.advisor)
+    state = _load_advisor_state(args.state)
+    options = _advisor_routing_options()
+    questions = build_questions(build_routing_question(options))
+    policy = ThresholdPolicy(accept=advisor_config.accept, review=advisor_config.review)
+    client = advisor_client_for(plugin.advisor_id)
+    accepted = bool(args.accept_external_state)
+    target = DecisionTarget(run_dir=Path(args.run_dir)) if args.run_dir else None
+    access = AdvisorAccess(
+        enabled=advisor_config.enabled,
+        interactive=sys.stdin.isatty(),
+        accepted=accepted,
+        # 没有显式同意时一律只预览：默认路径不允许外发
+        preview_only=not accepted,
+        endpoint_hosts=plugin.egress.endpoint_hosts,
+        declared_state_fields=plugin.egress.allowed_state_fields,
+        registered_endpoint_hosts=advisor_config.endpoint_hosts,
+        registered_state_fields=advisor_config.allowed_state_fields,
+        run_id=target.run_id if target is not None else None,
+        granted_by="operator" if accepted else None,
+        granted_at=utc_stamp() if accepted else None,
+    )
+    artifact = advise(
+        model=client.model_id if client is not None else DEFAULT_MODEL,
+        client=client,
+        state=state,
+        questions=questions,
+        options=options,
+        policy=policy,
+        access=access,
+        target=target,
+        question_id=args.question,
+    )
+    written = (
+        write_artifact(artifact, target.run_dir, advisor_id=plugin.advisor_id)
+        if target is not None
+        else None
+    )
+    _print_advisor_result(artifact, written)
+    return 0
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
@@ -830,7 +938,36 @@ def _main(argv: list[str] | None = None) -> int:
         raw_argv.insert(0, "--json")
     args = parser.parse_args(raw_argv)
     try:
+        if args.domain == "advisor":
+            return _run_advisor_ask(args)
         if args.domain == "plugin":
+            if getattr(args, "category", "instrument") == "advisor" and args.command in (
+                "list",
+                "doctor",
+            ):
+                if getattr(args, "kind", None) is not None:
+                    raise ConfigError(
+                        "--kind filters instrument plugins; use --category instrument / "
+                        "--kind 只用于仪器插件，请改用 --category instrument"
+                    )
+                if getattr(args, "load", False):
+                    raise ConfigError(
+                        "--load loads executable instrument plugins; use --category instrument / "
+                        "--load 只用于仪器插件，请改用 --category instrument"
+                    )
+                advisor_result = build_advisor_registry(
+                    include_entry_points=getattr(args, "include_entry_points", False)
+                )
+                if args.command == "list":
+                    _print_advisor_list(advisor_result.registry.list_advisors())
+                    for error in advisor_result.load_errors:
+                        print(f"error\t{error.source}\t{error.message}")
+                    return 2 if advisor_result.load_errors else 0
+                records = advisor_doctor_records(
+                    advisor_result.registry, load_errors=advisor_result.load_errors
+                )
+                _print_plugin_doctor(records)
+                return 2 if has_advisor_doctor_errors(records) else 0
             lifecycle_commands = {
                 "install",
                 "installed",

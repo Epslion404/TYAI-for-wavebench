@@ -101,6 +101,40 @@ baudrate = 0
             with self.assertRaisesRegex(ConfigError, "connection.baudrate must be > 0"):
                 load_config(path)
 
+    def test_rejects_a_non_serial_resource_for_the_serial_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "serial"
+resource = "TCPIP::192.0.2.10::INSTR"
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "must be a serial port path"):
+                load_config(path)
+
+    def test_rejects_a_missing_serial_resource(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "serial"
+resource = ""
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigError, "connection.resource must be set"):
+                load_config(path)
+
     def test_output_overrides_disable_csv_only(self):
         config = WaveBenchConfig(
             connection=ConnectionConfig("lan", "TCPIP::127.0.0.1::INSTR", 100, 100),
