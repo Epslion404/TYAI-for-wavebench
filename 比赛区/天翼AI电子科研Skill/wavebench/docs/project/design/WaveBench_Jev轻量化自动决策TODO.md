@@ -83,9 +83,11 @@
 
 ## J4 比赛作品包侧的接入
 
-- [ ] 技能包 CLI 增加「决策建议」入口：只读、默认离线、无 key 时降级为内置基线
-- [ ] `SKILL.md`、`README.md`、`examples/` 补离线示例（无硬件、无 key 可跑）
-- [ ] 与设备支线共用 M5 的离线三件套、实机验收清单与 Release 交付（清单见 [M5 实机验收清单](WaveBench_M5实机验收清单.md)）
+已收尾（`Closes #18`；里程碑 J4 已关闭）：
+
+- [x] 技能包 CLI 增加「决策建议」入口：`advise` 用代码持有的封闭选项集（`discover`／`inspect`／`analyze`），零外部调用、不产生写设备命令（PR #21）
+- [x] `SKILL.md`、`README.md`、`examples/` 补离线示例：新增 `examples/README.md`，三条命令在本机实跑核验（`analyze --demo`、`analyze --file examples/demo_capture.json`、`advise --request ...`）
+- [x] 与设备支线共用 M5 的离线三件套、实机验收清单与 Release 交付（清单见 [M5 实机验收清单](WaveBench_M5实机验收清单.md)）：`v1.0.0` 已发布（tag 指向 `competition`，zip 作为 asset）；M4 作品包同步同批完成（快照 `IN SYNC`）
 
 ## 与设备支线的关系
 
