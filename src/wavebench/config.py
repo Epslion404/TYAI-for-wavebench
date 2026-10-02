@@ -496,6 +496,21 @@ def _advisor_config(raw: object) -> AdvisorConfig:
     )
 
 
+def _validate_serial_resource(connection: SerialConnectionConfig, *, path: str) -> None:
+    """串口后端要求明确的串口设备路径。
+
+    只用于 `[connection]`：DMM 的历史路径保持原样，避免改变既有报错行为。
+    """
+    resource = (connection.resource or "").strip()
+    if not resource:
+        raise ConfigError(f"{path}.resource must be set when the backend is serial")
+    if re.match(r"(?i)^(tcpip|usb|gpib|hislip|vxi)\d*::", resource):
+        raise ConfigError(
+            f"{path}.resource must be a serial port path such as COM7, /dev/ttyUSB0 or "
+            f"ASRL...::INSTR; got {resource!r}"
+        )
+
+
 def _validate_serial_connection(connection: SerialConnectionConfig, *, path: str) -> None:
     if connection.baudrate <= 0:
         raise ConfigError(f"{path}.baudrate must be > 0")
@@ -853,6 +868,7 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
         raise ConfigError("connection.read_retry_delay_ms must be >= 0")
     if config.connection.backend.lower() == "serial":
         _validate_serial_connection(config.connection.serial_connection(), path="connection")
+        _validate_serial_resource(config.connection.serial_connection(), path="connection")
     from wavebench.instruments.registry import validate_instrument_reference
 
     validate_instrument_reference(config.scope.driver, expected_kind="scope")

@@ -12,6 +12,20 @@
 6. 只有真实用户任务需要时，再增加 run plan step、artifact、模板和报告支持。
 7. 为每一层补 fake transport、service、CLI、schema 和失败路径测试。
 
+## 原始帧路径（非 SCPI 设备）
+
+需要「发一帧、收一帧」的私有协议（长度字段、校验和、二进制定界）走 transport 的原始帧接口，而不是把帧塞进 SCPI 查询：
+
+| 操作 | 用途 | 重放策略 |
+| --- | --- | --- |
+| `send_frame(frame, max_bytes=...)` | 发送一帧写入 | 只接受 `NO_REPLAY` |
+| `read_exact(size, timeout_ms=...)` | 读满固定字节数 | 拒绝 `SAFE_TO_REPLAY`；二进制读取用 `READ_CONTINUATION_ONLY` |
+| `read_until(delimiter, max_bytes=...)` | 读到定界符为止 | 同上 |
+
+- 三个操作都由 guarded transport 统一门控：access policy、资源租约、会话健康与计数器（`binary_query_calls`／`blocked_binary_query_calls`）照常生效；部分读会把会话标记为不健康（`synchronization=LOST`）。
+- 超限、非法定界符、错误的重放策略都在**传输前**被拒绝（`attempts=0`）。
+- **原始帧目前只有串口后端实现**；其它后端调用时会得到 `raw_frame_unsupported`，而不是 `AttributeError`。
+
 ## 不变量
 
 - driver 不读取 CLI 参数，也不直接写 run artifact。

@@ -42,9 +42,9 @@
   - 进展（2026-10-02）：**查表分派已落地**（`TRANSPORT_FACTORIES` + `TransportRequest`，RFC 阶段 1）；未声明的后端仍在 I/O 前抛 `ConfigError`（有测试锁定）。`can` 后端待阶段 4。
   - 触点：`src/wavebench/instruments/factory.py::_open_transport`、`_select_backend`、`descriptor.backends`。
   - 验收：未声明的后端仍必须在真实 I/O 前抛 `ConfigError`；既有后端行为零变化。
-- [~] 串口配置去 DMM 专用化：`serial_config: DmmConfig` 改为通用串口配置。
+- [x] 串口配置去 DMM 专用化：`serial_config: DmmConfig` 改为通用串口配置。
   - 进展（2026-10-02）：**类型已通用化**——新增 `SerialConnectionConfig`，`_open_transport`／`SerialTransport.open` 只认它，`DmmConfig.serial_connection()` 负责转换，DMM 路径行为不变（回归测试锁定）。
-  - 未做：让 scope／source／power 通过配置声明串口（`[connection]` 是否承载串口字段属 RFC §7 的待评审项）。
+  - 已决（2026-10-02，追认实现）：scope／source／power 通过 `[connection]` 声明串口；`connection.backend = "serial"` 时由 Core 工厂把 `ConnectionConfig.serial_connection(resource=...)` 交给描述符声明的 driver（RFC §7 第 2 项，实现见 [#4](https://github.com/Epslion404/TYAI-for-wavebench/issues/4) 对应的合并 `a0a2b28`）。
   - 触点：`src/wavebench/instruments/factory.py`、`src/wavebench/transport/serial_transport.py`、`src/wavebench/config.py`。
   - 验收：DMM 串口路径回归通过；scope／source／power 在 descriptor 声明 `serial` 后可打开串口。
 - [ ] CAN／CAN-FD 传输实现，依赖进可选 extra（默认安装不引入）。
@@ -57,7 +57,9 @@
 
 ## M2 协议层
 
-- [ ] 原始字节收发合同：在不破坏现有 `InstrumentTransport` 的前提下增加按帧读写（如 `send_frame`／`read_exact`／`read_until`），并复用 `ReplayPolicy`、session 健康与租约。
+- [x] 原始字节收发合同：`InstrumentTransport` 增 `send_frame`／`read_exact`／`read_until`（#5，master `f7ce0a6`），复用 `ReplayPolicy`、session 健康与租约。
+  - 串口实现离线覆盖拆包、定界符、超限、部分超时与重放分类；只读模式下由 guarded 层在后端 I/O 前拦下；其它后端调用时报 `raw_frame_unsupported`。
+  - 合并后待补的文档与校验见 [#28](https://github.com/Epslion404/TYAI-for-wavebench/issues/28)。
   - 触点：`src/wavebench/transport/base.py`、`transport/contracts.py`、`transport/guarded.py`、`transport/session.py`。
 - [ ] 自定义帧定义：定长、长度字段、分隔符、转义、校验和（CRC16 等）、最大帧长、帧间隔与响应超时。
   - 验收：帧格式非法／超长／校验失败必须结构化失败，不得当作有效响应。
