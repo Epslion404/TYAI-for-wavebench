@@ -72,6 +72,7 @@ nav:
       - 测试: development/testing.md
       - 文档工作流: development/documentation.md
       - 插件开发: development/plugin-development.md
+      - 开发 advisor 插件: development/advisor-plugin-development.md
       - 新增仪器驱动: development/instrument-drivers.md
   - RFC: rfcs/index.md
   - 更新日志: https://github.com/Scaxlibur/wavebench/blob/master/CHANGELOG.md
