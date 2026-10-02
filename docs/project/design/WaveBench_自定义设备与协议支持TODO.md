@@ -2,6 +2,15 @@
 
 配套规范：[自定义设备与协议支持开发规范](WaveBench_自定义设备与协议支持规范.md)。状态用 `[ ]` 未开始、`[~]` 进行中、`[x]` 完成。
 
+## 平台跟踪（执行状态以 issue 为准）
+
+本页是**契约与验收清单**（稳定事实）；日常执行状态、讨论与进度看 tyai 的 issue：
+
+- 方向：[#13 [Direction] 自定义设备与协议支持](https://github.com/Epslion404/TYAI-for-wavebench/issues/13)
+- 里程碑：`M1 传输层`／`M2 协议层`／`M3 设备层`／`M4 作品包同步`／`M5 交付`
+- 过滤视图：`is:open label:track:device milestone:"M1 传输层"`（在 issue 搜索框里直接用）
+- 规则：**里程碑收尾时才回来更新勾选框**；平时不要在文件里勾进度，避免与 issue 漂移。
+
 ## 已提 issue（比赛仓库）
 
 核心侧工作统一在比赛仓库 `Epslion404/TYAI-for-wavebench` 跟踪，本页保留决策、顺序与验收记录；fork `Epslion404/wavebench` 留有同内容副本（编号相反），上游 `Scaxlibur/WaveBench` 不保留同类 issue。
