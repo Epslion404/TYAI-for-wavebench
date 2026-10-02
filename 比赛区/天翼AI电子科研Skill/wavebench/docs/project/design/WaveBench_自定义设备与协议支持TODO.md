@@ -88,7 +88,7 @@
 ## M5 验证与交付
 
 - [ ] 离线三件套：`python -m pytest -q`、`python -m ruff check .`、`python scripts/generate_docs.py --check`，外加 `audit_docs.py --quiet-warnings`。
-- [ ] 实机验收清单（单独授权后执行）：IDN、接线、初态、写前快照、回读、未恢复项、产物目录。
+- [ ] 实机验收清单（单独授权后执行）：见 [M5 实机验收清单](WaveBench_M5实机验收清单.md)（设备线与 Jev 线共用，默认不动硬件）。
 - [ ] 文档同步：canonical Reference（配置／CLI／run schema／artifact／插件）+ `CHANGELOG.md`。
 - [ ] 提交推送（GitHub 操作手动带 `http.proxy=http://127.0.0.1:7897`）。
 
