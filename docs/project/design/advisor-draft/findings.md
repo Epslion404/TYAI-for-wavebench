@@ -37,7 +37,7 @@
 - 规格：64k 上下文（`state` + 最长问题 ≤32k）；**仅文本输入**；限流 250k tok/s、1200 req/min
   且官方标注"动态调整、可能无预警变化"；$0.042/Mtok 输入、输出免费；延迟 70–500 ms（美西本机测得）
 - Python SDK：`typesafe-sdk` 0.7.2，`requires-python>=3.10`，依赖 `httpx2/pydantic/pydantic-core/tenacity`；
-  **PyPI license 字段为空**
+  **许可证为 MIT**（PyPI `info.license` 是空的旧字段，`info.license_expression` 与 classifier 均为 MIT）
 - 数据：托管美国、不用输入训练、企业档可谈 ZDR；英文最强，**CJK 可用但不等同英文**
 - 官方已知缺陷（`jev-1.13 jaggedness`，2026-09-17 复核）：数字/计数/日期比较不可靠（要求放回代码）；
   间接层数越多越差；**context rot**；`state` 对抗性内容能推动答案；**不保证结构不变式**
@@ -68,6 +68,33 @@
 | 首版禁止一个 wheel 同时提供两类插件（建议） | 降低账本与文件所有权冲突检测复杂度 |
 | 【已裁定 2026-09-28】1a 类别抽象 / 2a 禁止混装 / 3a 依赖只从 `Requires-Dist` 读且 install 不变 / 4c 同意绑定 endpoint+字段集 / 5b 不动 access policy / 6a 不进 run report | 用户裁定；落地后果与验收门已写回 RFC 与 README |
 
+## J3 Candidate Review and Kill Criteria (2026-10-02)
+
+Scope: this is a development decision record for Issue #17. It does not claim a released external-advisor feature.
+
+### Reproducible external checks
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Python SDK identity | `https://pypi.org/pypi/typesafe-sdk/json`, retrieved 2026-10-02 | `typesafe-sdk` is version `0.7.2`, requires Python `>=3.10`, and links to TypeSafe documentation and source repository. |
+| SDK license | Same PyPI JSON: `info.license_expression` and classifiers (2026-10-02 re-check) | **MIT**: `info.license` is `null` because it is PyPI's legacy field, but `info.license_expression` is `MIT` and the classifiers include `License :: OSI Approved :: MIT License`. |
+| On-prem availability | Official quickstart and models pages, retrieved 2026-10-02 | Not proven: these checked pages contain no on-prem deployment claim. |
+| Mainland-China latency | No approved region-specific test and no API credential | Not measured. The previously cited non-local latency is not evidence for this deployment. |
+| Chinese/CJK accuracy | No labeled Chinese evaluation corpus and no API credential | Not measured. No accuracy or parity claim is made. |
+| Live API behavior | No API credential; Core offline test constraint | Not called. No network client is added. |
+
+Sources checked: [PyPI JSON](https://pypi.org/pypi/typesafe-sdk/json), [TypeSafe quickstart](https://docs.typesafe.ai/introduction/quickstart), and [TypeSafe models](https://docs.typesafe.ai/models). A page not containing a claim is recorded as **not proven**, not as evidence that the capability is unavailable.
+
+### Candidate decisions
+
+| Candidate | Deterministic baseline / required evidence | Decision | Current scope |
+| --- | --- | --- | --- |
+| `advisor.route` | `builtin.rule_advisor` with its closed routing option set; a version-pinned, labeled offline comparison showing a material improvement without violating the same closed set | **Stop external integration** | Keep the built-in, offline route advisor only. No network adapter or SDK dependency. |
+| `advisor.cause` | A deterministic closed cause table plus labeled quality-anomaly corpus, calibration and error analysis better than the baseline | **Stop / do not start** | No cause capability implementation or external call. |
+| `advisor.triage` | A deterministic tiering baseline plus labeled run/acquisition corpus, threshold calibration, and a defined human-review error budget | **Stop / do not start** | No triage capability implementation or external call. |
+
+The required labeled comparisons do not exist in this repository, and no live external result exists. Therefore none of the three candidates demonstrates an advantage over a deterministic baseline. The fallback is intentional: `advisor.route` remains advisory-only and offline; `cause` and `triage` remain unimplemented. This decision must be reopened only with a version-pinned provider, a reviewable local evaluation corpus, reproducible metrics against the named baseline, and the existing egress-consent contract.
+
 ## Issues Encountered
 
 | Issue | Resolution |
@@ -87,5 +114,5 @@
 
 ## 未核验
 
-- `typesafe-sdk` license、是否有 on-prem、中国大陆实测延迟、中文精度实测值
+- `typesafe-sdk` license（2026-10-02 判定为 MIT）、是否有 on-prem、中国大陆实测延迟、中文精度实测值
 - 真实 Jev 调用（无 API key；seam 按官方 HTTP 形状实现，未实调）
