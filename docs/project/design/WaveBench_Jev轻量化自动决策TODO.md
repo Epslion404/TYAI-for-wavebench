@@ -57,10 +57,12 @@
 
 ## J2 文档与门禁
 
-- [ ] `docs/concepts/plugin-model.md` 增补 advisor 类别
-- [ ] 新增 `docs/development/advisor-plugin-development.md`（含「会外发数据」声明怎么写）
-- [ ] `docs/reference/plugins/index.md`、[RFC 索引](../../rfcs/index.md)、`mkdocs.yml` 导航同步
-- [ ] 验收：`audit_docs.py`、`scripts/generate_docs.py --check`、`scripts/docs_impact.py` 全过
+已收尾（`733f078`，里程碑 J2 已关闭；证据见 [#16](https://github.com/Epslion404/TYAI-for-wavebench/issues/16)）：类别契约、`advisor ask` 边界、配置入口与导航都已进站点文档，并按文档宪法标为「开发线已实现、未随正式版本发布」。另补了 `concepts/capability-model.md` 的边界事实（`advisor.*` 不参与 capability/access policy）与 `reference/cli.md` 的 advisor 入口段。
+
+- [x] `docs/concepts/plugin-model.md` 增补 advisor 类别
+- [x] 新增 `docs/development/advisor-plugin-development.md`（含「会外发数据」声明怎么写）
+- [x] `docs/reference/plugins/index.md`、[RFC 索引](../../rfcs/index.md)、`mkdocs.yml` 导航同步
+- [x] 验收：`audit_docs.py`、`scripts/generate_docs.py --check`、`scripts/docs_impact.py` 全过（另加 `mkdocs build --strict`）
 
 ## J3 候选决策功能与 kill criteria
 
