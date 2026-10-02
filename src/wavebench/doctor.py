@@ -178,12 +178,14 @@ def _doctor_target(
 
 
 def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
+    serial = config.connection.backend.strip().lower() == "serial"
     targets = [
         DoctorTarget(
             name="scope",
             driver=config.scope.driver,
             resource=config.connection.resource,
             expected_idn_tokens=_scope_expected_tokens(config.scope.driver, config.scope.model_hint),
+            serial_config=config.connection.serial_connection() if serial else None,
         )
     ]
     if config.source is not None:
@@ -193,6 +195,11 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.source.driver,
                 resource=config.source.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.source.driver),
+                serial_config=(
+                    config.connection.serial_connection(resource=config.source.resource)
+                    if serial
+                    else None
+                ),
             )
         )
     if config.rf_source is not None:
@@ -211,6 +218,11 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.power.driver,
                 resource=config.power.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.power.driver),
+                serial_config=(
+                    config.connection.serial_connection(resource=config.power.resource)
+                    if serial
+                    else None
+                ),
             )
         )
     if config.dmm is not None:
