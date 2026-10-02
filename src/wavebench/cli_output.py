@@ -55,6 +55,7 @@ from .plugins.scpi import DeclarativeScpiPlugin, ScpiProbeResult
 from .services.run_plan import RunPlan, RunStep
 from .services.scope_service import ScopeStatusSummary
 from .services.capability_explain import CapabilityExplanation
+from .services.decision_artifacts import DecisionArtifact
 
 
 
@@ -69,6 +70,49 @@ def _print_plugin_list(plugins: list[InstrumentPlugin]) -> None:
             f"{plugin.driver_id}	{plugin.kind}	{plugin.origin}	"
             f"{plugin.model_text}	{plugin.capability_text}"
         )
+
+
+def _print_advisor_result(artifact: DecisionArtifact, artifact_path: Path | None = None) -> None:
+    print(f"status={artifact.status}")
+    print(f"reason={artifact.reason or 'none'}")
+    print(f"requested_model={artifact.requested_model}")
+    print(f"reported_model={artifact.reported_model or 'none'}")
+    thresholds = dict(artifact.thresholds or {})
+    print(f"thresholds=accept={thresholds.get('accept')},review={thresholds.get('review')}")
+    consent = dict(artifact.consent or {})
+    print(
+        "consent="
+        f"status={consent.get('status') or 'none'},"
+        f"payload_bytes={consent.get('payload_bytes')},"
+        f"payload_sha256={consent.get('payload_sha256') or 'none'},"
+        f"accepted_data_leaves_machine={str(bool(consent.get('accepted_data_leaves_machine'))).lower()}"
+    )
+    sources = {
+        str(span["source"])
+        for span in (artifact.state or {}).get("untrusted", ())
+        if isinstance(span, dict) and span.get("source")
+    }
+    print("untrusted_sources=" + (",".join(sorted(sources)) or "none"))
+    if artifact.status == "preview_only":
+        print(
+            "preview_payload="
+            + json.dumps(
+                {
+                    "model": artifact.requested_model,
+                    "state": artifact.state,
+                    "questions": artifact.questions,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    for item in artifact.recommendations:
+        print(
+            f"recommendation\t{item.get('id')}\t{item.get('action')}\t"
+            f"{item.get('command') or 'none'}\t{item.get('reason')}"
+        )
+    if artifact_path is not None:
+        print(f"artifact={artifact_path}")
 
 
 def _print_advisor_list(advisors: list[AdvisorPlugin]) -> None:

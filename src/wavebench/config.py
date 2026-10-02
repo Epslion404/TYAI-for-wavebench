@@ -5,6 +5,7 @@ from math import isfinite
 from pathlib import Path
 import re
 import tomllib
+from typing import Any
 
 from .errors import ConfigError
 from .services.access_policy import AccessMode, normalize_access_mode
@@ -606,16 +607,29 @@ class WaveBenchConfig:
         )
         return _replace(self, rf_source=_replace(rf_source, resource=resource))
 
-def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
-    config_path = Path(path)
+def _read_toml_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise ConfigError(
             f"config file not found: {config_path}. Copy wavebench.example.toml to wavebench.toml first."
         )
     try:
-        raw = tomllib.loads(config_path.read_bytes().decode("utf-8-sig"))
+        return tomllib.loads(config_path.read_bytes().decode("utf-8-sig"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {config_path}: {exc}") from exc
+
+
+def load_advisor_config(path: str | Path = "wavebench.toml") -> AdvisorConfig:
+    """只读 `[advisor]` 段。
+
+    决策查询与仪器连接无关，因而不走 `load_config`——那会强制要求 `[connection]`、`[scope]`
+    等与决策无关的段存在。
+    """
+    return _advisor_config(_read_toml_config(Path(path)).get("advisor", {}))
+
+
+def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
+    config_path = Path(path)
+    raw = _read_toml_config(config_path)
 
     try:
         c = raw["connection"]
