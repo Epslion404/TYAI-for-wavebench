@@ -77,6 +77,22 @@ def build_parser() -> argparse.ArgumentParser:
     net_parser = subparsers.add_parser("net", help="Network discovery helpers / 网络发现工具")
     doctor_parser = subparsers.add_parser("doctor", help="Diagnose configured instruments / 诊断已配置仪器")
     plugin_parser = subparsers.add_parser("plugin", help="Plugin registry commands / 插件注册表命令")
+    advisor_parser = subparsers.add_parser(
+        "advisor", help="Offline advisor commands / 离线决策建议命令"
+    )
+    advisor_sub = advisor_parser.add_subparsers(dest="command", required=True)
+    advisor_ask = advisor_sub.add_parser(
+        "ask", help="Preview or request one advisory decision / 预览或请求一条决策建议"
+    )
+    advisor_ask.add_argument("--advisor", required=True, help="Advisor id, e.g. builtin.rule_advisor")
+    advisor_ask.add_argument("--question", required=True, help="Supported question id, e.g. route")
+    advisor_ask.add_argument("--state", required=True, help="Local JSON state fixture")
+    advisor_ask.add_argument("--preview", action="store_true", help="Print the redacted request without calling an advisor")
+    advisor_ask.add_argument(
+        "--accept-external-state",
+        action="store_true",
+        help="Explicitly accept registered external-state transmission when supported",
+    )
     doctor_parser.add_argument("--config", default="wavebench.toml", help="Path to wavebench TOML config")
     doctor_parser.add_argument(
         "--timeout-ms",

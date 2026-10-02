@@ -838,6 +838,17 @@ def _main(argv: list[str] | None = None) -> int:
         raw_argv.insert(0, "--json")
     args = parser.parse_args(raw_argv)
     try:
+        if args.domain == "advisor":
+            from .services.advisor_service import ask_local_rule_advisor, preview_advisor_ask
+
+            options = dict(
+                advisor_id=args.advisor,
+                question_id=args.question,
+                state_path=args.state,
+            )
+            result = preview_advisor_ask(**options) if args.preview else ask_local_rule_advisor(**options)
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+            return 0
         if args.domain == "plugin":
             if getattr(args, "category", "instrument") == "advisor" and args.command in (
                 "list",
