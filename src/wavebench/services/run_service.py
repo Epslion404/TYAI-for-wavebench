@@ -150,6 +150,9 @@ class RunResult:
     run_json_path: Path
     summary_csv_path: Path
     steps: list[RunStepRecord]
+    # Shared with RunInstrumentServices: close happens after construction,
+    # so this list is populated when session close fails (session_close_failed).
+    close_errors: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -1126,6 +1129,7 @@ class RunService:
                 run_json_path=run_json_path,
                 summary_csv_path=summary_csv_path,
                 steps=records,
+                close_errors=services.close_errors,
             )
 
         if not analysis_steps or run_failure is not None or services.close_errors:
@@ -1238,6 +1242,7 @@ class RunService:
             run_json_path=run_json_path,
             summary_csv_path=summary_csv_path,
             steps=records,
+            close_errors=services.close_errors,
         )
 
     @contextmanager

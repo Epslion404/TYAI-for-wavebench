@@ -1476,6 +1476,10 @@ def _main(argv: list[str] | None = None) -> int:
                 else:
                     result = service.run(plan, execution_intent=expected_intent)
                 failed = any(step.status == "failed" for step in result.steps)
+                # Session close failures mark run.json failed; the CLI exit code
+                # and JSON envelope must follow that terminal status, not steps.
+                close_failed = bool(result.close_errors)
+                failed = failed or close_failed
                 if args.json:
                     _emit_json_result(
                         {
@@ -1483,6 +1487,7 @@ def _main(argv: list[str] | None = None) -> int:
                             "run_json": str(result.run_json_path),
                             "summary": str(result.summary_csv_path),
                             "steps": _json_payload(result.steps),
+                            "close_errors": result.close_errors,
                         },
                         status="failed" if failed else "ok",
                         exit_code=2 if failed else 0,
@@ -1492,6 +1497,8 @@ def _main(argv: list[str] | None = None) -> int:
                     print(f"run_json={result.run_json_path}")
                     print(f"summary={result.summary_csv_path}")
                     print(f"steps={len(result.steps)}")
+                    if close_failed:
+                        print(f"session_close_errors={len(result.close_errors)}")
                 return 2 if failed else 0
         if args.domain == "dmm":
             service = _load_dmm_service(args)
