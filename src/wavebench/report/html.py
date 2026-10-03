@@ -233,7 +233,9 @@ def render_run_report_html(
     expectations = [] if compact else _collect_expectation_rows(run)
     dmm_readings = [] if compact else _collect_dmm_readings(run)
     sweep_rows = [] if compact else _collect_sweep_rows(run)
-    waveform_previews = [] if compact else _collect_waveform_previews(run)
+    waveform_previews = (
+        [] if compact else _collect_waveform_previews(run, analysis_limits=analysis_limits)
+    )
     evidence = _build_evidence_summary(run, expectations, dmm_readings, screenshots, waveform_previews)
     artifact_links = [] if compact else _collect_artifact_links(run, report_output_dir, screenshots)
     summary = _build_report_summary(run, screenshots, signals)
@@ -2434,15 +2436,36 @@ def _screenshot_card(screenshot: ReportScreenshot) -> str:
     )
 
 
-def _collect_waveform_previews(run: RunPackage) -> list[ReportWaveformPreview]:
+def _collect_waveform_previews(run: RunPackage, *, analysis_limits=None) -> list[ReportWaveformPreview]:
+    from wavebench.data.analysis_io import read_json_bounded
+    from wavebench.data.analysis_resources import AnalysisLimits
+
+    limits = analysis_limits or AnalysisLimits()
     previews: list[ReportWaveformPreview] = []
+    work_units = 0
     for step in run.steps:
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
         package_text = artifact.get("package")
         if not package_text:
             continue
         package_dir = _resolve_artifact_path(run.path, str(package_text))
-        metadata = _read_capture_metadata(package_dir, artifact.get("metadata"))
+        metadata_text = artifact.get("metadata")
+        metadata_path = (
+            _resolve_artifact_path(package_dir, str(metadata_text))
+            if metadata_text else package_dir / "metadata.json"
+        )
+        if not metadata_path.exists():
+            metadata_path = package_dir / "metadata.json"
+        try:
+            metadata = read_json_bounded(metadata_path, limits)
+            metadata = metadata if isinstance(metadata, dict) else {}
+        except Exception as exc:  # noqa: BLE001 - retain a visible reason for unavailable previews
+            previews.append(ReportWaveformPreview(
+                step_index=str(step.get("index", "")), package=str(package_text), channel="",
+                title=f"Step {step.get('index', '')}", svg="",
+                warning=f"waveform preview unavailable: {type(exc).__name__}: {exc}",
+            ))
+            continue
         for channel, npy_text, summary in _metadata_waveform_npy_files(metadata):
             title = _waveform_preview_title(step.get("index", ""), channel, summary)
             if not npy_text:
@@ -2461,8 +2484,8 @@ def _collect_waveform_previews(run: RunPackage) -> list[ReportWaveformPreview]:
             svg = ""
             warning = ""
             try:
-                waveform = np.load(npy_path)
-                svg = _waveform_svg(waveform)
+                limits.check("max_report_curves", len(previews) + 1, "waveform preview")
+                svg, work_units = _load_waveform_preview(npy_path, limits, work_units=work_units)
             except Exception as exc:  # noqa: BLE001 - report generation should survive bad artifacts
                 warning = f"waveform preview unavailable: {type(exc).__name__}: {exc}"
             previews.append(
@@ -2476,6 +2499,41 @@ def _collect_waveform_previews(run: RunPackage) -> list[ReportWaveformPreview]:
                 )
             )
     return previews
+
+
+def _load_waveform_preview(npy_path: Path, limits, *, work_units: int = 0) -> tuple[str, int]:
+    from wavebench.data.analysis_io import BLOCK_ROWS, mapped_npy
+
+    max_points = 600
+    with mapped_npy(npy_path, limits, columns=2) as (waveform, _):
+        count = waveform.shape[0]
+        # Two bounded passes preserve the existing finite-row filtering and
+        # evenly spaced selection, without copying or masking the entire input.
+        work_units += 2 * count
+        limits.check("max_work_units", work_units, "waveform preview")
+        limits.check(
+            "max_working_bytes",
+            128 * (min(count, BLOCK_ROWS) + min(count, max_points)) + 65536,
+            "waveform preview",
+        )
+        finite_count = 0
+        for start in range(0, count, BLOCK_ROWS):
+            block = np.asarray(waveform[start:start + BLOCK_ROWS], dtype=float)
+            finite_count += int(np.count_nonzero(np.isfinite(block).all(axis=1)))
+        if finite_count < 2:
+            raise ValueError("need at least two finite waveform samples")
+        indices = np.linspace(0, finite_count - 1, min(finite_count, max_points)).astype(int)
+        selected = np.empty((indices.size, 2), dtype=float)
+        seen = 0
+        for start in range(0, count, BLOCK_ROWS):
+            block = np.asarray(waveform[start:start + BLOCK_ROWS], dtype=float)
+            block = block[np.isfinite(block).all(axis=1)]
+            left, right = np.searchsorted(indices, [seen, seen + len(block)])
+            if right > left:
+                selected[left:right] = block[indices[left:right] - seen]
+            seen += len(block)
+        svg = _waveform_svg(selected, max_points=max_points)
+    return svg, work_units
 
 
 def _metadata_waveform_npy_files(metadata: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
