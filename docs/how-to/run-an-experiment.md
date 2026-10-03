@@ -54,6 +54,8 @@ python -m wavebench run report data/runs/<run-dir>
 
 先检查 `run.json` 的 `status`，再查看 `summary.csv`、step 记录和报告。`run report` 是离线命令；文件和字段含义见[运行产物 Reference](../reference/artifacts.md)。
 
+用 `--output` 或 `--pdf-output` 导出时，选择独立报告路径。命令会拒绝覆盖原始运行文件、步骤记录、采集包或处理结果，也检查符号链接、Windows junction 和硬链接别名。已有独立报告可刷新；自定义 HTML 名称通过 `report-assets/manifest.json` 识别，保留该文件即可继续更新报告。
+
 ## Verification
 
 - `run check` 完成且没有 schema 或安全上限错误。

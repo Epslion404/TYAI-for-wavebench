@@ -20,15 +20,33 @@ from wavebench.report.plot3d import (
     write_plotly_asset,
 )
 from wavebench.report.path_utils import artifact_url
+from wavebench.report.output_guard import validate_run_report_paths
+
+
+def validate_run_report_outputs(run: RunPackage, paths: list[Path]) -> None:
+    capture_dirs = [
+        _resolve_artifact_path(run.path, reference.package) for reference in _capture_references(run)
+    ]
+    validate_run_report_paths(run, paths, evidence_dirs=capture_dirs)
 
 
 def write_run_report_html(run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None) -> Path:
     path = Path(output_path) if output_path is not None else run.path / "report.html"
-    path.parent.mkdir(parents=True, exist_ok=True)
     has_surface = any(
         build_surface_payload(response.rows, plot_id="probe", response_label=response.label)
         for response in run.frequency_responses
     )
+    manifest_path = path.parent / "report-assets" / "manifest.json"
+    if path.resolve() == manifest_path.resolve():
+        raise ConfigError("report output conflicts with its asset manifest; choose a separate path")
+    targets = [path, manifest_path]
+    if has_surface:
+        asset_path = path.parent / "report-assets" / "plotly.min.js"
+        if path.resolve() == asset_path.resolve():
+            raise ConfigError("report output conflicts with its interactive asset; choose a separate path")
+        targets.append(asset_path)
+    validate_run_report_outputs(run, targets)
+    path.parent.mkdir(parents=True, exist_ok=True)
     plotly_asset = write_plotly_asset(path.parent) if has_surface else None
     plotly_url = artifact_url(plotly_asset, path.parent) if plotly_asset is not None else None
     path.write_text(
@@ -43,6 +61,7 @@ def write_run_report_html(run: RunPackage, output_path: str | Path | None = None
 def write_run_report_pdf(run: RunPackage, output_path: str | Path | None = None) -> Path:
     """Render the report as a portable PDF with its visible images and SVGs embedded."""
     path = Path(output_path) if output_path is not None else run.path / "report.pdf"
+    validate_run_report_outputs(run, [path])
     try:
         from weasyprint import HTML
     except (ImportError, OSError) as exc:
@@ -69,6 +88,7 @@ def write_run_report_manifest(
 ) -> Path:
     report_output_dir = Path(output_dir) if output_dir is not None else run.path
     manifest_path = report_output_dir / "report-assets" / "manifest.json"
+    validate_run_report_outputs(run, [manifest_path])
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = _build_report_manifest(
         run,
@@ -2666,6 +2686,13 @@ def _capture_references(run: RunPackage) -> list[ReportCaptureReference]:
             row.get("capture_package"),
             row.get("metadata_path"),
         )
+    for response in run.frequency_responses:
+        for row in response.rows:
+            add(
+                f"frequency response {row.get('index', '')}",
+                row.get("capture_package"),
+                row.get("metadata_path"),
+            )
     return references
 
 
