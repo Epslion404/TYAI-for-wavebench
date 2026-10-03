@@ -245,17 +245,19 @@ def _scope_summary(step: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(step, dict):
         return {}
     artifact = step.get('artifact', {})
-    capture = artifact.get('capture') if isinstance(artifact, dict) else None
-    if isinstance(capture, dict):
-        quality = capture.get('quality', {})
-        if isinstance(quality, dict):
-            summary = quality.get('summary', {})
-            if isinstance(summary, dict):
-                return summary
-    quality = artifact.get('quality', {}) if isinstance(artifact, dict) else {}
-    if isinstance(quality, dict):
-        summary = quality.get('summary', {})
-        if isinstance(summary, dict):
+    if not isinstance(artifact, dict):
+        return {}
+    capture = artifact.get('capture')
+    # Preserve capture priority without letting an empty quality object hide
+    # the step artifact. Do not combine metrics from different captures/channels.
+    for source in (capture, artifact):
+        quality = source.get('quality') if isinstance(source, dict) else None
+        if not isinstance(quality, dict):
+            continue
+        legacy_summary = quality.get('summary')
+        # Current producer fields take precedence, including explicit None.
+        summary = {**legacy_summary, **quality} if isinstance(legacy_summary, dict) else quality
+        if any(key in summary for key in ('frequency_estimate_hz', 'voltage_vpp_v')):
             return summary
     return {}
 
