@@ -1326,11 +1326,15 @@ class RunService:
             if channel not in channels:
                 channels.append(channel)
 
-        if step.kind.startswith("source.") or step.kind == "sweep.frequency_response":
-            add(step.fields.get("source_channel") or step.fields.get("channel"))
-        for item in plan.steps:
+        def add_step(item: RunStep) -> None:
             if item.kind.startswith("source.") or item.kind == "sweep.frequency_response":
                 add(item.fields.get("source_channel") or item.fields.get("channel"))
+                for channel in item.fields.get("channels", ()):
+                    add(channel)
+
+        add_step(step)
+        for item in plan.steps:
+            add_step(item)
         for channel in plan.restore.source_channels:
             add(channel)
         if not channels and "source" in self._plan_instruments(plan) and self.config.source is not None:
