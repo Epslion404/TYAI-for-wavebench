@@ -15,7 +15,7 @@ from uuid import uuid4
 import numpy as np
 
 from wavebench.config import WaveBenchConfig
-from wavebench.data.package import new_package_dir
+from wavebench.data.package import new_package_dir, write_new_file
 from wavebench.errors import ConfigError, DataError, SessionHealthError, WaveBenchError
 from wavebench.instruments.api import InstrumentDescriptor, ScopeCouplingPolicy
 from wavebench.instruments.capabilities import require_capabilities
@@ -1271,7 +1271,9 @@ class ScopeService(SessionStateAliasMixin):
             return None, None
         screenshot_path = package_dir / "screenshot.png"
         try:
-            screenshot_path.write_bytes(scope.screenshot_png(include_menu=False, color_scheme="COL"))
+            write_new_file(
+                screenshot_path, scope.screenshot_png(include_menu=False, color_scheme="COL")
+            )
         except Exception as exc:
             return None, {"type": type(exc).__name__, "message": str(exc)}
         return screenshot_path, None
@@ -1441,9 +1443,9 @@ class ScopeService(SessionStateAliasMixin):
                 if value == prefix or value.startswith(prefix + os.sep):
                     return str(failed_dir) + value[len(prefix) :]
             return value
-        (failed_dir / "error.txt").write_text(
-            f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-            encoding="utf-8",
+        write_new_file(
+            failed_dir / "error.txt",
+            f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}".encode("utf-8"),
         )
         partial_metadata: dict[str, Any] = {
             "instrument": {"resource": self.config.connection.resource},
@@ -1456,9 +1458,9 @@ class ScopeService(SessionStateAliasMixin):
             partial_metadata["scope_operation_diagnostics"] = dict(diagnostics)
         if partial is not None:
             partial_metadata.update(rewrite_failed_paths(partial))
-        (failed_dir / "metadata.partial.json").write_text(
-            json.dumps(partial_metadata, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        write_new_file(
+            failed_dir / "metadata.partial.json",
+            json.dumps(partial_metadata, indent=2, ensure_ascii=False).encode("utf-8"),
         )
 
     def capture_waveform(self, channel: int, label: str) -> CaptureResult:
@@ -1541,7 +1543,7 @@ class ScopeService(SessionStateAliasMixin):
             metadata["screenshot_error"] = screenshot_error
         metadata_path = package_dir / "metadata.json"
         if self.config.output.save_json:
-            metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+            write_new_file(metadata_path, json.dumps(metadata, indent=2, ensure_ascii=False).encode("utf-8"))
         return CaptureResult(
             package_dir=package_dir,
             waveform=waveform,
@@ -1729,7 +1731,7 @@ class ScopeService(SessionStateAliasMixin):
             metadata["screenshot_error"] = screenshot_error
         metadata_path = package_dir / "metadata.json"
         if self.config.output.save_json:
-            metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+            write_new_file(metadata_path, json.dumps(metadata, indent=2, ensure_ascii=False).encode("utf-8"))
         return MultiCaptureResult(
             package_dir=package_dir,
             waveforms=waveforms,

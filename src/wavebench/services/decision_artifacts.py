@@ -17,6 +17,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import uuid4
+
+from wavebench.data.package import write_new_file
 
 from .advisor_consent import redact_sensitive
 
@@ -153,17 +156,17 @@ def write_artifact(
 ) -> Path | None:
     """独占创建 artifact；无 run 目录时不落盘（返回 None）。
 
-    产物永远是新文件：不覆盖任何既有文件，也不触碰 Core 拥有的 `run.json` / `summary.csv` /
-    `steps/*`，因此不需要走原子替换路径；文件名带 UTC 时间戳，重名即视为编程错误。
+    文件名保留 UTC 时间戳与 advisor id，并增加独立请求标识。正文完成后原子独占发布，
+    不覆盖已有证据；普通写入失败清理临时文件，无 run 目录时不创建任何文件。
     """
     run = Path(run_dir)
     if not run.is_dir():
         return None
     path = artifact_path(run, advisor_id=advisor_id, timestamp=timestamp or utc_stamp())
+    path = path.with_name(f"{path.stem}-{uuid4().hex}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with path.open("x", encoding="utf-8") as handle:
-            handle.write(artifact.to_json())
+        write_new_file(path, artifact.to_json().encode("utf-8"))
     except FileExistsError as exc:
         raise DecisionArtifactError(f"decision artifact already exists: {path}") from exc
     return path
