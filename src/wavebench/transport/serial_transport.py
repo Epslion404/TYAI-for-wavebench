@@ -177,11 +177,11 @@ class SerialTransport:
             raise self._frame_preflight_error("read_exact", replay, "frame_replay_unsupported")
 
         original_timeout = getattr(self.session, "timeout", None)
-        if timeout_ms is not None and hasattr(self.session, "timeout"):
-            self.session.timeout = timeout_ms / 1000.0
+        deadline = self._frame_read_deadline(timeout_ms)
         received = bytearray()
         try:
             while len(received) < size:
+                self._set_frame_read_timeout(deadline, "read_exact", replay, len(received))
                 chunk = self.session.read(size - len(received))
                 if not chunk:
                     raise self._frame_read_error(
@@ -191,6 +191,12 @@ class SerialTransport:
                         reason_code="frame_read_timeout",
                     )
                 received.extend(chunk)
+                self._raise_if_frame_deadline_exhausted(
+                    deadline,
+                    "read_exact",
+                    replay,
+                    len(received),
+                )
                 if len(received) > size:
                     raise self._frame_read_error(
                         "read_exact",
@@ -235,11 +241,11 @@ class SerialTransport:
             raise self._frame_preflight_error("read_until", replay, "frame_replay_unsupported")
 
         original_timeout = getattr(self.session, "timeout", None)
-        if timeout_ms is not None and hasattr(self.session, "timeout"):
-            self.session.timeout = timeout_ms / 1000.0
+        deadline = self._frame_read_deadline(timeout_ms)
         received = bytearray()
         try:
             while True:
+                self._set_frame_read_timeout(deadline, "read_until", replay, len(received))
                 chunk = self.session.read(1)
                 if not chunk:
                     raise self._frame_read_error(
@@ -249,6 +255,12 @@ class SerialTransport:
                         reason_code="frame_read_timeout",
                     )
                 received.extend(chunk)
+                self._raise_if_frame_deadline_exhausted(
+                    deadline,
+                    "read_until",
+                    replay,
+                    len(received),
+                )
                 if received.endswith(delimiter):
                     if len(received) <= max_bytes:
                         break
@@ -631,6 +643,47 @@ class SerialTransport:
             consumed_bytes=consumed_bytes,
             discarded_bytes=0,
         )
+
+    @staticmethod
+    def _frame_read_deadline(timeout_ms: int | None) -> float | None:
+        if timeout_ms is None:
+            return None
+        return time.monotonic() + timeout_ms / 1000.0
+
+    def _set_frame_read_timeout(
+        self,
+        deadline: float | None,
+        operation: str,
+        replay: ReplayPolicy,
+        consumed_bytes: int,
+    ) -> None:
+        if deadline is None:
+            return
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise self._frame_read_error(
+                operation,
+                replay,
+                consumed_bytes=consumed_bytes,
+                reason_code="frame_read_timeout",
+            )
+        if hasattr(self.session, "timeout"):
+            self.session.timeout = remaining_seconds
+
+    def _raise_if_frame_deadline_exhausted(
+        self,
+        deadline: float | None,
+        operation: str,
+        replay: ReplayPolicy,
+        consumed_bytes: int,
+    ) -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise self._frame_read_error(
+                operation,
+                replay,
+                consumed_bytes=consumed_bytes,
+                reason_code="frame_read_timeout",
+            )
 
     def close(self) -> None:
         try:

@@ -60,12 +60,68 @@ def test_read_exact_reports_a_partial_timeout_as_a_lost_session() -> None:
     assert raised.value.consumed_bytes == 1
 
 
+def test_read_exact_enforces_one_timeout_budget_across_split_reads(monkeypatch) -> None:
+    clock = {"now": 0.0}
+
+    class TimedSession:
+        timeout = 1.0
+
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+            self.reads = iter([b"\x01", b"\x02"])
+
+        def read(self, size: int) -> bytes:
+            self.timeouts.append(self.timeout)
+            clock["now"] += 0.03
+            return next(self.reads)
+
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: clock["now"])
+    session = TimedSession()
+    transport = SerialTransport("COM7", session, CommandLogger())
+
+    with pytest.raises(TransportIOError) as raised:
+        transport.read_exact(2, timeout_ms=50)
+
+    assert raised.value.reason_code == "frame_read_timeout"
+    assert raised.value.consumed_bytes == 2
+    assert session.timeouts == pytest.approx([0.05, 0.02])
+    assert session.timeout == 1.0
+
+
 def test_read_until_returns_delimited_frame_across_packets() -> None:
     transport = SerialTransport("COM7", _SerialSession([b"\xAA", b"\x01", b"\r", b"\n"]), CommandLogger())
 
     frame = transport.read_until(b"\r\n", max_bytes=8)
 
     assert frame == b"\xAA\x01\r\n"
+
+
+def test_read_until_enforces_one_timeout_budget_across_split_reads(monkeypatch) -> None:
+    clock = {"now": 0.0}
+
+    class TimedSession:
+        timeout = 1.0
+
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+            self.reads = iter([b"\x01", b"\n"])
+
+        def read(self, size: int) -> bytes:
+            self.timeouts.append(self.timeout)
+            clock["now"] += 0.03
+            return next(self.reads)
+
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: clock["now"])
+    session = TimedSession()
+    transport = SerialTransport("COM7", session, CommandLogger())
+
+    with pytest.raises(TransportIOError) as raised:
+        transport.read_until(b"\n", max_bytes=2, timeout_ms=50)
+
+    assert raised.value.reason_code == "frame_read_timeout"
+    assert raised.value.consumed_bytes == 2
+    assert session.timeouts == pytest.approx([0.05, 0.02])
+    assert session.timeout == 1.0
 
 
 def test_read_until_rejects_an_unterminated_frame_at_its_limit() -> None:
@@ -96,6 +152,49 @@ def test_guarded_transport_forwards_raw_reads_through_the_session_gate() -> None
 
     assert transport.read_exact(3) == b"\x01\x00\x02"
     assert transport.session_state.health.value == "healthy"
+
+
+@pytest.mark.parametrize(
+    ("operation", "result"),
+    [
+        ("read_exact", b"\x01"),
+        ("read_until", b"\x01\x02"),
+    ],
+)
+def test_guarded_transport_rejects_frame_results_that_violate_the_contract(
+    operation: str,
+    result: bytes,
+) -> None:
+    class FrameBackend:
+        resource = "COM7"
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def record_event(self, direction: str, text: str) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+        def read_exact(self, size: int, *, timeout_ms=None, replay="no_replay") -> bytes:
+            return result
+
+        def read_until(self, delimiter: bytes, *, max_bytes: int, timeout_ms=None, replay="no_replay") -> bytes:
+            return result
+
+    backend = FrameBackend()
+    transport = GuardedAuditedTransport(backend)
+
+    with pytest.raises(TransportIOError) as raised:
+        if operation == "read_exact":
+            transport.read_exact(3)
+        else:
+            transport.read_until(b"\n", max_bytes=2)
+
+    assert raised.value.reason_code == "frame_contract_violation"
+    assert transport.session_state.health.value == "poisoned"
+    assert backend.closed is True
 
 
 def test_guarded_transport_blocks_raw_frame_sends_in_read_only_mode() -> None:
