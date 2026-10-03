@@ -54,7 +54,7 @@ python -m wavebench run report data/runs/<run-dir>
 
 先检查 `run.json` 的 `status`，再查看 `summary.csv`、step 记录和报告。`run report` 是离线命令；文件和字段含义见[运行产物 Reference](../reference/artifacts.md)。
 
-传统 `expect_fft` 按执行资源配置检查完整采集长度、FFT 长度、内存估算和工作量；超限时明确失败，不以降采样替代验收。报告波形预览使用同类预算和只读映射，分块选取至多 600 点；无法准入的曲线显示原因。资源准入是估算限制，需要进程级硬限制时使用分析监督执行配置。
+传统 `expect_fft` 按执行资源配置检查完整采集长度、FFT 长度、内存估算和工作量；超限时明确失败，不以降采样替代验收。报告波形预览使用同类预算和只读映射，分块选取至多 600 点；无法准入的曲线显示原因。资源准入是估算限制；分析监督执行配置的进程级硬限制适用于独立分析及 RunPlan 分析 step，传统 `expect_fft` 和报告预览在当前进程中执行。详见[分析资源预算](../reference/run-schema.md#分析资源预算)。
 
 ## Verification
 

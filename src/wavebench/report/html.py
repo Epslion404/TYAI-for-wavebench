@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from html import escape
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -2447,6 +2448,7 @@ def _collect_waveform_previews(run: RunPackage, *, analysis_limits=None) -> list
     limits = analysis_limits or AnalysisLimits()
     previews: list[ReportWaveformPreview] = []
     budget = AnalysisBudget(limits)
+    retained_svg_bytes = 0
     for step in run.steps:
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
         package_text = artifact.get("package")
@@ -2483,7 +2485,8 @@ def _collect_waveform_previews(run: RunPackage, *, analysis_limits=None) -> list
             warning = ""
             try:
                 limits.check("max_report_curves", len(previews) + 1, "waveform preview")
-                svg = _load_waveform_preview(npy_path, budget)
+                svg = _load_waveform_preview(npy_path, budget, retained_bytes=retained_svg_bytes)
+                retained_svg_bytes += sys.getsizeof(svg)
             except Exception as exc:  # noqa: BLE001 - report generation should survive bad artifacts
                 warning = f"waveform preview unavailable: {type(exc).__name__}: {exc}"
             previews.append(
@@ -2499,7 +2502,7 @@ def _collect_waveform_previews(run: RunPackage, *, analysis_limits=None) -> list
     return previews
 
 
-def _load_waveform_preview(npy_path: Path, budget) -> str:
+def _load_waveform_preview(npy_path: Path, budget, *, retained_bytes: int = 0) -> str:
     from wavebench.data.analysis_io import BLOCK_ROWS, mapped_npy
 
     max_points = 600
@@ -2514,7 +2517,7 @@ def _load_waveform_preview(npy_path: Path, budget) -> str:
         limits.check("max_work_units", budget.work_units, "waveform preview")
         limits.check(
             "max_working_bytes",
-            128 * (min(count, BLOCK_ROWS) + min(count, max_points)) + 65536,
+            retained_bytes + 128 * (min(count, BLOCK_ROWS) + min(count, max_points)) + 65536,
             "waveform preview",
         )
         finite_count = 0

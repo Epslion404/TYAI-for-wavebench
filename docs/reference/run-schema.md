@@ -115,7 +115,7 @@ Windows 硬限额使用 Job Object 的 job committed memory；Linux 使用 cgrou
 
 超限错误为 `resource_limit_exceeded`，包含维度、限额、请求量和阶段。已开始的分析按 `on_failure` 处理，不重采集；当前临时文件清理，已完成文件保留。诊断 metadata 在配额耗尽后仍尽力写入并标记失败，这部分可能超过输出配额；磁盘完全耗尽时不保证诊断落成。
 
-资源预算是保守准入估算，不是操作系统 RSS 硬限制或不可信代码沙箱。不同 SciPy／NumPy 版本的内部工作集可能不同；未知规模应先做受控基准。常规 `run report` 的资源选项只约束信号处理曲线区域，不覆盖旧截图、PDF 或频响报告的全部资源。
+资源预算是保守准入估算，不是操作系统 RSS 硬限制或不可信代码沙箱。不同 SciPy／NumPy 版本的内部工作集可能不同；未知规模应先做受控基准。常规 `run report` 的资源选项约束信号处理曲线、原始波形预览和采集 metadata 读取，不覆盖截图、PDF 或频响报告的全部资源。原始预览按块扫描，累计检查工作量及曲线数；后续曲线的工作集准入计入已保留的预览 SVG。
 
 ```bash
 wavebench analysis check --capture data/capture --channel 1 --recipe plans/example_analysis_recipe.toml
