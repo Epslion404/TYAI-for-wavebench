@@ -113,6 +113,8 @@ PSD 元数据同时记录单边密度缩放、`V^2/Hz` 单位和归一化公式�
 
 频域 `amplitude_v` 是单边峰值幅度，不是 RMS。`noise_floor_v` 是排除 DC 与主峰后的非 DC 幅度 bin 中位数，表示每 bin 峰值幅度，不表示积分噪声。THD 使用 Nyquist 范围内的 H2～H5。
 
+传统 `expect_fft` 的 `fft` artifact 同样记录 `resources`。预算拒绝时状态为 `failed`，`error_code="resource_limit_exceeded"`，`resource_error` 包含 `dimension`、`limit`、`requested` 和 `stage`；相关 expectation 明确失败，完整采集数据保持原样。
+
 HTML 报告在存在分析 step 时增加「信号处理 / Signal processing」区域。FIR 算子显示 family、响应、截止频率、tap 数和执行模式；IIR 算子显示 family、响应、截止频率、design、order 和执行模式。报告 manifest 条件性增加 `analysis_pipelines`，没有分析 step 的旧报告 manifest 不增加该字段。
 
 ## `summary.csv`

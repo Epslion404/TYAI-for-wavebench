@@ -53,7 +53,8 @@ def write_run_report_html(run: RunPackage, output_path: str | Path | None = None
         render_run_report_html(run, output_dir=path.parent, plotly_url=plotly_url, analysis_limits=analysis_limits), encoding="utf-8"
     )
     write_run_report_manifest(
-        run, output_dir=path.parent, report_path=path, interactive_asset_path=plotly_asset
+        run, output_dir=path.parent, report_path=path, interactive_asset_path=plotly_asset,
+        analysis_limits=analysis_limits,
     )
     return path
 
@@ -85,6 +86,8 @@ def write_run_report_manifest(
     output_dir: str | Path | None = None,
     report_path: str | Path | None = None,
     interactive_asset_path: str | Path | None = None,
+    *,
+    analysis_limits=None,
 ) -> Path:
     report_output_dir = Path(output_dir) if output_dir is not None else run.path
     manifest_path = report_output_dir / "report-assets" / "manifest.json"
@@ -95,6 +98,7 @@ def write_run_report_manifest(
         output_dir=report_output_dir,
         report_path=Path(report_path) if report_path is not None else report_output_dir / "report.html",
         interactive_asset_path=(Path(interactive_asset_path) if interactive_asset_path is not None else None),
+        analysis_limits=analysis_limits,
     )
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest_path
@@ -228,8 +232,13 @@ def render_run_report_html(
     restore = run.run.get("restore", {}) if isinstance(run.run.get("restore"), dict) else {}
     error = run.run.get("error", {}) if isinstance(run.run.get("error"), dict) else {}
     report_output_dir = Path(output_dir) if output_dir is not None else run.path
-    screenshots = [] if compact else _collect_screenshots(run, report_output_dir)
-    signals = [] if compact else _collect_signal_summaries(run)
+    metadata_warnings: list[str] = []
+    screenshots = [] if compact else _collect_screenshots(
+        run, report_output_dir, analysis_limits=analysis_limits, warnings=metadata_warnings
+    )
+    signals = [] if compact else _collect_signal_summaries(
+        run, analysis_limits=analysis_limits, warnings=metadata_warnings
+    )
     expectations = [] if compact else _collect_expectation_rows(run)
     dmm_readings = [] if compact else _collect_dmm_readings(run)
     sweep_rows = [] if compact else _collect_sweep_rows(run)
@@ -237,7 +246,10 @@ def render_run_report_html(
         [] if compact else _collect_waveform_previews(run, analysis_limits=analysis_limits)
     )
     evidence = _build_evidence_summary(run, expectations, dmm_readings, screenshots, waveform_previews)
-    artifact_links = [] if compact else _collect_artifact_links(run, report_output_dir, screenshots)
+    artifact_links = [] if compact else _collect_artifact_links(
+        run, report_output_dir, screenshots,
+        analysis_limits=analysis_limits, warnings=metadata_warnings,
+    )
     summary = _build_report_summary(run, screenshots, signals)
     screenshots_by_step = {item.step_index: item for item in screenshots}
     evidence_timeline_block = "" if compact else _evidence_timeline_block(run, screenshots_by_step)
@@ -270,6 +282,11 @@ def render_run_report_html(
     error_block = ""
     if error:
         error_block = f"<h2>运行错误 / Run error</h2><pre>{escape(str(error))}</pre>"
+    if metadata_warnings:
+        error_block += "".join(
+            f'<p class="warning">{escape(warning)}</p>'
+            for warning in dict.fromkeys(metadata_warnings)
+        )
     restore_block = ""
     if restore:
         restore_block = f"<p><b>恢复 / Restore:</b> {escape(str(restore.get('status', 'unknown')))}</p>"
@@ -456,11 +473,14 @@ def _build_report_manifest(
     output_dir: Path,
     report_path: Path,
     interactive_asset_path: Path | None = None,
+    analysis_limits=None,
 ) -> dict[str, Any]:
-    screenshots = _collect_screenshots(run, output_dir)
+    warnings: list[str] = []
+    screenshots = _collect_screenshots(
+        run, output_dir, analysis_limits=analysis_limits, warnings=warnings
+    )
     capture_packages: list[dict[str, Any]] = []
     waveform_previews: list[dict[str, Any]] = []
-    warnings: list[str] = []
     for step in run.steps:
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
         package_text = artifact.get("package")
@@ -478,7 +498,9 @@ def _build_report_manifest(
         capture_packages.append(package_record)
         if not package_dir.exists():
             warnings.append(f"step {step_index}: capture package missing: {package}")
-        metadata = _read_capture_metadata(package_dir, artifact.get("metadata"))
+        metadata = _read_capture_metadata(
+            package_dir, artifact.get("metadata"), limits=analysis_limits, warnings=warnings
+        )
         for channel, npy_text, _summary in _metadata_waveform_npy_files(metadata):
             if npy_text:
                 npy_path = _resolve_capture_file_path(run.path, package_dir, str(npy_text))
@@ -2182,7 +2204,8 @@ def _analysis_manifest_entries(run: RunPackage, output_dir: Path) -> list[dict[s
 
 
 def _collect_artifact_links(
-    run: RunPackage, output_dir: Path, screenshots: list[ReportScreenshot]
+    run: RunPackage, output_dir: Path, screenshots: list[ReportScreenshot],
+    *, analysis_limits=None, warnings: list[str] | None = None,
 ) -> list[ReportArtifactLink]:
     links = [
         ReportArtifactLink(
@@ -2294,7 +2317,9 @@ def _collect_artifact_links(
                     status=_availability_text(screenshot.path.exists()),
                 )
             )
-        metadata = _read_capture_metadata(package_dir, reference.metadata)
+        metadata = _read_capture_metadata(
+            package_dir, reference.metadata, limits=analysis_limits, warnings=warnings
+        )
         for channel, npy_text, _summary in _metadata_waveform_npy_files(metadata):
             if not npy_text:
                 continue
@@ -2437,33 +2462,26 @@ def _screenshot_card(screenshot: ReportScreenshot) -> str:
 
 
 def _collect_waveform_previews(run: RunPackage, *, analysis_limits=None) -> list[ReportWaveformPreview]:
-    from wavebench.data.analysis_io import read_json_bounded
-    from wavebench.data.analysis_resources import AnalysisLimits
+    from wavebench.data.analysis_resources import AnalysisBudget, AnalysisLimits
 
     limits = analysis_limits or AnalysisLimits()
     previews: list[ReportWaveformPreview] = []
-    work_units = 0
+    budget = AnalysisBudget(limits)
     for step in run.steps:
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
         package_text = artifact.get("package")
         if not package_text:
             continue
         package_dir = _resolve_artifact_path(run.path, str(package_text))
-        metadata_text = artifact.get("metadata")
-        metadata_path = (
-            _resolve_artifact_path(package_dir, str(metadata_text))
-            if metadata_text else package_dir / "metadata.json"
+        metadata_warnings: list[str] = []
+        metadata = _read_capture_metadata(
+            package_dir, artifact.get("metadata"), limits=limits, warnings=metadata_warnings
         )
-        if not metadata_path.exists():
-            metadata_path = package_dir / "metadata.json"
-        try:
-            metadata = read_json_bounded(metadata_path, limits)
-            metadata = metadata if isinstance(metadata, dict) else {}
-        except Exception as exc:  # noqa: BLE001 - retain a visible reason for unavailable previews
+        if metadata_warnings:
             previews.append(ReportWaveformPreview(
                 step_index=str(step.get("index", "")), package=str(package_text), channel="",
                 title=f"Step {step.get('index', '')}", svg="",
-                warning=f"waveform preview unavailable: {type(exc).__name__}: {exc}",
+                warning=f"waveform preview unavailable: {metadata_warnings[0]}",
             ))
             continue
         for channel, npy_text, summary in _metadata_waveform_npy_files(metadata):
@@ -2485,7 +2503,7 @@ def _collect_waveform_previews(run: RunPackage, *, analysis_limits=None) -> list
             warning = ""
             try:
                 limits.check("max_report_curves", len(previews) + 1, "waveform preview")
-                svg, work_units = _load_waveform_preview(npy_path, limits, work_units=work_units)
+                svg = _load_waveform_preview(npy_path, budget)
             except Exception as exc:  # noqa: BLE001 - report generation should survive bad artifacts
                 warning = f"waveform preview unavailable: {type(exc).__name__}: {exc}"
             previews.append(
@@ -2501,16 +2519,19 @@ def _collect_waveform_previews(run: RunPackage, *, analysis_limits=None) -> list
     return previews
 
 
-def _load_waveform_preview(npy_path: Path, limits, *, work_units: int = 0) -> tuple[str, int]:
+def _load_waveform_preview(npy_path: Path, budget) -> str:
     from wavebench.data.analysis_io import BLOCK_ROWS, mapped_npy
 
     max_points = 600
+    limits = budget.limits
     with mapped_npy(npy_path, limits, columns=2) as (waveform, _):
         count = waveform.shape[0]
         # Two bounded passes preserve the existing finite-row filtering and
         # evenly spaced selection, without copying or masking the entire input.
-        work_units += 2 * count
-        limits.check("max_work_units", work_units, "waveform preview")
+        # Charge before scanning, so invalid data and later rendering failures
+        # cannot reset the work already admitted for this report.
+        budget.work_units += 2 * count
+        limits.check("max_work_units", budget.work_units, "waveform preview")
         limits.check(
             "max_working_bytes",
             128 * (min(count, BLOCK_ROWS) + min(count, max_points)) + 65536,
@@ -2533,7 +2554,7 @@ def _load_waveform_preview(npy_path: Path, limits, *, work_units: int = 0) -> tu
                 selected[left:right] = block[indices[left:right] - seen]
             seen += len(block)
         svg = _waveform_svg(selected, max_points=max_points)
-    return svg, work_units
+    return svg
 
 
 def _metadata_waveform_npy_files(metadata: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
@@ -2631,7 +2652,9 @@ def _resolve_capture_file_path(run_path: Path, package_dir: Path, file_text: str
     return package_dir / file_text.replace("\\", "/")
 
 
-def _collect_signal_summaries(run: RunPackage) -> list[ReportSignalSummary]:
+def _collect_signal_summaries(
+    run: RunPackage, *, analysis_limits=None, warnings: list[str] | None = None,
+) -> list[ReportSignalSummary]:
     summaries: list[ReportSignalSummary] = []
     for step in run.steps:
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
@@ -2639,13 +2662,15 @@ def _collect_signal_summaries(run: RunPackage) -> list[ReportSignalSummary]:
         if not package_text:
             continue
         package_dir = _resolve_artifact_path(run.path, str(package_text))
-        metadata = _read_capture_metadata(package_dir, artifact.get("metadata"))
+        metadata = _read_capture_metadata(
+            package_dir, artifact.get("metadata"), limits=analysis_limits, warnings=warnings
+        )
         for summary in _metadata_signal_summaries(metadata):
-            warnings = summary.get("quality_warnings", [])
-            if isinstance(warnings, list):
-                warnings_text = " | ".join(str(item) for item in warnings)
+            quality_warnings = summary.get("quality_warnings", [])
+            if isinstance(quality_warnings, list):
+                warnings_text = " | ".join(str(item) for item in quality_warnings)
             else:
-                warnings_text = str(warnings) if warnings else ""
+                warnings_text = str(quality_warnings) if quality_warnings else ""
             summaries.append(
                 ReportSignalSummary(
                     step_index=str(step.get("index", "")),
@@ -2681,11 +2706,15 @@ def _metadata_signal_summaries(metadata: dict[str, Any]) -> list[dict[str, Any]]
     return []
 
 
-def _collect_screenshots(run: RunPackage, output_dir: Path) -> list[ReportScreenshot]:
+def _collect_screenshots(
+    run: RunPackage, output_dir: Path, *, analysis_limits=None, warnings: list[str] | None = None,
+) -> list[ReportScreenshot]:
     screenshots: list[ReportScreenshot] = []
     for reference in _capture_references(run):
         package_dir = _resolve_artifact_path(run.path, reference.package)
-        metadata = _read_capture_metadata(package_dir, reference.metadata)
+        metadata = _read_capture_metadata(
+            package_dir, reference.metadata, limits=analysis_limits, warnings=warnings
+        )
         screenshot_text = _metadata_screenshot_path(metadata)
         if not screenshot_text:
             continue
@@ -2754,13 +2783,20 @@ def _capture_references(run: RunPackage) -> list[ReportCaptureReference]:
     return references
 
 
-def _read_capture_metadata(package_dir: Path, metadata_text: Any) -> dict[str, Any]:
+def _read_capture_metadata(
+    package_dir: Path, metadata_text: Any, *, limits=None, warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    from wavebench.data.analysis_io import read_json_bounded
+    from wavebench.data.analysis_resources import AnalysisLimits
+
     metadata_path = _resolve_artifact_path(package_dir, str(metadata_text)) if metadata_text else package_dir / "metadata.json"
     if not metadata_path.exists():
         metadata_path = package_dir / "metadata.json"
     try:
-        data = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = read_json_bounded(metadata_path, limits or AnalysisLimits())
+    except Exception as exc:  # noqa: BLE001 - reports retain unavailable evidence as warnings
+        if warnings is not None:
+            warnings.append(f"capture metadata unavailable: {metadata_path}: {type(exc).__name__}: {exc}")
         return {}
     return data if isinstance(data, dict) else {}
 
