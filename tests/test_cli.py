@@ -397,6 +397,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.discover_max_hosts, 32)
         self.assertTrue(args.no_visa)
 
+    def test_doctor_accepts_local_serial_and_can_enumeration_flags(self):
+        args = build_parser().parse_args(["doctor", "--discover-serial", "--discover-can"])
+
+        self.assertTrue(args.discover_serial)
+        self.assertTrue(args.discover_can)
+
     def test_doctor_prints_records_and_returns_error_status(self):
         class StubRecord:
             severity = "error"
@@ -1505,6 +1511,13 @@ max_source_vpp = 2.0
         self.assertTrue(args.no_idn)
         self.assertTrue(args.idn_only)
         self.assertTrue(args.no_visa)
+
+    def test_net_discover_accepts_local_serial_and_can_without_a_tcp_subnet(self):
+        args = build_parser().parse_args(["net", "discover", "--serial", "--can", "--no-visa"])
+
+        self.assertIsNone(args.subnet)
+        self.assertTrue(args.serial)
+        self.assertTrue(args.can)
 
     def test_net_discover_prints_results(self):
         class StubResult:

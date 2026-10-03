@@ -230,6 +230,11 @@ class RfSourceService(SessionStateAliasMixin):
             read_retry_delay_ms=self.config.connection.read_retry_delay_ms,
             logger=self.logger,
             options=getattr(rf_source, "options", {}),
+            can_config=(
+                self.config.connection.can_connection(resource=rf_source.resource)
+                if self.config.connection.backend.strip().lower() in {"can", "can-fd"}
+                else None
+            ),
             access=getattr(rf_source, "access", "read_write"),
             lease=self.lease,
         )

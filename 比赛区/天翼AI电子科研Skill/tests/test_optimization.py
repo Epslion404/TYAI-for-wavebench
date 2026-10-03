@@ -3,7 +3,6 @@ import ipaddress
 import socket
 import struct
 import threading
-import time
 
 import pytest
 
@@ -11,7 +10,13 @@ from tianyi_electronics_skill.analysis import analyze_samples, compute_dft_metri
 from tianyi_electronics_skill.bridge import run_expose
 from tianyi_electronics_skill.core import _host_count
 from tianyi_electronics_skill.plot import waveform_svg
-from tianyi_electronics_skill.protocols import CanAdapter, JsonWaveformAdapter, ProtocolRegistry
+from tianyi_electronics_skill.protocols import (
+    BinaryManifestAdapter,
+    CanAdapter,
+    JsonWaveformAdapter,
+    ProtocolDecodeError,
+    ProtocolRegistry,
+)
 from tianyi_electronics_skill.scpi import ConfigurationError, ScpiConfigurationError, ScpiSession, classify_exception
 from tianyi_electronics_skill import waveform
 
@@ -42,6 +47,69 @@ def test_vendor_binary_manifest(tmp_path):
     frame = registry.decode(b"WAVE" + struct.pack("<4f", 1, -1, 1, -1))
     assert frame.protocol == "vendor"
     assert frame.samples == [1.0, -1.0, 1.0, -1.0]
+
+
+def test_vendor_toml_manifest_uses_the_same_binary_validation(tmp_path):
+    manifest_dir = tmp_path / "protocols"
+    manifest_dir.mkdir()
+    (manifest_dir / "vendor.toml").write_text(
+        """
+kind = "binary-waveform"
+name = "vendor-toml"
+
+[match]
+magic_hex = "57415645"
+
+[payload]
+header_bytes = 4
+sample_type = "i16"
+endian = "little"
+sample_rate_hz = 1000
+""".strip(),
+        encoding="utf-8",
+    )
+
+    registry = ProtocolRegistry()
+    assert registry.load_manifests(manifest_dir) == 1
+    frame = registry.decode(b"WAVE" + struct.pack("<2h", 1, -1))
+
+    assert frame.protocol == "vendor-toml"
+    assert frame.samples == [1.0, -1.0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "missing-magic", "match": {}, "payload": {}},
+        {"name": "short-header", "match": {"magic_hex": "ABCD"}, "payload": {"header_bytes": 1}},
+        {"name": "bad-type", "match": {"magic_hex": "ABCD"}, "payload": {"sample_type": "x128"}},
+        {"name": "bad-endian", "match": {"magic_hex": "ABCD"}, "payload": {"endian": "middle"}},
+    ],
+)
+def test_binary_manifest_rejects_invalid_declared_shape(payload):
+    with pytest.raises((ProtocolDecodeError, ValueError)):
+        BinaryManifestAdapter(payload)
+
+
+def test_protocol_decode_result_structures_invalid_and_oversized_frames():
+    registry = ProtocolRegistry()
+    registry.adapters.append(
+        BinaryManifestAdapter(
+            {
+                "name": "limited",
+                "match": {"magic_hex": "4C494D"},
+                "payload": {"header_bytes": 3, "sample_type": "i16", "endian": "little", "max_payload_bytes": 4},
+            }
+        )
+    )
+
+    invalid = registry.decode_result(b"unknown")
+    oversized = registry.decode_result(b"LIM" + struct.pack("<h", 1))
+
+    assert invalid["ok"] is False
+    assert oversized["ok"] is False
+    assert invalid["failures"][0]["category"] == "parse_error"
+    assert oversized["failures"][0]["category"] == "parse_error"
 
 
 def test_protocol_adapters_preserve_reported_device_errors():
@@ -127,6 +195,8 @@ def test_expose_rejection_honours_reconnect_delay():
         host, port = listener.getsockname()[:2]
         attempts = 0
         stop = threading.Event()
+        retry_called = threading.Event()
+        observed_delays = []
 
         def reject_registrations():
             nonlocal attempts
@@ -144,14 +214,56 @@ def test_expose_rejection_honours_reconnect_delay():
 
         thread = threading.Thread(target=reject_registrations, daemon=True)
         thread.start()
-        threading.Thread(
+        expose_thread = threading.Thread(
             target=run_expose,
             args=(f"{host}:{port}", "device-1", "127.0.0.1:9"),
-            kwargs={"reconnect_delay": 0.1},
+            kwargs={
+                "reconnect_delay": 0.1,
+                "stop_event": stop,
+                "retry_wait": lambda delay: (observed_delays.append(delay), retry_called.set(), stop.set()),
+            },
             daemon=True,
-        ).start()
-        time.sleep(0.35)
+        )
+        expose_thread.start()
+        assert retry_called.wait(timeout=1.0)
+        expose_thread.join(timeout=1.0)
         stop.set()
         thread.join(timeout=1.0)
 
-    assert 1 <= attempts <= 5
+    assert attempts == 1
+    assert observed_delays == [0.1]
+
+
+def test_expose_normal_session_reregisters_without_backoff(monkeypatch):
+    import tianyi_electronics_skill.bridge as bridge
+
+    stop = threading.Event()
+
+    class Socket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, _timeout):
+            pass
+
+        def sendall(self, _data):
+            pass
+
+    sockets = [Socket(), Socket()]
+    monkeypatch.setattr(bridge.socket, "create_connection", lambda *_args, **_kwargs: sockets.pop(0))
+    replies = iter((b"OPEN", b"START"))
+    monkeypatch.setattr(bridge, "_recv_line", lambda _sock: next(replies))
+    monkeypatch.setattr(bridge, "_relay", lambda *_args: stop.set())
+    monkeypatch.setattr(bridge, "_close", lambda _sock: None)
+
+    run_expose(
+        "127.0.0.1:9000",
+        "device-1",
+        "127.0.0.1:5025",
+        reconnect_delay=0.1,
+        stop_event=stop,
+        retry_wait=lambda _delay: pytest.fail("normal session must not back off"),
+    )

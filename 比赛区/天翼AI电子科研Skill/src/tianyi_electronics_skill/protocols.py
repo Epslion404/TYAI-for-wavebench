@@ -6,12 +6,27 @@ import json
 import math
 import struct
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 MAX_PROTOCOL_PAYLOAD_BYTES = 64 * 1024 * 1024
 SAMPLE_FORMATS = {"f32": "f", "f64": "d", "i16": "h", "u16": "H", "i32": "i", "u32": "I"}
+
+
+class ProtocolDecodeError(ValueError):
+    """A payload or manifest cannot be safely interpreted as a declared protocol."""
+
+
+def protocol_failure(error: BaseException) -> dict[str, Any]:
+    """Stable, machine-readable failure shape for malformed protocol input."""
+    return {
+        "ok": False,
+        "frame": None,
+        "failures": [{"category": "parse_error", "message": str(error)}],
+        "device_errors": [],
+    }
 
 
 def _samples(values: Any) -> list[float]:
@@ -127,11 +142,15 @@ class CanAdapter(Adapter):
 
 class BinaryManifestAdapter(Adapter):
     def __init__(self, config: dict[str, Any]):
+        if not isinstance(config, dict):
+            raise ProtocolDecodeError("protocol manifest must be an object")
         self.config = config
         self.name = str(config.get("name", "")).strip()
         if not self.name:
             raise ValueError("协议 manifest 缺少非空 name")
         match = config.get("match", {})
+        if not isinstance(match, dict):
+            raise ProtocolDecodeError(f"protocol {self.name} match must be an object")
         try:
             self.magic = bytes.fromhex(match.get("magic_hex", "")) if match.get("magic_hex") else b""
         except ValueError as exc:
@@ -139,7 +158,12 @@ class BinaryManifestAdapter(Adapter):
         if not self.magic:
             raise ValueError(f"协议 {self.name} 必须声明 magic_hex，避免误识别任意二进制数据")
         payload = config.get("payload", {})
-        self.header_bytes = int(payload.get("header_bytes", len(self.magic)))
+        if not isinstance(payload, dict):
+            raise ProtocolDecodeError(f"protocol {self.name} payload must be an object")
+        header_bytes = payload.get("header_bytes", len(self.magic))
+        if isinstance(header_bytes, bool) or not isinstance(header_bytes, int):
+            raise ProtocolDecodeError(f"protocol {self.name} header_bytes must be an integer")
+        self.header_bytes = header_bytes
         if self.header_bytes < len(self.magic):
             raise ValueError(f"协议 {self.name} 的 header_bytes 不能小于 magic 长度")
         sample_type = str(payload.get("sample_type", "f32"))
@@ -154,7 +178,10 @@ class BinaryManifestAdapter(Adapter):
         if not math.isfinite(self.scale) or not math.isfinite(self.offset):
             raise ValueError(f"协议 {self.name} 的 scale/offset 必须是有限数")
         self.rate = _sample_rate(payload.get("sample_rate_hz"))
-        self.max_payload_bytes = int(payload.get("max_payload_bytes", MAX_PROTOCOL_PAYLOAD_BYTES))
+        max_payload_bytes = payload.get("max_payload_bytes", MAX_PROTOCOL_PAYLOAD_BYTES)
+        if isinstance(max_payload_bytes, bool) or not isinstance(max_payload_bytes, int):
+            raise ProtocolDecodeError(f"protocol {self.name} max_payload_bytes must be an integer")
+        self.max_payload_bytes = max_payload_bytes
         if self.max_payload_bytes <= 0 or self.max_payload_bytes > MAX_PROTOCOL_PAYLOAD_BYTES:
             raise ValueError(f"协议 {self.name} 的 max_payload_bytes 超出允许范围")
     def match(self, payload, metadata=None) -> float:
@@ -190,8 +217,15 @@ class ProtocolRegistry:
             raise ValueError(f"protocol manifest 目录不存在: {root}")
         count = 0
         names = {adapter.name for adapter in self.adapters}
-        for path in sorted(root.glob("*.json")):
-            config = json.loads(path.read_text(encoding="utf-8"))
+        paths = sorted((*root.glob("*.json"), *root.glob("*.toml")))
+        for path in paths:
+            try:
+                raw = path.read_text(encoding="utf-8")
+                config = tomllib.loads(raw) if path.suffix.lower() == ".toml" else json.loads(raw)
+            except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+                raise ProtocolDecodeError(f"protocol manifest cannot be parsed: {path.name}: {exc}") from exc
+            if not isinstance(config, dict):
+                raise ProtocolDecodeError(f"protocol manifest must be an object: {path.name}")
             if config.get("kind") == "binary-waveform":
                 adapter = BinaryManifestAdapter(config)
                 if adapter.name in names:
@@ -213,6 +247,13 @@ class ProtocolRegistry:
         if not ranked or ranked[0][0] <= 0:
             raise ValueError("没有匹配的协议适配器，请提供 protocol manifest")
         return ranked[0][1].decode(payload, source, metadata)
+
+    def decode_result(self, payload, source="unknown", metadata=None) -> dict[str, Any]:
+        """Decode a protocol frame without making callers parse exception text."""
+        try:
+            return {"ok": True, "frame": self.decode(payload, source, metadata).as_dict(), "failures": []}
+        except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            return protocol_failure(exc)
 
 
 def read_payload(path: str | Path, max_bytes: int = MAX_PROTOCOL_PAYLOAD_BYTES) -> bytes | dict[str, Any]:

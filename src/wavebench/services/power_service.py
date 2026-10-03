@@ -77,6 +77,11 @@ class PowerService(SessionStateAliasMixin):
                 if self.config.connection.backend.strip().lower() == "serial"
                 else None
             ),
+            can_config=(
+                self.config.connection.can_connection(resource=power.resource)
+                if self.config.connection.backend.strip().lower() in {"can", "can-fd"}
+                else None
+            ),
             access=getattr(power, "access", "read_write"),
             lease=self.lease,
         )

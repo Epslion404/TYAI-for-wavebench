@@ -59,7 +59,7 @@ def parse_discovery_ports(text: str | Sequence[int]) -> tuple[int, ...]:
 
 def discover_instruments(
     *,
-    subnet: str,
+    subnet: str | None = None,
     ports: str | Sequence[int] = DEFAULT_DISCOVERY_PORTS,
     timeout_ms: int = 300,
     workers: int = 64,
@@ -67,23 +67,107 @@ def discover_instruments(
     query_idn: bool = True,
     idn_only: bool = False,
     include_visa: bool = True,
+    include_serial: bool = False,
+    include_can: bool = False,
 ) -> list[DiscoveryResult]:
-    parsed_ports = parse_discovery_ports(ports)
+    if subnet is None and not (include_visa or include_serial or include_can):
+        raise ConfigError("select a TCP subnet, VISA, serial, or CAN discovery source")
     results: list[DiscoveryResult] = []
     if include_visa:
         results.extend(discover_visa_resources(query_idn=query_idn, timeout_ms=timeout_ms))
-    results.extend(
-        discover_network(
-            subnet,
-            ports=parsed_ports,
-            timeout_ms=timeout_ms,
-            workers=workers,
-            max_hosts=max_hosts,
-            query_idn=query_idn,
-            include_open=not idn_only,
+    if include_serial:
+        results.extend(discover_serial_ports())
+    if include_can:
+        results.extend(discover_can_adapters())
+    if subnet:
+        results.extend(
+            discover_network(
+                subnet,
+                ports=ports,
+                timeout_ms=timeout_ms,
+                workers=workers,
+                max_hosts=max_hosts,
+                query_idn=query_idn,
+                include_open=not idn_only,
+            )
         )
-    )
     return _dedupe_results(results)
+
+
+def discover_serial_ports(
+    *,
+    port_lister: Callable[[], Iterable[object]] | None = None,
+) -> list[DiscoveryResult]:
+    """List local serial adapters without opening a port or writing probe bytes."""
+    if port_lister is None:
+        try:
+            from serial.tools import list_ports  # type: ignore[import-not-found]
+        except Exception:
+            return []
+        port_lister = list_ports.comports
+    results: list[DiscoveryResult] = []
+    try:
+        ports = port_lister()
+    except Exception:
+        return []
+    for port in ports:
+        resource = str(getattr(port, "device", "")).strip()
+        if not resource:
+            continue
+        description = str(getattr(port, "description", "")).strip()
+        hwid = str(getattr(port, "hwid", "")).strip()
+        details = "; ".join(item for item in (description, hwid) if item)
+        results.append(
+            DiscoveryResult(
+                address="",
+                port=None,
+                protocol="serial",
+                resource=resource,
+                source="serial",
+                status="listed",
+                note=(details + "; " if details else "") + "enumerated only; no probe bytes sent",
+            )
+        )
+    return sorted(results, key=_result_sort_key)
+
+
+def discover_can_adapters(
+    *,
+    config_lister: Callable[[], Iterable[object]] | None = None,
+) -> list[DiscoveryResult]:
+    """List local python-can adapter configurations without opening a bus or sending frames."""
+    if config_lister is None:
+        try:
+            import can  # type: ignore[import-not-found]
+        except Exception:
+            return []
+        config_lister = can.detect_available_configs
+    try:
+        configurations = config_lister()
+    except Exception:
+        return []
+    results: list[DiscoveryResult] = []
+    for configuration in configurations:
+        if not isinstance(configuration, dict):
+            continue
+        channel = str(configuration.get("channel", "")).strip()
+        if not channel:
+            continue
+        interface = str(configuration.get("interface", "")).strip()
+        fd = bool(configuration.get("fd", False))
+        note_parts = [part for part in (interface, "enumerated only; no CAN frames sent") if part]
+        results.append(
+            DiscoveryResult(
+                address="",
+                port=None,
+                protocol="can-fd" if fd else "can",
+                resource=channel,
+                source="can",
+                status="listed",
+                note="; ".join(note_parts),
+            )
+        )
+    return sorted(results, key=_result_sort_key)
 
 
 def discover_network(

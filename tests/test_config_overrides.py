@@ -83,6 +83,45 @@ xonxoff = true
         self.assertEqual(serial.read_termination, "lf")
         self.assertTrue(serial.xonxoff)
 
+    def test_loads_can_connection_settings_and_rejects_bad_arbitration_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "can-fd"
+resource = "virtual-test"
+can_interface = "virtual"
+can_arbitration_id = 291
+can_extended_id = false
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            can = config.connection.can_connection()
+            self.assertEqual(can.channel, "virtual-test")
+            self.assertEqual(can.interface, "virtual")
+            self.assertEqual(can.arbitration_id, 291)
+            self.assertTrue(can.fd)
+
+            path.write_text(
+                '''\
+[connection]
+backend = "can"
+resource = "can0"
+can_arbitration_id = "291"
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "can_arbitration_id must be an integer"):
+                load_config(path)
+
     def test_rejects_invalid_generic_serial_connection_before_opening_io(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wavebench.toml"

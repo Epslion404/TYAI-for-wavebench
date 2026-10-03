@@ -1106,6 +1106,8 @@ def _main(argv: list[str] | None = None) -> int:
                     query_idn=not args.no_idn,
                     idn_only=args.idn_only,
                     include_visa=not args.no_visa,
+                    include_serial=args.serial,
+                    include_can=args.can,
                 )
                 if args.json:
                     _emit_json_result(_json_payload(results))
@@ -1196,6 +1198,8 @@ def _main(argv: list[str] | None = None) -> int:
                 discover_workers=args.discover_workers,
                 discover_max_hosts=args.discover_max_hosts,
                 include_visa=not args.no_visa,
+                discover_serial=args.discover_serial,
+                discover_can=args.discover_can,
             )
             failed = has_config_doctor_errors(records)
             if args.json:
