@@ -15,6 +15,75 @@ RELATIONS = ("combine", "coupling", "tracking", "phase_relation")
 
 
 @pytest.mark.parametrize("relation", RELATIONS)
+def test_mixed_default_output_and_relation_gate_closes_actual_default(tmp_path, relation):
+    plan = load_run_plan(_write_plan(tmp_path, f'''
+[[steps]]
+kind = "source.output"
+state = "on"
+
+[[steps]]
+kind = "source.{relation}_configure_v2"
+channels = [1, 3]
+enabled = true
+safety_gate = true
+'''))
+    service = _service(tmp_path)
+    source = Mock()
+    source.set_output.return_value = SimpleNamespace(output="OFF")
+    services = RunInstrumentServices(source=source)
+    original = service._run_step
+
+    def execute(plan, step, **kwargs):
+        if step.index == 0:
+            return original(plan, step, **kwargs)
+        return _record(step.index, step.kind, "failed")
+
+    with patch.object(service, "check"), patch.object(
+        service, "_run_instrument_services", return_value=nullcontext(services)
+    ), patch.object(service, "_run_step", side_effect=execute):
+        result = service.run(plan)
+    assert service.config.source.default_channel == 2
+    assert source.set_output.call_args_list == [
+        call(channel=None, enabled=True),
+        call(channel=1, enabled=False), call(channel=3, enabled=False),
+        call(channel=2, enabled=False),
+    ]
+    gate = result.steps[1].artifact["safety_gate"]
+    assert gate["source_channels"] == [1, 3, 2]
+    assert [action["channel"] for action in gate["actions"]] == [1, 3, 2]
+
+
+def test_relation_alone_does_not_add_unrelated_default_output(tmp_path):
+    plan = load_run_plan(_write_plan(tmp_path, '''
+[[steps]]
+kind = "source.coupling_configure_v2"
+channels = [1, 3]
+enabled = true
+safety_gate = true
+'''))
+    assert _service(tmp_path)._safety_gate_for_step(plan, plan.steps[0])["source_channels"] == [1, 3]
+
+
+@pytest.mark.parametrize("other", [
+    'kind = "source.set_freq"\nfrequency_hz = 1000',
+    'kind = "sweep.frequency_response"\nreference_channel = 1\nresponse_channel = 2\n'
+    'start_frequency_hz = 100\nstop_frequency_hz = 1000\nfrequency_count = 2',
+])
+def test_default_scalar_and_sweep_channels_union_with_relation(tmp_path, other):
+    plan = load_run_plan(_write_plan(tmp_path, f'''
+[[steps]]
+kind = "source.coupling_configure_v2"
+channels = [1, 3]
+enabled = true
+safety_gate = true
+
+[[steps]]
+{other}
+'''))
+    assert _service(tmp_path)._safety_gate_for_step(plan, plan.steps[0])["source_channels"] == [1, 3, 2]
+
+
+@pytest.mark.parametrize("relation", RELATIONS)
 @pytest.mark.parametrize("off_fails", [False, True])
 def test_multichannel_failure_gate_attempts_every_declared_output(tmp_path, relation, off_fails):
     plan = load_run_plan(_write_plan(tmp_path, f'''
