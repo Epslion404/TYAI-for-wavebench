@@ -67,6 +67,10 @@ def validate_run_report_paths(
         for path in directory.iterdir():
             if path.is_dir():
                 resolved = path.resolve()
+                # A backlink to the run root must not turn derived root reports
+                # into evidence. Root files already have their own policy above.
+                if resolved == root:
+                    continue
                 directories.add(resolved)
                 pending.append(resolved)
             elif path.is_file():

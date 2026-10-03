@@ -238,3 +238,22 @@ def test_nested_junction_evidence_is_protected(run_dir, tmp_path, hardlink):
     finally:
         cycle.rmdir()
         junction.rmdir()
+
+
+def test_junction_back_to_run_root_allows_report_refresh(run_dir):
+    if os.name != "nt":
+        pytest.skip("Windows junction")
+    import subprocess
+
+    junction = run_dir / "processing" / "back"
+    result = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(run_dir)],
+                            capture_output=True, timeout=10)
+    assert result.returncode == 0
+    try:
+        for target in (run_dir / "report.html", run_dir / "custom.html"):
+            for _ in range(2):
+                assert write_run_report_html(load_run_package(run_dir), target) == target
+        with pytest.raises(ConfigError, match="original run evidence"):
+            write_run_report_html(load_run_package(run_dir), junction / "run.json")
+    finally:
+        junction.rmdir()
