@@ -844,10 +844,17 @@ class RunService:
                             plan, step, run_dir=run_dir, services=services, plan_hash=plan_hash
                         )
                     except _FrequencyResponseExecutionError as exc:
-                        if not isinstance(exc.cause, (TransportIOError, SessionHealthError)):
+                        if isinstance(exc.cause, (TransportIOError, SessionHealthError)):
+                            step_failure = exc.cause
+                            record = exc.record
+                        elif isinstance(exc.cause, WaveBenchError) and self._safety_gate_for_step(
+                            plan, step
+                        )["enabled"]:
+                            # 与直接抛出 WaveBenchError 的步骤保持一致：包装异常不能绕过已启用的安全门。
+                            step_failure = exc.cause
+                            record = exc.record
+                        else:
                             raise
-                        step_failure = exc.cause
-                        record = exc.record
                         record = replace(
                             record,
                             artifact={
