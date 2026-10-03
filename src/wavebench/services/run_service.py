@@ -150,6 +150,7 @@ class RunResult:
     run_json_path: Path
     summary_csv_path: Path
     steps: list[RunStepRecord]
+    status: str = "ok"
 
 
 @dataclass(frozen=True)
@@ -1126,8 +1127,11 @@ class RunService:
                 run_json_path=run_json_path,
                 summary_csv_path=summary_csv_path,
                 steps=records,
+                status=run_status,
             )
 
+        if services.close_errors:
+            result = replace(result, status="failed")
         if not analysis_steps or run_failure is not None or services.close_errors:
             return result
 
@@ -1238,6 +1242,7 @@ class RunService:
             run_json_path=run_json_path,
             summary_csv_path=summary_csv_path,
             steps=records,
+            status=run_status,
         )
 
     @contextmanager
@@ -2078,6 +2083,7 @@ class RunService:
                             step, exc, points=points, csv_path=csv_path, fit_path=None,
                             label=label, response_dir=response_dir, source_channel=source_channel,
                             reference_channel=reference_channel, response_channel=response_channel,
+                            resume=resume_summary,
                         ) from exc
                     if str(source_status.output).strip().upper() != "ON":
                         error = ConfigError(
@@ -2088,6 +2094,7 @@ class RunService:
                             step, error, points=points, csv_path=csv_path, fit_path=None,
                             label=label, response_dir=response_dir, source_channel=source_channel,
                             reference_channel=reference_channel, response_channel=response_channel,
+                            resume=resume_summary,
                         ) from error
                 for frequency_index, (frequency_hz, adaptive_level, parent_start, parent_stop) in enumerate(pending):
                     point_key = self._frequency_response_point_key(
@@ -2132,6 +2139,7 @@ class RunService:
                             step, exc, points=points, csv_path=csv_path, fit_path=None,
                             label=label, response_dir=response_dir, source_channel=source_channel,
                             reference_channel=reference_channel, response_channel=response_channel,
+                            resume=resume_summary,
                         ) from exc
                     if str(source_status.output).strip().upper() != "ON":
                         error = ConfigError(
@@ -2162,6 +2170,7 @@ class RunService:
                             step, error, points=points, csv_path=csv_path, fit_path=None,
                             label=label, response_dir=response_dir, source_channel=source_channel,
                             reference_channel=reference_channel, response_channel=response_channel,
+                            resume=resume_summary,
                         ) from error
                     if step.fields["settle_s"]:
                         time.sleep(step.fields["settle_s"])
@@ -2336,6 +2345,7 @@ class RunService:
                         step, exc, points=points, csv_path=csv_path, fit_path=None,
                         label=label, response_dir=response_dir, source_channel=source_channel,
                         reference_channel=reference_channel, response_channel=response_channel,
+                        resume=resume_summary,
                     ) from exc
             if not adaptive_config or not adaptive_config.get("enabled", True):
                 break
@@ -2677,6 +2687,7 @@ class RunService:
         calibration_csv_path: Path | None = None,
         calibration_json_path: Path | None = None,
         fixed_point_paths: dict[str, Path] | None = None,
+        resume: dict[str, Any] | None = None,
         stop_conditions: dict[str, Any] | None = None,
         stop_reason: str | None = None,
     ) -> _FrequencyResponseExecutionError:
@@ -2694,6 +2705,7 @@ class RunService:
             calibration_csv_path=calibration_csv_path,
             calibration_json_path=calibration_json_path,
             fixed_point_paths=fixed_point_paths,
+            resume=resume,
             stop_conditions=stop_conditions,
             stop_reason=stop_reason,
             error=cause,
@@ -2947,9 +2959,11 @@ class RunService:
                 "attempts": attempts,
                 "consistency": consistency,
             }
-        elif quality_gate:
+        if quality_gate:
+            warnings = list(artifact["quality"]["warnings"])
+            accepted = not warnings or artifact["quality"].get("trusted_by_consistency", False)
             artifact["quality_gate"] = {
-                "status": "warning" if warnings else "ok",
+                "status": "ok" if accepted else "warning",
                 "warnings": warnings,
             }
         if "expect" in step.fields:

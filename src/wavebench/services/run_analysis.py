@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -56,6 +57,15 @@ def evaluate_expect(values: dict[str, Any], expect: dict[str, dict[str, float]])
                 "limits": limits,
             }
             failures.append(f"{metric}: not numeric")
+            continue
+        if not math.isfinite(value):
+            checks[metric] = {
+                "status": "failed",
+                "reason": "not_finite",
+                "value": value,
+                "limits": limits,
+            }
+            failures.append(f"{metric}: not finite")
             continue
         status = "ok"
         reasons: list[str] = []

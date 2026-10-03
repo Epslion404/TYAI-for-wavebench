@@ -243,6 +243,7 @@ duration_s = 0.001
 
             self.assertEqual(run_data["status"], "failed")
             self.assertEqual(run_data["error"]["code"], "session_close_failed")
+            self.assertEqual(result.status, "failed")
             self.assertEqual(
                 run_data["provenance"]["session_lifecycle"]["close_errors"][0]["operation"],
                 "session.close.scope",
@@ -1240,6 +1241,8 @@ auto_recover = true
                 scope.autoscale.assert_called_once_with()
                 artifact = result.steps[0].artifact
                 self.assertEqual(artifact["quality"]["status"], "ok")
+                self.assertEqual(artifact["quality_gate"], {"status": "ok", "warnings": []})
+                self.assertEqual(result.status, "ok")
                 self.assertEqual(artifact["quality_recovery"]["max_auto_recover_attempts"], 2)
                 self.assertIn("low_points_per_cycle", artifact["quality_recovery"]["attempts"][0]["quality"]["warnings"][0])
 
@@ -1310,6 +1313,9 @@ auto_recover = true
                 self.assertEqual(artifact["quality"]["status"], "ok_by_consistency")
                 self.assertTrue(artifact["quality"]["trusted_by_consistency"])
                 self.assertEqual(artifact["quality_recovery"]["consistency"]["status"], "consistent")
+                self.assertEqual(artifact["quality_gate"], {"status": "ok", "warnings": warning})
+                self.assertEqual(result.steps[0].status, "ok")
+                self.assertEqual(result.status, "ok")
 
 
     def test_scope_capture_expect_passes_and_is_written_to_summary(self):

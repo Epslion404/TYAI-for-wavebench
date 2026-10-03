@@ -114,10 +114,8 @@ class PowerServicePanelAdapter:
             power_cfg = self.service._power_config()
             if enabled:
                 status = self._with_session(lambda power: power.get_status(channel))
-                self.service._check_power_limits(
-                    voltage_v=status.set_voltage_v,
-                    current_limit_a=status.set_current_a,
-                )
+                protection = self._with_session(lambda power: power.get_protection_status(channel))
+                self.service._check_output_on(status, protection)
             self._merge_status(
                 self._with_session(
                     lambda power: power.set_output(

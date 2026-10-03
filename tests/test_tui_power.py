@@ -3,8 +3,12 @@ from __future__ import annotations
 import importlib
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import pytest
 
 from wavebench.cli import build_parser
 from wavebench.config import (
@@ -12,13 +16,15 @@ from wavebench.config import (
     ConnectionConfig,
     OutputConfig,
     PowerConfig,
+    SafetyLimitsConfig,
     ScopeConfig,
     WaveBenchConfig,
     WaveformConfig,
 )
 from wavebench.drivers.dp800 import PowerMeasurement, PowerProtectionStatus, PowerStatus
-from wavebench.errors import WaveBenchError
+from wavebench.errors import ConfigError, WaveBenchError
 from wavebench.logging import CommandLogger
+from wavebench.services.power_service import PowerService
 from wavebench.tui.dmm import FakeDmmPanelAdapter
 from wavebench.tui.power import FakePowerPanelAdapter, PowerServicePanelAdapter, build_power_panel_state
 from wavebench.tui.source import FakeSourcePanelAdapter
@@ -655,6 +661,134 @@ class TuiPowerBusyBehaviorTests(unittest.IsolatedAsyncioTestCase):
             await pilot.click("#toggle-1")
             await pilot.pause(0.5)
             self.assertEqual(power.output_calls, [(1, True)])
+
+
+class RecordingPersistentPower:
+    def __init__(self):
+        self.status = make_status()
+        self.protection = make_protection()
+        self.events = []
+        self.closed = False
+
+    def idn(self):
+        return "RIGOL,DP832A,FAKE,FW"
+
+    def get_status(self, channel):
+        self.events.append(("status", channel))
+        return self.status
+
+    def get_protection_status(self, channel):
+        self.events.append(("protection", channel))
+        return self.protection
+
+    def set_output(self, channel, enabled, **kwargs):
+        self.events.append(("output", channel, enabled, kwargs))
+        self.status = replace(self.status, output="ON" if enabled else "OFF")
+        return self.status
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def persistent_power_adapter():
+    power = RecordingPersistentPower()
+    service = PowerService(config=make_config(), logger=CommandLogger())
+    adapter = PowerServicePanelAdapter(service=service, channels=(1,))
+    with patch.object(service, "_open_power", return_value=power) as open_power:
+        adapter.refresh()
+        power.events.clear()
+        yield adapter, power, open_power
+        adapter.close()
+    assert power.closed
+
+
+@pytest.mark.parametrize(
+    "protection_change,error",
+    [
+        ({"ovp_threshold_v": 3.2}, "OVP"),
+        ({"ocp_threshold_a": 0.19}, "OCP"),
+        ({"ovp_tripped": "YES"}, "protection trip is active"),
+        ({"ocp_tripped": "YES"}, "protection trip is active"),
+    ],
+)
+def test_persistent_output_on_rejects_live_unsafe_protection(
+    persistent_power_adapter, protection_change, error
+):
+    adapter, power, open_power = persistent_power_adapter
+    # Change protection after refresh to ensure the ON gate uses live values.
+    power.protection = replace(power.protection, **protection_change)
+
+    with pytest.raises(ConfigError, match=error):
+        adapter.set_output(channel=1, enabled=True)
+
+    assert power.events == [("status", 1), ("protection", 1)]
+    assert power.status.output == "OFF"
+    assert adapter._power_session is power
+    assert not power.closed
+    open_power.assert_called_once_with()
+
+    # A rejected ON must still allow OFF using the same persistent session.
+    power.events.clear()
+    state = adapter.set_output(channel=1, enabled=False)
+    assert power.events[0][:3] == ("output", 1, False)
+    assert state.channels[0].output == "关 / OFF"
+    open_power.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        SafetyLimitsConfig(max_power_voltage_v=3.2),
+        SafetyLimitsConfig(max_power_current_limit_a=0.19),
+    ],
+)
+def test_persistent_output_on_keeps_config_limits(persistent_power_adapter, limits):
+    adapter, power, open_power = persistent_power_adapter
+    adapter.service.config = replace(adapter.service.config, safety_limits=limits)
+
+    with pytest.raises(ConfigError, match="safety limit exceeded"):
+        adapter.set_output(channel=1, enabled=True)
+
+    assert power.events == [("status", 1), ("protection", 1)]
+    assert not power.closed
+    power.events.clear()
+    state = adapter.set_output(channel=1, enabled=False)
+    assert power.events[0][:3] == ("output", 1, False)
+    assert state.channels[0].output == "关 / OFF"
+    open_power.assert_called_once_with()
+
+
+def test_persistent_output_checks_protection_before_on_and_reuses_session(persistent_power_adapter):
+    adapter, power, open_power = persistent_power_adapter
+    # Threshold equality is allowed by the existing service contract.
+    power.protection = replace(power.protection, ovp_threshold_v=3.3, ocp_threshold_a=0.2)
+
+    state = adapter.set_output(channel=1, enabled=True)
+
+    assert power.events[:2] == [("status", 1), ("protection", 1)]
+    assert power.events[2] == (
+        "output", 1, True, {"check_errors": True, "settle_ms_after_output": 0}
+    )
+    assert state.channels[0].output == "开 / ON"
+    assert not power.closed
+
+    state = adapter.set_output(channel=1, enabled=False)
+    assert state.channels[0].output == "关 / OFF"
+    open_power.assert_called_once_with()
+
+
+def test_persistent_output_on_requires_successful_protection_query(persistent_power_adapter):
+    adapter, power, open_power = persistent_power_adapter
+    with patch.object(power, "get_protection_status", side_effect=OSError("protection timeout")):
+        with pytest.raises(OSError, match="protection timeout"):
+            adapter.set_output(channel=1, enabled=True)
+
+    assert power.events == [("status", 1)]
+    assert power.status.output == "OFF"
+    assert power.closed
+    assert adapter._power_session is None
+    open_power.assert_called_once_with()
 
 
 if __name__ == "__main__":

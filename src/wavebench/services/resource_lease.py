@@ -3,6 +3,15 @@
 The kernel-backed lock is the only ownership fact.  A sidecar JSON file is
 diagnostic metadata only; stale metadata may be removed after a non-blocking
 lock proves that the lock is free, while the ``.lock`` inode is never unlinked.
+
+Leases also hold the old v1 fingerprints for equivalent spellings.  Keeping
+these locks in the v1 directory protects both acquisition orders when an old
+process is still running.  Two old processes still need upgrading to gain the
+new alias protection.
+
+The old case folding conflated the three-part INSTR resource class with the
+LAN device named instr.  Their canonical identities are now distinct, but their
+compatibility locks conservatively contend while v1 processes are supported.
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ LEASE_SCHEMA = "wavebench.resource_lease.v1"
 LeaseMode = Literal["shared", "exclusive"]
 _LEASE_MODES = frozenset({"shared", "exclusive"})
 _TCPIP_PREFIX = re.compile(r"^tcpip(?P<board>\d*)$", re.IGNORECASE)
+_ASRL_RESOURCE = re.compile(r"^asrl(?P<number>[0-9]+)(?:::instr)?$", re.IGNORECASE)
 _WINDOWS_COM = re.compile(r"^(?:\\\\\.\\)?com(?P<number>\d+)$", re.IGNORECASE)
 _WINDOWS_DRIVE = re.compile(r"^[a-zA-Z]:[\\/]")
 
@@ -43,11 +53,46 @@ _WINDOWS_DRIVE = re.compile(r"^[a-zA-Z]:[\\/]")
 def normalize_resource(resource: object) -> str:
     """Normalize a VISA or local serial resource for lease identity.
 
-    VISA resource spelling is case-insensitive for lease purposes.  Serial
+    TCPIP default board and LAN device spellings share an identity.  As in
+    PyVISA, a three-part uppercase INSTR denotes the default resource class;
+    lowercase instr and socket denote LAN device names.  This distinction is
+    resolved before case folding.  Numeric ASRL resources gain
+    their optional INSTR suffix.  On Windows, standard ASRL numbers map to COM
+    ports, as in the VISA serial backend; POSIX has no such COM mapping.  Serial
     paths retain case and are normalized with ``realpath`` so symlink aliases
     such as ``/dev/serial/by-id`` share one lock when they resolve to the same
     device.
     """
+
+    normalized = _normalize_resource_v1(resource)
+    serial = _ASRL_RESOURCE.fullmatch(normalized)
+    if serial is not None:
+        number = serial.group("number")
+        # Do not infer COM aliases for nonstandard, zero-padded ASRL names:
+        # pyvisa-py passes their board spelling verbatim to pyserial.
+        if _is_windows() and not number.startswith("0"):
+            return f"com{number}"
+        return f"asrl{number}::instr"
+    parts = normalized.split("::")
+    prefix = _TCPIP_PREFIX.fullmatch(parts[0])
+    if prefix is not None and len(parts) >= 2:
+        board = int(prefix.group("board") or "0")
+        parts[0] = f"tcpip{board}" if board else "tcpip"
+        # TCPIP[board]::host[::LAN device][::INSTR].  SOCKET endpoints
+        # keep their explicit port and class, including port 5025.
+        original_parts = " ".join(resource.strip().split()).split("::")
+        if len(parts) == 2 or (len(parts) == 3 and original_parts[-1] == "INSTR"):
+            parts = [*parts[:2], "inst0", "instr"]
+        elif len(parts) == 3 and original_parts[-1] != "SOCKET":
+            parts.append("instr")
+        elif len(parts) == 3:
+            raise ConfigError("TCPIP SOCKET resource requires a host and an explicit port")
+        return "::".join(parts)
+    return normalized
+
+
+def _normalize_resource_v1(resource: object) -> str:
+    """The original normalization, retained for lock protocol compatibility."""
 
     if not isinstance(resource, str) or not resource.strip():
         raise ConfigError("resource lease requires a non-empty resource")
@@ -76,6 +121,36 @@ def normalize_resource(resource: object) -> str:
             normalized_prefix = "tcpip" if board in {"", "0"} else f"tcpip{int(board)}"
             return "::".join([normalized_prefix, *(part.casefold() for part in parts[1:])])
     return stripped.casefold()
+
+
+def _v1_resource_identities(resource: str) -> set[str]:
+    """Enumerate old identities without re-normalizing them with new rules."""
+
+    identities = {resource}
+    serial = _ASRL_RESOURCE.fullmatch(resource)
+    com = _WINDOWS_COM.fullmatch(resource) if _is_windows() else None
+    if com is not None and com.group("number").startswith("0"):
+        com = None
+    if serial is not None or com is not None:
+        number = (serial or com).group("number")
+        identities.update({f"asrl{number}", f"asrl{number}::instr"})
+    parts = resource.split("::")
+    prefix = _TCPIP_PREFIX.fullmatch(parts[0])
+    if prefix is not None and len(parts) >= 2:
+        # v1 normalized TCPIP00 (and more zeroes) to tcpip0, whereas
+        # TCPIP and TCPIP0 became tcpip.  Both are the default board.
+        prefixes = {parts[0], "tcpip0"} if parts[0] == "tcpip" else {parts[0]}
+        tails = {"::".join(parts[1:])}
+        if parts[-1] == "instr":
+            if len(parts) == 4:
+                # PyVISA recognizes resource classes before case folding.
+                # Lowercase socket/instr are valid LAN names even without the
+                # class suffix.  v1 folded those omitted-suffix spellings too.
+                tails.add("::".join(parts[1:-1]))
+            if len(parts) == 4 and parts[-2] == "inst0":
+                tails.update({parts[1], f"{parts[1]}::instr"})
+        identities.update(f"{prefix}::{tail}" for prefix in prefixes for tail in tails)
+    return identities
 
 
 def normalize_lock_id(lock_id: object | None) -> str:
@@ -131,6 +206,7 @@ class ResourceLease:
     mode: LeaseMode = "exclusive"
     operation: str | None = None
     _lock: FileLock | None = field(default=None, init=False, repr=False)
+    _locks: list[FileLock] = field(default_factory=list, init=False, repr=False)
     _acquired: bool = field(default=False, init=False, repr=False)
     _lease_id: str | None = field(default=None, init=False, repr=False)
 
@@ -155,6 +231,27 @@ class ResourceLease:
         return self.directory / f"{self.fingerprint}.json"
 
     @property
+    def _lock_paths(self) -> list[Path]:
+        fingerprints = {
+            hashlib.sha256(f"{resource}\x00{self.lock_id}".encode("utf-8")).hexdigest()
+            for resource in _v1_resource_identities(self.resource)
+        }
+        return [self.directory / f"{fingerprint}.lock" for fingerprint in sorted(fingerprints)]
+
+    def _acquire_locks(self, mode: LeaseMode) -> list[FileLock]:
+        locks: list[FileLock] = []
+        try:
+            for path in self._lock_paths:
+                lock = FileLock(path, mode=mode)
+                lock.acquire()
+                locks.append(lock)
+            return locks
+        except Exception:
+            for lock in reversed(locks):
+                lock.release()
+            raise
+
+    @property
     def acquired(self) -> bool:
         return self._acquired
 
@@ -162,9 +259,8 @@ class ResourceLease:
         if self._acquired:
             return self
         ensure_private_directory(self.directory)
-        lock = FileLock(self.lock_path, mode=self.mode)
         try:
-            lock.acquire()
+            locks = self._acquire_locks(self.mode)
         except FileLockBusy as exc:
             raise ResourceBusyError(
                 f"resource lease is busy (fingerprint {self.fingerprint[:16]})"
@@ -172,7 +268,8 @@ class ResourceLease:
         except (FileLockUnavailable, FileLockError) as exc:
             raise ConfigError(f"unable to acquire resource lease: {exc}") from exc
 
-        self._lock = lock
+        self._locks = locks
+        self._lock = next(lock for lock in locks if lock.path == self.lock_path)
         self._acquired = True
         self._lease_id = os.urandom(16).hex()
         try:
@@ -183,13 +280,14 @@ class ResourceLease:
         return self
 
     def release(self) -> None:
-        lock = self._lock
-        if lock is None:
+        if not self._locks:
             return
         try:
             self._remove_own_metadata()
         finally:
-            lock.release()
+            for lock in reversed(self._locks):
+                lock.release()
+            self._locks = []
             self._lock = None
             self._acquired = False
             self._lease_id = None
@@ -203,12 +301,15 @@ class ResourceLease:
     def holder_metadata(self) -> dict[str, Any] | None:
         """Read sidecar metadata without changing the lock state."""
 
-        try:
-            payload = self.metadata_path.read_text(encoding="utf-8")
-            value = json.loads(payload)
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return None
-        return dict(value) if isinstance(value, dict) else None
+        paths = [self.metadata_path, *(path.with_suffix(".json") for path in self._lock_paths)]
+        for path in dict.fromkeys(paths):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                return dict(value)
+        return None
 
     def status(self) -> dict[str, Any]:
         """Return lock ownership and stale-metadata state."""
@@ -225,13 +326,13 @@ class ResourceLease:
                 "lock_path": str(self.lock_path),
                 "metadata_path": str(self.metadata_path),
             }
-        if not self.lock_path.exists():
+        if not any(path.exists() for path in self._lock_paths):
             return self._status_payload(held=False, stale_metadata=False, metadata=None)
-        lock = FileLock(self.lock_path, mode="exclusive")
+        locks: list[FileLock] = []
         held = False
         try:
             try:
-                lock.acquire()
+                locks = self._acquire_locks("exclusive")
             except FileLockBusy:
                 held = True
             except (FileLockUnavailable, FileLockError) as exc:
@@ -239,7 +340,8 @@ class ResourceLease:
             metadata = self.holder_metadata()
             stale = not held and metadata is not None
         finally:
-            lock.release()
+            for lock in reversed(locks):
+                lock.release()
         return self._status_payload(held=held, stale_metadata=stale, metadata=metadata)
 
     def clear_stale_metadata(self) -> bool:
@@ -248,25 +350,29 @@ class ResourceLease:
         info = backend_info()
         if (
             not info.available
-            or not self.lock_path.exists()
-            or not self.metadata_path.exists()
+            or not any(path.exists() for path in self._lock_paths)
+            or not any(path.with_suffix(".json").exists() for path in self._lock_paths)
         ):
             return False
-        lock = FileLock(self.lock_path, mode="exclusive")
+        locks: list[FileLock] = []
         try:
             try:
-                lock.acquire()
+                locks = self._acquire_locks("exclusive")
             except FileLockBusy:
                 return False
             except (FileLockUnavailable, FileLockError) as exc:
                 raise ConfigError(f"unable to clear resource lease metadata: {exc}") from exc
-            try:
-                self.metadata_path.unlink()
-            except FileNotFoundError:
-                return False
-            return True
+            removed = False
+            for path in self._lock_paths:
+                try:
+                    path.with_suffix(".json").unlink()
+                    removed = True
+                except FileNotFoundError:
+                    pass
+            return removed
         finally:
-            lock.release()
+            for lock in reversed(locks):
+                lock.release()
 
     def _status_payload(
         self,

@@ -249,6 +249,25 @@ class PowerService(SessionStateAliasMixin):
                 f"< current limit {set_current_a:.12g} A"
             )
 
+    def _check_output_on(
+        self, status: PowerStatus, protection: PowerProtectionStatus
+    ) -> None:
+        self._check_power_limits(
+            voltage_v=status.set_voltage_v,
+            current_limit_a=status.set_current_a,
+        )
+        self._check_protection_relationship(
+            set_voltage_v=status.set_voltage_v,
+            set_current_a=status.set_current_a,
+            ovp_threshold_v=protection.ovp_threshold_v,
+            ocp_threshold_a=protection.ocp_threshold_a,
+        )
+        if protection.ovp_tripped != "NO" or protection.ocp_tripped != "NO":
+            raise ConfigError(
+                "power output ON rejected: protection trip is active / "
+                "电源输出开启被拒绝：保护已触发"
+            )
+
     def set_output(self, channel: int | None, enabled: bool) -> PowerStatus:
         power_cfg = self._power_config()
         channel = power_cfg.default_channel if channel is None else channel
@@ -266,21 +285,7 @@ class PowerService(SessionStateAliasMixin):
             if enabled:
                 status = current if current is not None else power.get_status(channel)
                 protection = power.get_protection_status(channel)
-                self._check_power_limits(
-                    voltage_v=status.set_voltage_v,
-                    current_limit_a=status.set_current_a,
-                )
-                self._check_protection_relationship(
-                    set_voltage_v=status.set_voltage_v,
-                    set_current_a=status.set_current_a,
-                    ovp_threshold_v=protection.ovp_threshold_v,
-                    ocp_threshold_a=protection.ocp_threshold_a,
-                )
-                if protection.ovp_tripped != "NO" or protection.ocp_tripped != "NO":
-                    raise ConfigError(
-                        "power output ON rejected: protection trip is active / "
-                        "电源输出开启被拒绝：保护已触发"
-                    )
+                self._check_output_on(status, protection)
             result = power.set_output(
                 channel,
                 enabled,

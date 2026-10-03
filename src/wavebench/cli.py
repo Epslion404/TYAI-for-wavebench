@@ -1475,7 +1475,9 @@ def _main(argv: list[str] | None = None) -> int:
                     result = service.run(plan)
                 else:
                     result = service.run(plan, execution_intent=expected_intent)
-                failed = any(step.status == "failed" for step in result.steps)
+                failed = result.status == "failed" or any(
+                    step.status == "failed" for step in result.steps
+                )
                 if args.json:
                     _emit_json_result(
                         {
