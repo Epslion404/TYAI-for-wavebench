@@ -496,6 +496,83 @@ class TuiPowerTests(unittest.TestCase):
         state = adapter.refresh()
         self.assertEqual(state.channels[0].channel, 1)
 
+    def test_persistent_session_set_output_enforces_protection_prechecks(self):
+        from wavebench.errors import ConfigError
+        from wavebench.services.power_service import PowerService
+
+        real = PowerService(config=make_config(), logger=CommandLogger())
+
+        class FakePersistentPower:
+            def __init__(self, protection):
+                self.protection = protection
+                self.output_calls = []
+                self.closed = False
+
+            def idn(self):
+                return "RIGOL,DP832A,SN,FW"
+
+            def get_status(self, channel: int):
+                output = "ON" if self.output_calls else "OFF"
+                return make_status(channel=channel, output=output, voltage=5.0, current=0.1)
+
+            def get_protection_status(self, channel: int):
+                return self.protection
+
+            def set_output(self, channel, enabled, *, check_errors=True, settle_ms_after_output=0):
+                self.output_calls.append((channel, enabled))
+                return make_status(channel=channel, output="ON" if enabled else "OFF",
+                                   voltage=5.0, current=0.1)
+
+            def close(self):
+                self.closed = True
+
+        class PersistentService:
+            def __init__(self, driver):
+                self.config = make_config()
+                self.logger = CommandLogger()
+                self.driver = driver
+
+            def open_session(self):
+                return self.driver
+
+            def _power_config(self):
+                return self.config.power
+
+            def _check_power_limits(self, *, voltage_v, current_limit_a):
+                return real._check_power_limits(voltage_v=voltage_v, current_limit_a=current_limit_a)
+
+            def _check_protection_relationship(self, **kwargs):
+                return real._check_protection_relationship(**kwargs)
+
+            def _check_protection_tripped(self, protection):
+                return real._check_protection_tripped(protection)
+
+        reject_cases = [
+            ("ovp threshold < set voltage", make_protection(channel=1, ovp_threshold=4.0)),
+            ("ocp threshold < current limit", make_protection(channel=1, ocp_threshold=0.05)),
+            ("ovp tripped", make_protection(channel=1, ovp_tripped="YES")),
+            ("ocp tripped", make_protection(channel=1, ocp_tripped="YES")),
+        ]
+        for label, protection in reject_cases:
+            driver = FakePersistentPower(protection)
+            adapter = PowerServicePanelAdapter(
+                service=PersistentService(driver), channels=(1,)  # type: ignore[arg-type]
+            )
+            adapter.refresh()
+            with self.assertRaises(ConfigError, msg=label):
+                adapter.set_output(channel=1, enabled=True)
+            self.assertEqual(driver.output_calls, [], label)
+            self.assertEqual(adapter._statuses[1].output, "OFF", label)
+
+        driver = FakePersistentPower(make_protection(channel=1))
+        adapter = PowerServicePanelAdapter(
+            service=PersistentService(driver), channels=(1,)  # type: ignore[arg-type]
+        )
+        adapter.refresh()
+        state = adapter.set_output(channel=1, enabled=True)
+        self.assertEqual(driver.output_calls, [(1, True)])
+        self.assertEqual(state.channels[0].output, "开 / ON")
+
     @unittest.skipIf(tui_app._TEXTUAL_IMPORT_ERROR is not None, "Textual extra is not installed")
     def test_textual_app_builds_against_fake_adapter(self):
         app = tui_app.build_app(fake=True, refresh_interval_s=10.0)
