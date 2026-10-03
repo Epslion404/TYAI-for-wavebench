@@ -396,6 +396,51 @@ duration_s = 0.01
             patch.stopall()
 
 
+def test_safety_gate_interrupt_keeps_restore_target_off() -> None:
+    with TemporaryDirectory() as tmp:
+        plan = load_run_plan(_write_plan(tmp, """
+[safety]
+safety_gate = true
+off_source_channels = [1]
+[restore]
+source_state = true
+source_channels = [1]
+[[steps]]
+kind = "sleep"
+duration_s = 0.01
+"""))
+        service = _service(tmp)
+        from unittest.mock import Mock
+
+        from wavebench.services.source_state import RestorableSourceState
+
+        source = Mock()
+        source.snapshot_restorable_state.return_value = RestorableSourceState(
+            1, "ON", "SIN", 1000, 1, "VPP", restore_evidence={}
+        )
+        interrupted = KeyboardInterrupt("interrupted OFF response")
+        source.set_output.side_effect = [interrupted, SimpleNamespace(output="OFF")]
+        with patch.object(service, "check"), patch.object(
+            service, "_run_instrument_services",
+            return_value=nullcontext(RunInstrumentServices(source=source)),
+        ), patch.object(service, "_run_step", return_value=_record(0, "sleep", "failed")):
+            with pytest.raises(KeyboardInterrupt) as caught:
+                service.run(plan)
+        assert caught.value is interrupted
+        assert source.restore_restorable_state.call_args.args[0].output == "OFF"
+        assert source.set_output.call_count == 2
+        assert all(call.kwargs == {"channel": 1, "enabled": False}
+                   for call in source.set_output.call_args_list)
+        order = [call[0] for call in source.mock_calls
+                 if call[0] in {"set_output", "restore_restorable_state"}]
+        assert order == ["set_output", "restore_restorable_state", "set_output"]
+        run_dir = next((Path(tmp) / "data" / "runs").iterdir())
+        data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        assert data["error"]["type"] == "KeyboardInterrupt"
+        assert data["error"]["message"] == "interrupted OFF response"
+        assert data["error"]["safety_gate"]["post_restore"]["status"] == "ok"
+
+
 def test_safety_gate_plan_fields_are_normalized() -> None:
     with TemporaryDirectory() as tmp:
         plan = load_run_plan(

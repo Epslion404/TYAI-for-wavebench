@@ -916,6 +916,9 @@ class RunService:
                     }
                     trigger_status = record.status
                     if gate_triggered:
+                        # OFF 写入结果不明确或门内中断时，恢复也必须保留已触发的门。
+                        safety_gate_step = step
+                        safety_gate_config = safety_gate
                         try:
                             gate_result = self._apply_safety_gate(step, safety_gate, services=services)
                         except Exception as exc:  # noqa: BLE001 - retain gate failure in run artifact
@@ -932,10 +935,6 @@ class RunService:
                             status="failed",
                             artifact={**record.artifact, "safety_gate": gate_result},
                         )
-                        # 先记录安全门状态，保证后续步骤记录写入等异常路径仍能知道
-                        # 安全门已执行 OFF，恢复时必须保持 OFF。
-                        safety_gate_step = step
-                        safety_gate_config = safety_gate
                     if step.kind == "source.arb_load" and coverage is not None:
                         record = replace(record, artifact={**record.artifact, "restore_coverage": coverage})
                     records.append(record)
