@@ -19,20 +19,30 @@ class ProtocolDecodeError(ValueError):
     """A payload or manifest cannot be safely interpreted as a declared protocol."""
 
 
-def protocol_failure(error: BaseException) -> dict[str, Any]:
+def protocol_failure(error: BaseException, *, category: str = "parse_error") -> dict[str, Any]:
     """Stable, machine-readable failure shape for malformed protocol input."""
     return {
         "ok": False,
         "frame": None,
-        "failures": [{"category": "parse_error", "message": str(error)}],
+        "failures": [{"category": category, "message": str(error)}],
         "device_errors": [],
     }
+
+
+def _finite_number(value: Any, *, field: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ProtocolDecodeError(f"{field} must be a finite number") from exc
+    if not math.isfinite(number):
+        raise ProtocolDecodeError(f"{field} must be a finite number")
+    return number
 
 
 def _samples(values: Any) -> list[float]:
     if not isinstance(values, (list, tuple)):
         raise ValueError("samples 必须是数组")
-    samples = [float(value) for value in values]
+    samples = [_finite_number(value, field="samples") for value in values]
     if not samples:
         raise ValueError("samples 不能为空")
     if any(not math.isfinite(value) for value in samples):
@@ -43,7 +53,7 @@ def _samples(values: Any) -> list[float]:
 def _sample_rate(value: Any) -> float | None:
     if value is None:
         return None
-    rate = float(value)
+    rate = _finite_number(value, field="sample_rate_hz")
     if not math.isfinite(rate) or rate <= 0:
         raise ValueError("sample_rate_hz 必须是有限正数")
     return rate
@@ -151,8 +161,11 @@ class BinaryManifestAdapter(Adapter):
         match = config.get("match", {})
         if not isinstance(match, dict):
             raise ProtocolDecodeError(f"protocol {self.name} match must be an object")
+        magic_hex = match.get("magic_hex", "")
+        if not isinstance(magic_hex, str):
+            raise ProtocolDecodeError(f"protocol {self.name} magic_hex must be a string")
         try:
-            self.magic = bytes.fromhex(match.get("magic_hex", "")) if match.get("magic_hex") else b""
+            self.magic = bytes.fromhex(magic_hex)
         except ValueError as exc:
             raise ValueError(f"协议 {self.name} 的 magic_hex 非法") from exc
         if not self.magic:
@@ -174,7 +187,8 @@ class BinaryManifestAdapter(Adapter):
         if endian not in {"big", "little"}:
             raise ValueError(f"协议 {self.name} 的 endian 必须是 big 或 little")
         self.endian = ">" if endian == "big" else "<"
-        self.scale, self.offset = float(payload.get("scale", 1)), float(payload.get("offset", 0))
+        self.scale = _finite_number(payload.get("scale", 1), field="scale")
+        self.offset = _finite_number(payload.get("offset", 0), field="offset")
         if not math.isfinite(self.scale) or not math.isfinite(self.offset):
             raise ValueError(f"协议 {self.name} 的 scale/offset 必须是有限数")
         self.rate = _sample_rate(payload.get("sample_rate_hz"))
@@ -251,8 +265,9 @@ class ProtocolRegistry:
     def decode_result(self, payload, source="unknown", metadata=None) -> dict[str, Any]:
         """Decode a protocol frame without making callers parse exception text."""
         try:
-            return {"ok": True, "frame": self.decode(payload, source, metadata).as_dict(), "failures": []}
-        except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            frame = self.decode(payload, source, metadata).as_dict()
+            return {"ok": True, "frame": frame, "failures": [], "device_errors": list(frame["device_errors"])}
+        except (TypeError, ValueError, OverflowError, UnicodeError, json.JSONDecodeError) as exc:
             return protocol_failure(exc)
 
 
