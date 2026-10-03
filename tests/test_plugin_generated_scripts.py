@@ -1,6 +1,7 @@
 """Validate pip-generated launchers before mutating the plugin environment."""
 
 import os
+from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -126,6 +127,37 @@ def test_predicted_script_owner_blocks_even_missing_file(tmp_path):
         lifecycle._assert_no_file_ownership_conflicts(package, {relative: ("foreign",)})
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_install_rejects_dangling_launcher_before_mutation(tmp_path, monkeypatch, dry_run):
+    wheel = _plugin_wheel(tmp_path, version="0.1.0", script_entries=(
+        "\n[console_scripts]\nexample-tool = wavebench_example_scope:descriptor\n"
+    ))
+    manager = PluginLifecycle(python_executable=tmp_path / "python")
+    purelib, scripts = tmp_path / "lib", tmp_path / "bin"
+    scripts.mkdir()
+    target = scripts / ("example-tool.exe" if os.name == "nt" else "example-tool")
+    destination = tmp_path / "outside-env"
+    try:
+        target.symlink_to(destination)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+    manager._environment = SimpleNamespace(
+        prefix=str(tmp_path), purelib=str(purelib), scripts=str(scripts),
+    )
+    monkeypatch.setattr(manager, "_load_ledger", lambda env: {"plugins": {}})
+    monkeypatch.setattr(manager, "_inventory", lambda **kwargs: {})
+    monkeypatch.setattr(manager, "_file_owners", lambda **kwargs: {})
+    pip = Mock()
+    monkeypatch.setattr(manager, "_pip_install", pip)
+    with pytest.raises(ConfigError, match="existing launcher"):
+        manager.install(wheel, dry_run=dry_run)
+    pip.assert_not_called()
+    assert target.is_symlink()
+    assert not destination.exists()
+    assert not manager.ledger_path.exists()
+    assert not manager.journal_path.exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="distlib Windows locked-launcher fallback")
 def test_foreign_deleteme_side_file_is_protected(tmp_path):
     package = replace(inspect_plugin_wheel(_wheel(tmp_path)), generated_scripts=("example.exe",))
@@ -151,7 +183,6 @@ def test_native_lifecycle_script_install_upgrade_rollback_and_remove(tmp_path, m
     lifecycle.install(first)
     script = os.path.join(lifecycle.environment().scripts,
                           "example-tool.exe" if os.name == "nt" else "example-tool")
-    from pathlib import Path
     assert Path(script).is_file()
     conflict = _plugin_wheel(tmp_path, version="0.2.5", script_entries=(entries
         + "future-tool = wavebench_example_scope:descriptor\n"))

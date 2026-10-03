@@ -35,6 +35,66 @@ LEDGER_SCHEMA_VERSION = 2
 JOURNAL_SCHEMA_VERSION = 2
 
 
+def _verify_generated_launchers(
+    wheel: Path, scripts: str, purelib: str, recorded_paths: set[str],
+) -> None:
+    """Recreate pip launchers in memory; permit only their ZIP timestamp to vary."""
+    import calendar
+    from configparser import ConfigParser
+    import io
+    from types import SimpleNamespace
+    from zipfile import ZipFile
+
+    from pip._internal.operations.install.wheel import PipScriptMaker
+
+    parser = ConfigParser(interpolation=None)
+    parser.optionxform = str
+    with ZipFile(wheel) as archive:
+        entry_file = next(name for name in archive.namelist()
+                          if name.endswith(".dist-info/entry_points.txt"))
+        parser.read_string(archive.read(entry_file).decode("utf-8"))
+    recorded = {installation_path_key(path) for path in recorded_paths}
+    maker = PipScriptMaker(None, scripts)
+    maker.clobber = True
+    maker.variants = {""}
+    captured: dict[str, bytes] = {}
+    maker._fileop = SimpleNamespace(
+        write_binary_file=lambda path, data: captured.__setitem__(path, data),
+        set_executable_mode=lambda paths: None,
+    )
+    for group in ("console_scripts", "gui_scripts"):
+        if not parser.has_section(group):
+            continue
+        for name, value in parser.items(group):
+            specification = f"{name} = {value}"
+            options = {"gui": group == "gui_scripts"}
+            captured.clear()
+            maker.make(specification, options)
+            for target, expected in tuple(captured.items()):
+                relative = os.path.relpath(target, purelib)
+                if installation_path_key(relative) not in recorded:
+                    raise ConfigError(f"generated launcher missing from installed RECORD: {target}")
+                path = Path(target)
+                if path.is_symlink() or not path.is_file():
+                    raise ConfigError(f"generated launcher is missing or a symlink: {target}")
+                actual = path.read_bytes()
+                if os.name == "nt":
+                    with ZipFile(io.BytesIO(actual)) as archive:
+                        timestamp = archive.getinfo("__main__.py").date_time
+                    previous_epoch = os.environ.get("SOURCE_DATE_EPOCH")
+                    try:
+                        os.environ["SOURCE_DATE_EPOCH"] = str(calendar.timegm(timestamp + (0, 0, 0)))
+                        maker.make(specification, options)
+                        expected = captured[target]
+                    finally:
+                        if previous_epoch is None:
+                            os.environ.pop("SOURCE_DATE_EPOCH", None)
+                        else:
+                            os.environ["SOURCE_DATE_EPOCH"] = previous_epoch
+                if actual != expected:
+                    raise ConfigError(f"generated launcher does not match cached wheel: {target}")
+
+
 @dataclass(frozen=True)
 class EnvironmentInfo:
     python: str
@@ -769,7 +829,9 @@ print(json.dumps(payload, sort_keys=True))
                     for owner in names
                 }
                 ignored = canonicalize_name(ignored_distribution) if ignored_distribution else None
-                if target.exists() and (not owners or any(owner != ignored for owner in owners)):
+                if target.is_symlink() or (
+                    target.exists() and (not owners or any(owner != ignored for owner in owners))
+                ):
                     raise ConfigError("plugin script would overwrite an existing launcher / 插件启动器将覆盖已有文件")
         overlap = PluginLifecycle._shared_file_path(
             paths,
@@ -1023,6 +1085,12 @@ for row in installed_rows:
     if encoded != expected_digest or (size_field and size != int(size_field)):
         raise SystemExit(f"installed file hash mismatch: {path}")
     file_rows.append((path, encoded))
+if ROLLBACK_REINSTALL:
+    from wavebench.plugins.lifecycle import _verify_generated_launchers
+    _verify_generated_launchers(
+        __import__("pathlib").Path(wheel_path), sysconfig.get_path("scripts"),
+        sysconfig.get_path("purelib"), seen_paths,
+    )
 files_digest = hashlib.sha256(json.dumps(sorted(file_rows)).encode()).hexdigest()
 print(json.dumps({
     "driver_ids": [driver_id for driver_id, _value in expected_entries],
@@ -1036,7 +1104,7 @@ print(json.dumps({
                     self.environment().python,
                     "-I",
                     "-c",
-                    script,
+                    script.replace("ROLLBACK_REINSTALL", repr(rollback_reinstall)),
                     canonicalize_name(record["distribution"]),
                     record["version"],
                     json.dumps(
