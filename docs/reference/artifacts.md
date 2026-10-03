@@ -31,6 +31,8 @@ NPY 来源先检查有界 header、实数 dtype、二维形状和文件长度，
 
 监督模式在 manifest 与 step artifact 中记录 `execution`：配置、启动方式、实际内存后端与口径、退出码、耗时、触发原因及是否强制终止。结构化错误使用 `analysis_cancelled`、`analysis_timeout`、`analysis_worker_failed`，外层状态仍为 `failed`。Linux 有明确证据时记录 `oom_kill_count`；未知退出不推断成 OOM。报告展示监督结果、超时值、内存后端及强制终止标记。
 
+`execution.worker_stage` 记录最后确认的 worker 阶段：`not_started`、`bootstrap`、`worker_initializing`、`target_running` 或 `target_completed`。`bootstrap` 表示进程已启动，但尚未取得 worker 入口证据；目标模块的导入或反序列化失败可能发生在此阶段。`worker_report_available` 表示监督器读到了非空 worker 结果对象。原生退出可能没有 Python 异常报告，此时 `error.cause` 可缺省；监督错误的 `details` 仍保留退出码、阶段及报告可用性。进入 `target_running` 只证明已准备调用目标，不单独证明某次分配触发了硬限制；验收还需目标自身的开始标记和明确失败证据。
+
 每个阶段和完成的导出保存检查点。强制终止后，父进程以最后一个完整检查点恢复指标及导出索引，保留所有已原子提交的数据文件；`committed_files` 列出终止时实际保留的文件，包含尚未来得及更新导出索引的文件。仅清理当前分析目录内的临时文件。检查点不代表阶段成功；运行中的阶段在终态中改为失败。检查点和最终元数据的磁盘占用按当前文件计，不按反复写入的累计流量计；失败诊断沿用配额外尽力保存规则。
 
 ## 输出
