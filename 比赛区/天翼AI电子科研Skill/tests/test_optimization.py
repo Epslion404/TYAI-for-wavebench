@@ -112,6 +112,57 @@ def test_protocol_decode_result_structures_invalid_and_oversized_frames():
     assert oversized["failures"][0]["category"] == "parse_error"
 
 
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        {"kind": "binary-waveform", "name": 7, "match": {"magic_hex": "AA"}, "payload": {}},
+        {"kind": "binary-waveform", "name": "bad-magic", "match": {"magic_hex": 7}, "payload": {}},
+        {"kind": "binary-waveform", "name": "bad-type", "match": {"magic_hex": "AA"}, "payload": {"sample_type": 7}},
+        {"kind": "binary-waveform", "name": "bad-endian", "match": {"magic_hex": "AA"}, "payload": {"endian": 7}},
+        {"kind": "binary-waveform", "name": "bad-scale", "match": {"magic_hex": "AA"}, "payload": {"scale": 10 ** 309}},
+        {"kind": "binary-waveform", "name": "bad-rate", "match": {"magic_hex": "AA"}, "payload": {"sample_rate_hz": 10 ** 309}},
+        {"kind": "binary-waveform", "name": "bad-header", "match": {"magic_hex": "AA"}, "payload": {"header_bytes": 9, "max_payload_bytes": 8}},
+    ],
+)
+def test_binary_manifest_rejects_invalid_types_and_numeric_overflow(manifest):
+    with pytest.raises(ProtocolDecodeError):
+        BinaryManifestAdapter(manifest)
+
+
+def test_protocol_registry_rejects_unknown_manifest_kind(tmp_path):
+    path = tmp_path / "unknown.toml"
+    path.write_text('kind = "scpi"\nname = "wrong"\n', encoding="utf-8")
+
+    with pytest.raises(ProtocolDecodeError, match="kind must be binary-waveform"):
+        ProtocolRegistry().load_manifests(tmp_path)
+
+
+@pytest.mark.parametrize("sample_rate", [0, -1, float("inf"), "1000", True, 10 ** 309])
+def test_protocol_decode_result_structures_invalid_sample_rate(sample_rate):
+    result = ProtocolRegistry().decode_result({"samples": [1], "sample_rate_hz": sample_rate})
+
+    assert result["ok"] is False
+    assert result["failures"][0]["category"] == "parse_error"
+
+
+def test_binary_scale_overflow_is_a_structured_decode_failure():
+    registry = ProtocolRegistry()
+    registry.adapters.append(
+        BinaryManifestAdapter(
+            {
+                "name": "overflow",
+                "match": {"magic_hex": "4F56"},
+                "payload": {"header_bytes": 2, "sample_type": "f64", "endian": "little", "scale": 1e308},
+            }
+        )
+    )
+
+    result = registry.decode_result(b"OV" + struct.pack("<d", 2.0))
+
+    assert result["ok"] is False
+    assert result["failures"][0]["category"] == "parse_error"
+
+
 def test_protocol_adapters_preserve_reported_device_errors():
     with pytest.raises(ValueError):
         CanAdapter().decode({"data": [1, 2, 3]}, "test")

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_PROTOCOL_PAYLOAD_BYTES = 64 * 1024 * 1024
+MAX_PROTOCOL_MANIFEST_BYTES = 1024 * 1024
 SAMPLE_FORMATS = {"f32": "f", "f64": "d", "i16": "h", "u16": "H", "i32": "i", "u32": "I"}
 
 
@@ -29,24 +30,32 @@ def protocol_failure(error: BaseException) -> dict[str, Any]:
     }
 
 
+def _finite_number(value: Any, field: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ProtocolDecodeError(f"{field} must be a number")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ProtocolDecodeError(f"{field} is out of range") from exc
+    if not math.isfinite(number) or (positive and number <= 0):
+        qualifier = "a finite positive number" if positive else "finite"
+        raise ProtocolDecodeError(f"{field} must be {qualifier}")
+    return number
+
+
 def _samples(values: Any) -> list[float]:
     if not isinstance(values, (list, tuple)):
-        raise ValueError("samples 必须是数组")
-    samples = [float(value) for value in values]
+        raise ProtocolDecodeError("samples must be an array")
+    samples = [_finite_number(value, "samples[]") for value in values]
     if not samples:
-        raise ValueError("samples 不能为空")
-    if any(not math.isfinite(value) for value in samples):
-        raise ValueError("samples 不能包含 NaN 或无穷大")
+        raise ProtocolDecodeError("samples must not be empty")
     return samples
 
 
 def _sample_rate(value: Any) -> float | None:
     if value is None:
         return None
-    rate = float(value)
-    if not math.isfinite(rate) or rate <= 0:
-        raise ValueError("sample_rate_hz 必须是有限正数")
-    return rate
+    return _finite_number(value, "sample_rate_hz", positive=True)
 
 
 def _device_errors(value: Any) -> list[str]:
@@ -145,16 +154,24 @@ class BinaryManifestAdapter(Adapter):
         if not isinstance(config, dict):
             raise ProtocolDecodeError("protocol manifest must be an object")
         self.config = config
-        self.name = str(config.get("name", "")).strip()
+        name = config.get("name")
+        if not isinstance(name, str):
+            raise ProtocolDecodeError("protocol manifest name must be a string")
+        self.name = name.strip()
         if not self.name:
             raise ValueError("协议 manifest 缺少非空 name")
         match = config.get("match", {})
         if not isinstance(match, dict):
             raise ProtocolDecodeError(f"protocol {self.name} match must be an object")
+        magic_hex = match.get("magic_hex")
+        if not isinstance(magic_hex, str):
+            raise ProtocolDecodeError(f"protocol {self.name} magic_hex must be a string")
+        if len(magic_hex) > MAX_PROTOCOL_MANIFEST_BYTES * 2:
+            raise ProtocolDecodeError(f"protocol {self.name} magic_hex exceeds manifest limit")
         try:
-            self.magic = bytes.fromhex(match.get("magic_hex", "")) if match.get("magic_hex") else b""
+            self.magic = bytes.fromhex(magic_hex)
         except ValueError as exc:
-            raise ValueError(f"协议 {self.name} 的 magic_hex 非法") from exc
+            raise ProtocolDecodeError(f"protocol {self.name} magic_hex is invalid") from exc
         if not self.magic:
             raise ValueError(f"协议 {self.name} 必须声明 magic_hex，避免误识别任意二进制数据")
         payload = config.get("payload", {})
@@ -166,17 +183,21 @@ class BinaryManifestAdapter(Adapter):
         self.header_bytes = header_bytes
         if self.header_bytes < len(self.magic):
             raise ValueError(f"协议 {self.name} 的 header_bytes 不能小于 magic 长度")
-        sample_type = str(payload.get("sample_type", "f32"))
+        sample_type = payload.get("sample_type", "f32")
+        if not isinstance(sample_type, str):
+            raise ProtocolDecodeError(f"protocol {self.name} sample_type must be a string")
         if sample_type not in SAMPLE_FORMATS:
             raise ValueError(f"协议 {self.name} 的 sample_type 不受支持: {sample_type}")
         self.fmt = SAMPLE_FORMATS[sample_type]
-        endian = str(payload.get("endian", "big")).lower()
+        endian = payload.get("endian", "big")
+        if not isinstance(endian, str):
+            raise ProtocolDecodeError(f"protocol {self.name} endian must be a string")
+        endian = endian.lower()
         if endian not in {"big", "little"}:
             raise ValueError(f"协议 {self.name} 的 endian 必须是 big 或 little")
         self.endian = ">" if endian == "big" else "<"
-        self.scale, self.offset = float(payload.get("scale", 1)), float(payload.get("offset", 0))
-        if not math.isfinite(self.scale) or not math.isfinite(self.offset):
-            raise ValueError(f"协议 {self.name} 的 scale/offset 必须是有限数")
+        self.scale = _finite_number(payload.get("scale", 1), f"protocol {self.name} scale")
+        self.offset = _finite_number(payload.get("offset", 0), f"protocol {self.name} offset")
         self.rate = _sample_rate(payload.get("sample_rate_hz"))
         max_payload_bytes = payload.get("max_payload_bytes", MAX_PROTOCOL_PAYLOAD_BYTES)
         if isinstance(max_payload_bytes, bool) or not isinstance(max_payload_bytes, int):
@@ -184,6 +205,10 @@ class BinaryManifestAdapter(Adapter):
         self.max_payload_bytes = max_payload_bytes
         if self.max_payload_bytes <= 0 or self.max_payload_bytes > MAX_PROTOCOL_PAYLOAD_BYTES:
             raise ValueError(f"协议 {self.name} 的 max_payload_bytes 超出允许范围")
+        if self.header_bytes > self.max_payload_bytes:
+            raise ProtocolDecodeError(
+                f"protocol {self.name} header_bytes cannot exceed max_payload_bytes"
+            )
     def match(self, payload, metadata=None) -> float:
         return 0.98 if isinstance(payload, bytes) and self.magic and payload.startswith(self.magic) else 0.0
     def decode(self, payload, source, metadata=None):
@@ -202,6 +227,8 @@ class BinaryManifestAdapter(Adapter):
         if len(body) % size:
             raise ValueError(f"样本区长度 {len(body)} 不是元素大小 {size} 的整数倍")
         values = [self.offset + self.scale * v for v in struct.unpack(f"{self.endian}{len(body)//size}{self.fmt}", body)]
+        if any(not math.isfinite(value) for value in values):
+            raise ProtocolDecodeError(f"protocol {self.name} decoded samples are out of range")
         frame_metadata, device_errors = _metadata_with_errors(metadata)
         return NormalizedFrame(
             self.name, source, time.time(), _samples(values), self.rate, frame_metadata, device_errors
@@ -220,19 +247,25 @@ class ProtocolRegistry:
         paths = sorted((*root.glob("*.json"), *root.glob("*.toml")))
         for path in paths:
             try:
-                raw = path.read_text(encoding="utf-8")
+                raw_bytes = path.read_bytes()
+                if len(raw_bytes) > MAX_PROTOCOL_MANIFEST_BYTES:
+                    raise ProtocolDecodeError(f"protocol manifest exceeds {MAX_PROTOCOL_MANIFEST_BYTES} bytes: {path.name}")
+                raw = raw_bytes.decode("utf-8")
                 config = tomllib.loads(raw) if path.suffix.lower() == ".toml" else json.loads(raw)
-            except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+            except (OSError, UnicodeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
                 raise ProtocolDecodeError(f"protocol manifest cannot be parsed: {path.name}: {exc}") from exc
             if not isinstance(config, dict):
                 raise ProtocolDecodeError(f"protocol manifest must be an object: {path.name}")
-            if config.get("kind") == "binary-waveform":
-                adapter = BinaryManifestAdapter(config)
-                if adapter.name in names:
-                    raise ValueError(f"重复的协议名称: {adapter.name}")
-                self.adapters.append(adapter)
-                names.add(adapter.name)
-                count += 1
+            if config.get("kind") != "binary-waveform":
+                raise ProtocolDecodeError(
+                    f"protocol manifest kind must be binary-waveform: {path.name}"
+                )
+            adapter = BinaryManifestAdapter(config)
+            if adapter.name in names:
+                raise ProtocolDecodeError(f"duplicate protocol name: {adapter.name}")
+            self.adapters.append(adapter)
+            names.add(adapter.name)
+            count += 1
         return count
     def identify(self, payload, metadata=None) -> dict:
         scores = sorted(({"protocol": adapter.name, "confidence": adapter.match(payload, metadata)} for adapter in self.adapters),
@@ -252,7 +285,7 @@ class ProtocolRegistry:
         """Decode a protocol frame without making callers parse exception text."""
         try:
             return {"ok": True, "frame": self.decode(payload, source, metadata).as_dict(), "failures": []}
-        except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError, OverflowError, UnicodeError, json.JSONDecodeError) as exc:
             return protocol_failure(exc)
 
 
