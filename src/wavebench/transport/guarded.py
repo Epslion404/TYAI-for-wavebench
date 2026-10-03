@@ -248,15 +248,13 @@ class GuardedAuditedTransport:
                 )
                 self._transition_after_failure(error, authorization)
                 raise error
-            if (
-                operation == "read_exact"
-                and len(result) != first_argument
-                or operation == "read_until"
-                and (
-                    len(result) > max_bytes
-                    or not result.endswith(first_argument)
-                )
-            ):
+            exact_size_violation = (
+                operation == "read_exact" and len(result) != first_argument
+            )
+            delimited_frame_violation = operation == "read_until" and (
+                len(result) > max_bytes or not result.endswith(first_argument)
+            )
+            if exact_size_violation or delimited_frame_violation:
                 error = self._frame_contract_error(
                     operation,
                     replay,

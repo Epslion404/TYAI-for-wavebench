@@ -88,6 +88,32 @@ def test_read_exact_enforces_one_timeout_budget_across_split_reads(monkeypatch) 
     assert session.timeout == 1.0
 
 
+def test_guarded_transport_poisoned_when_complete_frame_arrives_after_deadline(monkeypatch) -> None:
+    clock = {"now": 0.0}
+
+    class TimedSession:
+        timeout = 1.0
+
+        def read(self, size: int) -> bytes:
+            clock["now"] += 0.06
+            return b"\x01\x02"
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: clock["now"])
+    transport = GuardedAuditedTransport(
+        SerialTransport("COM7", TimedSession(), CommandLogger())
+    )
+
+    with pytest.raises(TransportIOError) as raised:
+        transport.read_exact(2, timeout_ms=50)
+
+    assert raised.value.reason_code == "frame_read_timeout"
+    assert raised.value.consumed_bytes == 2
+    assert transport.session_state.health.value == "poisoned"
+
+
 def test_read_until_returns_delimited_frame_across_packets() -> None:
     transport = SerialTransport("COM7", _SerialSession([b"\xAA", b"\x01", b"\r", b"\n"]), CommandLogger())
 
