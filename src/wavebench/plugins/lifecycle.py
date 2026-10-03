@@ -26,7 +26,9 @@ from .package_inspect import (
     WheelEntryPoint,
     build_subprocess_environment,
     inspect_plugin_package,
+    inspect_plugin_wheel,
 )
+from .install_paths import installation_path_key
 
 
 LEDGER_SCHEMA_VERSION = 2
@@ -510,6 +512,12 @@ print(json.dumps(payload, sort_keys=True))
         original: Exception,
     ) -> None:
         try:
+            package = inspect_plugin_wheel(wheel)
+            self._assert_no_file_ownership_conflicts(
+                package,
+                self._file_owners(strict=True),
+                ignored_distribution=str(record["distribution"]),
+            )
             self._update_journal(journal, "rollback_started")
             self._pip_install(wheel)
             self._postflight(record)
@@ -726,8 +734,16 @@ print(json.dumps(payload, sort_keys=True))
         ignored_distribution: str | None = None,
     ) -> str | None:
         ignored = canonicalize_name(ignored_distribution) if ignored_distribution else None
+        normalized_owners: dict[str, set[str]] = {}
+        for owned_path, owners in file_owners.items():
+            normalized_owners.setdefault(installation_path_key(owned_path), set()).update(
+                canonicalize_name(owner) for owner in owners
+            )
         for path in sorted(set(paths)):
-            if any(owner != ignored for owner in file_owners.get(path, ())):
+            if any(
+                owner != ignored
+                for owner in normalized_owners.get(installation_path_key(path), ())
+            ):
                 return path
         return None
 
