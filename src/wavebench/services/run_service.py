@@ -926,14 +926,16 @@ class RunService:
                             status="failed",
                             artifact={**record.artifact, "safety_gate": gate_result},
                         )
+                        # 先记录安全门状态，保证后续步骤记录写入等异常路径仍能知道
+                        # 安全门已执行 OFF，恢复时必须保持 OFF。
+                        safety_gate_step = step
+                        safety_gate_config = safety_gate
                     if step.kind == "source.arb_load" and coverage is not None:
                         record = replace(record, artifact={**record.artifact, "restore_coverage": coverage})
                     records.append(record)
                     write_step_record(steps_dir, record)
                     self._update_frequency_responses_manifest(run_dir, record)
                     if gate_triggered:
-                        safety_gate_step = step
-                        safety_gate_config = safety_gate
                         run_failure = {
                             "type": "SafetyGateFailure",
                             "code": "safety_gate_failed",
@@ -980,13 +982,23 @@ class RunService:
             except KeyboardInterrupt as exc:
                 restore_error = restore_source_state(
                     restore_state,
+                    force_off_channels=tuple((safety_gate_config or {}).get("source_channels", ())),
                     source_service_factory=lambda: self._source_service(services=services),
+                )
+                post_restore_gate = (
+                    self._post_restore_safety_gate(
+                        safety_gate_step, safety_gate_config, services=services
+                    )
+                    if restore_state is not None
+                    else None
                 )
                 refresh_provenance()
                 interruption_error: dict[str, Any] = {
                     "type": "KeyboardInterrupt",
                     "message": str(exc) or "run interrupted by user",
                 }
+                if post_restore_gate is not None:
+                    interruption_error["safety_gate"] = {"post_restore": post_restore_gate}
                 if restore_error is not None:
                     interruption_error["cause"] = dict(interruption_error)
                     interruption_error["type"] = "RestoreError"
@@ -1026,7 +1038,15 @@ class RunService:
                 )
                 restore_error = restore_source_state(
                     restore_state,
+                    force_off_channels=tuple((safety_gate_config or {}).get("source_channels", ())),
                     source_service_factory=lambda: self._source_service(services=services),
+                )
+                post_restore_gate = (
+                    self._post_restore_safety_gate(
+                        safety_gate_step, safety_gate_config, services=services
+                    )
+                    if restore_state is not None
+                    else None
                 )
                 refresh_provenance()
                 failure_error: dict[str, Any]
@@ -1034,6 +1054,8 @@ class RunService:
                     failure_error = error_envelope(failure)
                 else:
                     failure_error = {"type": type(failure).__name__, "message": str(failure)}
+                if post_restore_gate is not None:
+                    failure_error["safety_gate"] = {"post_restore": post_restore_gate}
                 terminal_error = failure_error
                 write_run_files(
                     plan=plan,
@@ -1057,30 +1079,17 @@ class RunService:
                 force_off_channels=tuple((safety_gate_config or {}).get("source_channels", ())),
                 source_service_factory=lambda: self._source_service(services=services),
             )
-            if (
-                safety_gate_step is not None
-                and safety_gate_config is not None
-                and restore_state is not None
-            ):
-                try:
-                    post_restore_gate = self._apply_safety_gate(
-                        safety_gate_step,
-                        safety_gate_config,
-                        services=services,
-                    )
-                except Exception as exc:  # noqa: BLE001 - retain final OFF evidence
-                    payload = error_envelope(
-                        exc,
-                        operation=f"safety_gate.post_restore.{safety_gate_step.index}",
-                    )
-                    post_restore_gate = {
-                        "status": "failed",
-                        "error": payload,
-                    }
-                if run_failure is not None:
-                    gate_error = run_failure.get("safety_gate")
-                    if isinstance(gate_error, dict):
-                        gate_error["post_restore"] = post_restore_gate
+            post_restore_gate = (
+                self._post_restore_safety_gate(
+                    safety_gate_step, safety_gate_config, services=services
+                )
+                if restore_state is not None
+                else None
+            )
+            if post_restore_gate is not None and run_failure is not None:
+                gate_error = run_failure.get("safety_gate")
+                if isinstance(gate_error, dict):
+                    gate_error["post_restore"] = post_restore_gate
             if restore_error is not None:
                 restore_failure: dict[str, Any] = {
                     "type": "ConfigError",
@@ -1360,6 +1369,26 @@ class RunService:
         if not channels and "power" in self._plan_instruments(plan) and self.config.power is not None:
             add(self.config.power.default_channel)
         return channels
+
+    def _post_restore_safety_gate(
+        self,
+        safety_gate_step: RunStep | None,
+        safety_gate_config: dict[str, Any] | None,
+        *,
+        services: RunInstrumentServices,
+    ) -> dict[str, Any] | None:
+        """安全门触发过时，恢复源状态后重压 OFF，避免按原快照恢复绕开安全门。"""
+        if safety_gate_step is None or safety_gate_config is None:
+            return None
+        try:
+            return self._apply_safety_gate(safety_gate_step, safety_gate_config, services=services)
+        except Exception as exc:  # noqa: BLE001 - retain final OFF evidence
+            return {
+                "status": "failed",
+                "error": error_envelope(
+                    exc, operation=f"safety_gate.post_restore.{safety_gate_step.index}"
+                ),
+            }
 
     def _apply_safety_gate(
         self,
