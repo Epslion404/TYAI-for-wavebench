@@ -209,6 +209,21 @@ def test_report_preview_budget_is_cumulative(tmp_path, values, dimension):
     assert dimension in second.warning
 
 
+def test_preview_memory_admission_includes_retained_svgs(tmp_path):
+    source, _ = waveform_file(tmp_path, 600)
+    run = report_run(tmp_path, source)
+    run.run["steps"] = [{**run.run["steps"][0], "index": index} for index in range(1, 33)]
+    with patch("wavebench.report.html.np.asarray", wraps=np.asarray) as scan:
+        previews = html._collect_waveform_previews(
+            run, analysis_limits=AnalysisLimits(max_working_bytes=220_000)
+        )
+    assert previews[0].svg
+    assert previews[0].warning == ""
+    assert scan.call_count == 3  # Two scan passes and the first SVG's selected points.
+    assert all(preview.svg == "" for preview in previews[1:])
+    assert all("max_working_bytes" in preview.warning for preview in previews[1:])
+
+
 @pytest.mark.parametrize("failure", ["all_nan", "render_error"])
 def test_failed_preview_keeps_scan_charge_and_blocks_later_scans(tmp_path, failure):
     source, waveform = waveform_file(tmp_path)
