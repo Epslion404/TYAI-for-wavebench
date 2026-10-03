@@ -9,7 +9,7 @@
 - 方向：[#14 [Direction] Jev 轻量化自动决策](https://github.com/Epslion404/TYAI-for-wavebench/issues/14)
 - 里程碑与任务：`J1 插件类别`（#15 = J1a 类别与注册表 + J1c `advisor ask`；#19 = J1b 生命周期与包校验）／`J2 文档门禁`（#16）／`J3 候选功能与 kill criteria`（#17）／`J4 作品包接入`（#18）
 - 过滤视图：`is:open label:track:advisor`
-- 规则：**里程碑收尾时才回来更新勾选框**；平时不要在文件里勾进度，避免与 issue 漂移。
+- 规则：合同与验收留在本页，执行状态与验收证据只在关联 issue 维护；下文的历史实施记录按其日期与提交解释，不作为当前进度。
 
 ## 目标与边界
 
@@ -17,7 +17,7 @@
 - 红线（来自 RFC）：advisor **不参与任何写路径、安全门、质量门与 capability 判定**；结论只落 `wavebench.decision.v1` 产物。
 - 「轻量化」的具体含义：固定模型版本（`jev-1.13.0`）不用漂移别名；发送前可预览、可拒绝；只外发白名单字段；内置确定性基线可离线跑；**无 key／无网络时降级为基线**而不是失败。
 
-## 已完成的合同（2026-09～10）
+## 历史合同实施记录（2026-09～10）
 
 - [x] Jev 一手事实核验（官方 blog／docs／models／jaggedness／privacy + PyPI + LangChain）
 - [x] 六项裁决：引入类别抽象；首版禁止一个包混装两类；依赖只从 `Requires-Dist` 读且 install 保持离线；同意默认按次 + 可登记 run 级并绑定 endpoint 与字段集；`advisor.external_state` 不纳入 access policy；decision artifact 不并入 `run report`
@@ -28,7 +28,7 @@
 - [x] J1a 类别与注册表（`07e8db2`）：`AdvisorPlugin` / `EgressDeclaration` / advisor registry + `wavebench.advisor` 入口点 + doctor；内置 `rule_advisor` 元数据；`plugin list|doctor --category {instrument|advisor}`（**仪器插件路径零改动**）
 - [x] J1c `advisor ask` 端到端：`services/advisor_seam.py`（state → questions → answers → thresholds）、`services/advisor_rule.py`（内置确定性 client）、CLI `advisor ask [--preview | --accept-external-state]`；复用既有同意门与 decision artifact，未重复定义同名类型
 - 已知不一致：`[advisor] enabled = true` 目前强制要求**非空 `endpoint_hosts`**，即使选用完全不外发的内置基线也得登记一个用不到的 endpoint（因为配置在学校时还不知道会挂哪个 advisor）。这是 Phase 3 已落地的配置契约，放宽需单独裁决。
-- 已知不一致：[tyai PR #20](https://github.com/Epslion404/TYAI-for-wavebench/pull/20)（分支 `feat/advisor-ask`）另有一份 `advisor ask` 的并行实现，缺同意门、`[advisor]` 阈值来源与 decision artifact，路由选项集也是硬编码的 2 项。已在 PR 上留评审意见但**未关闭**（处置权留给作者）。**本支线以 master 的 `services/advisor_seam.py` + `services/advisor_rule.py`（`aba63e9`）为准**；#20 里唯一值得保留的是「CLI 默认输出结构化 JSON」这一输出层想法。
+- 历史替代实现：[tyai PR #20](https://github.com/Epslion404/TYAI-for-wavebench/pull/20)（分支 `feat/advisor-ask`）已关闭且未合并。Core 合同事实源为 `services/advisor_seam.py`、`services/advisor_rule.py` 及其测试；该 PR 不作为当前实现依据。
 
 ## J1 插件类别落 Core
 
@@ -36,26 +36,26 @@
 
 ### J1a 类别与注册表（#15）
 
-- [ ] `plugins/api.py`：`AdvisorPlugin` / `EgressDeclaration` / API 版本门 / capability 前缀（按骨架映射，既有 `InstrumentPlugin` 一行不改）
-- [ ] `plugins/registry.py`：advisor registry + entry point 加载 + doctor 记录（`build_plugin_registry()` 返回不变）
-- [ ] 内置 `rule_advisor` 的插件元数据（`transmits_off_machine=False`）
-- [ ] CLI：`plugin list|doctor --category {instrument|advisor}`；不带 `--category` 时输出逐字节不变
+- `plugins/api.py`：`AdvisorPlugin` / `EgressDeclaration` / API 版本门 / capability 前缀（按骨架映射，既有 `InstrumentPlugin` 一行不改）
+- `plugins/registry.py`：advisor registry + entry point 加载 + doctor 记录（`build_plugin_registry()` 返回不变）
+- 内置 `rule_advisor` 的插件元数据（`transmits_off_machine=False`）
+- CLI：`plugin list|doctor --category {instrument|advisor}`；不带 `--category` 时输出逐字节不变
 
 ### J1c `advisor ask` 端到端（#15）
 
-- [ ] seam 落 Core：`build_state → questions → answers → thresholds → artifact`；复用既有同意门与 decision artifact，不重复定义同名类型
-- [ ] 内置 `rule_advisor` 的确定性实现（词典打分、零依赖、可离线）
-- [ ] CLI：`advisor ask --advisor <id> --question <id> --state <fixture.json> [--preview | --accept-external-state]`
-- [ ] 接线：`[advisor]` 配置 + 同意门 + 落盘 `<run>/decisions/<ts>-<advisor>.json`
-- [ ] 验收：`advisor ask --preview` 不联网；未同意／未注册字段／仅预览／endpoint 变化／字段集变化 → **外部调用次数为 0**；advisor 结果不影响 `run.json.status`、质量门与 `auto_recover`
+- seam 落 Core：`build_state → questions → answers → thresholds → artifact`；复用既有同意门与 decision artifact，不重复定义同名类型
+- 内置 `rule_advisor` 的确定性实现（词典打分、零依赖、可离线）
+- CLI：`advisor ask --advisor <id> --question <id> --state <fixture.json> [--preview | --accept-external-state]`
+- 接线：`[advisor]` 配置 + 同意门 + 落盘 `<run>/decisions/<ts>-<advisor>.json`
+- 验收：`advisor ask --preview` 不联网；未同意／未注册字段／仅预览／endpoint 变化／字段集变化 → **外部调用次数为 0**；advisor 结果不影响 `run.json.status`、质量门与 `auto_recover`
 
 ### J1b 生命周期与包校验（#19，单独评审，当前**挂起**）
 
 挂起理由：J3 已决定停止外部集成（见上），没有第三方 advisor 包要安装、校验或做漂移检测，因此这套按类别分派的包校验暂时没有消费方。issue 与验收门保留，重开条件随 J3 一起。
 
-- [ ] `plugins/package_inspect.py`：entry point 组集合 → 类别（裁定 2a），缺类别／混装分别报错
-- [ ] `plugins/lifecycle.py`：安装／卸载／漂移／恢复／postflight／inventory 按类别分派校验
-- [ ] 验收见 [#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19)：混装包被拒、advisor 包可 install/remove、既有仪器路径零回归
+- `plugins/package_inspect.py`：entry point 组集合 → 类别（裁定 2a），缺类别／混装分别报错
+- `plugins/lifecycle.py`：安装／卸载／漂移／恢复／postflight／inventory 按类别分派校验
+- 验收见 [#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19)：混装包被拒、advisor 包可 install/remove、既有仪器路径零回归
 
 ## J2 文档与门禁
 
