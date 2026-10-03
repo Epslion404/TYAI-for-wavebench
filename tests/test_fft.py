@@ -54,8 +54,12 @@ def test_odd_last_bin_remains_paired():
     result = analyze_fft(waveform)
 
     assert result["peak_frequency_hz"] == pytest.approx(7.0)
-    # The symmetric Hann window overlaps the negative-frequency lobe here.
-    # Preserve the existing paired-bin amplitude, rather than halving it.
+    # Scenario note: a 15-sample / 15 Hz sine whose tone sits in the last rFFT
+    # bin, so the symmetric Hann window overlaps the negative-frequency lobe.
+    # The locked value is the existing paired-bin amplitude for this case.
+    # The same frequency pair under a cosine basis instead peaks at 6 Hz with
+    # about 0.5229 V; that difference is pre-existing behaviour (identical before
+    # and after the Nyquist fix), tracked separately, and is not a regression.
     assert result["peak_amplitude_v"] == pytest.approx(1.542380195395906)
 
 
