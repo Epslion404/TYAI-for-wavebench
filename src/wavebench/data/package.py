@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,7 @@ def write_new_file(path: Path, content: bytes) -> None:
     can leave a hidden .tmp file, which is never a published artifact.
     """
     temporary: Path | None = None
+    failure: BaseException | None = None
     try:
         with tempfile.NamedTemporaryFile(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
@@ -36,6 +38,20 @@ def write_new_file(path: Path, content: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.link(temporary, path)
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as exc:
+                if failure is not None:
+                    failure.add_note(f"temporary artifact cleanup failed: {temporary}: {exc}")
+                else:
+                    # Publication already succeeded. Report leftover staging
+                    # evidence without telling the caller to repeat the write.
+                    logging.getLogger(__name__).warning(
+                        "artifact published but temporary cleanup failed: %s: %s",
+                        temporary, exc,
+                    )

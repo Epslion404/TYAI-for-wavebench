@@ -114,3 +114,24 @@ def test_serialization_failure_does_not_publish_decision(tmp_path):
         with pytest.raises(ValueError):
             artifacts.write_artifact(artifact, tmp_path, advisor_id="rule")
     assert list((tmp_path / "decisions").iterdir()) == []
+
+
+def test_cleanup_failure_after_publish_returns_success(tmp_path, caplog):
+    target = tmp_path / "evidence.json"
+    with patch.object(Path, "unlink", side_effect=OSError("cleanup")):
+        write_new_file(target, b"complete")
+    assert target.read_bytes() == b"complete"
+    assert "artifact published but temporary cleanup failed" in caplog.text
+    [temporary] = tmp_path.glob(".*.tmp")
+    assert temporary.read_bytes() == target.read_bytes()
+
+
+def test_cleanup_failure_preserves_original_failure(tmp_path):
+    target = tmp_path / "evidence.json"
+    with patch("wavebench.data.package.os.link", side_effect=OSError("publish")), \
+            patch.object(Path, "unlink", side_effect=OSError("cleanup")):
+        with pytest.raises(OSError, match="publish") as caught:
+            write_new_file(target, b"complete")
+    assert "cleanup failed" in caught.value.__notes__[0]
+    assert not target.exists()
+    assert len(list(tmp_path.glob(".*.tmp"))) == 1

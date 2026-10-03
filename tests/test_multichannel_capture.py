@@ -47,6 +47,41 @@ class FakeScope:
 
 
 class MultiChannelCaptureTests(unittest.TestCase):
+    def test_metadata_publication_failure_preserves_failed_package(self):
+        from wavebench.services import scope_service
+        real_write = scope_service.write_new_file
+
+        def fail_metadata(path, content):
+            if path.name == "metadata.json":
+                raise OSError("metadata publication")
+            return real_write(path, content)
+
+        class SingleScope(FakeScope):
+            def capture_waveform(self, **kwargs):
+                return _waveform(1)
+
+        for multiple in (False, True):
+            with self.subTest(multiple=multiple), tempfile.TemporaryDirectory() as tmp:
+                service = ScopeService(config=_config(tmp), logger=CommandLogger())
+                with patch.object(service, "_open_scope", return_value=SingleScope()), patch(
+                    "wavebench.services.scope_service.write_new_file", side_effect=fail_metadata
+                ):
+                    with self.assertRaisesRegex(OSError, "metadata publication"):
+                        if multiple:
+                            service.capture_waveforms(channels=[1, 2], label="metadata")
+                        else:
+                            service.capture_waveform(channel=1, label="metadata")
+                [failed] = Path(tmp).glob("*_metadata_failed")
+                self.assertFalse((failed / "metadata.json").exists())
+                self.assertTrue((failed / "ch1.npy").exists())
+                if multiple:
+                    self.assertTrue((failed / "ch2.npy").exists())
+                partial = json.loads((failed / "metadata.partial.json").read_text(encoding="utf-8"))
+                self.assertEqual(partial["stage"], "write_metadata")
+                self.assertTrue(partial["operation"]["failed"])
+                files = partial["files"]["1"] if multiple else partial["files"]
+                self.assertTrue(files["npy"].startswith(str(failed)))
+
     def test_missing_multichannel_capability_fails_before_opening_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = ScopeService(config=_config(tmp), logger=CommandLogger())

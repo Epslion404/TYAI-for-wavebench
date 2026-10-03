@@ -1463,6 +1463,30 @@ class ScopeService(SessionStateAliasMixin):
             json.dumps(partial_metadata, indent=2, ensure_ascii=False).encode("utf-8"),
         )
 
+    def _write_capture_metadata(
+        self, package_dir: Path, metadata: dict[str, Any], commands_log_path: Path | None
+    ) -> Path:
+        path = package_dir / "metadata.json"
+        if self.config.output.save_json:
+            try:
+                write_new_file(path, json.dumps(metadata, indent=2, ensure_ascii=False).encode("utf-8"))
+            except Exception as exc:
+                try:
+                    self._failed_capture_package(
+                        package_dir=package_dir,
+                        operation=metadata["operation"],
+                        exc=exc,
+                        commands_log_path=commands_log_path,
+                        partial={
+                            **{key: value for key, value in metadata.items() if key != "operation"},
+                            "stage": "write_metadata",
+                        },
+                    )
+                except Exception as evidence_error:
+                    exc.add_note(f"failed capture evidence could not be completed: {evidence_error}")
+                raise
+        return path
+
     def capture_waveform(self, channel: int, label: str) -> CaptureResult:
         bounded_profile = self._waveform_binary_profile()
         required = ["scope.idn", "scope.capture_waveform"]
@@ -1541,9 +1565,7 @@ class ScopeService(SessionStateAliasMixin):
         }
         if screenshot_error is not None:
             metadata["screenshot_error"] = screenshot_error
-        metadata_path = package_dir / "metadata.json"
-        if self.config.output.save_json:
-            write_new_file(metadata_path, json.dumps(metadata, indent=2, ensure_ascii=False).encode("utf-8"))
+        metadata_path = self._write_capture_metadata(package_dir, metadata, commands_log_path)
         return CaptureResult(
             package_dir=package_dir,
             waveform=waveform,
@@ -1729,9 +1751,7 @@ class ScopeService(SessionStateAliasMixin):
             metadata["synchronization"] = synchronization
         if screenshot_error is not None:
             metadata["screenshot_error"] = screenshot_error
-        metadata_path = package_dir / "metadata.json"
-        if self.config.output.save_json:
-            write_new_file(metadata_path, json.dumps(metadata, indent=2, ensure_ascii=False).encode("utf-8"))
+        metadata_path = self._write_capture_metadata(package_dir, metadata, commands_log_path)
         return MultiCaptureResult(
             package_dir=package_dir,
             waveforms=waveforms,
