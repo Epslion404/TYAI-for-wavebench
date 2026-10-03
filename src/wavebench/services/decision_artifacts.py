@@ -139,6 +139,7 @@ def decisions_dir(run_dir: str | Path) -> Path:
 
 
 def artifact_path(run_dir: str | Path, *, advisor_id: str, timestamp: str) -> Path:
+    """Return the logical base path; use write_artifact's result for the published file."""
     for label, value in (("advisor_id", advisor_id), ("timestamp", timestamp)):
         if not isinstance(value, str) or not _SAFE_TOKEN.match(value):
             raise DecisionArtifactError(

@@ -1463,6 +1463,12 @@ class ScopeService(SessionStateAliasMixin):
             json.dumps(partial_metadata, indent=2, ensure_ascii=False).encode("utf-8"),
         )
 
+    def _preserve_failed_capture(self, *, exc: Exception, **kwargs: Any) -> None:
+        try:
+            self._failed_capture_package(exc=exc, **kwargs)
+        except Exception as evidence_error:
+            exc.add_note(f"failed capture evidence could not be completed: {evidence_error}")
+
     def _write_capture_metadata(
         self, package_dir: Path, metadata: dict[str, Any], commands_log_path: Path | None
     ) -> Path:
@@ -1471,19 +1477,16 @@ class ScopeService(SessionStateAliasMixin):
             try:
                 write_new_file(path, json.dumps(metadata, indent=2, ensure_ascii=False).encode("utf-8"))
             except Exception as exc:
-                try:
-                    self._failed_capture_package(
-                        package_dir=package_dir,
-                        operation=metadata["operation"],
-                        exc=exc,
-                        commands_log_path=commands_log_path,
-                        partial={
-                            **{key: value for key, value in metadata.items() if key != "operation"},
-                            "stage": "write_metadata",
-                        },
-                    )
-                except Exception as evidence_error:
-                    exc.add_note(f"failed capture evidence could not be completed: {evidence_error}")
+                self._preserve_failed_capture(
+                    package_dir=package_dir,
+                    operation=metadata["operation"],
+                    exc=exc,
+                    commands_log_path=commands_log_path,
+                    partial={
+                        **{key: value for key, value in metadata.items() if key != "operation"},
+                        "stage": "write_metadata",
+                    },
+                )
                 raise
         return path
 
@@ -1544,7 +1547,7 @@ class ScopeService(SessionStateAliasMixin):
                     waveform = scope.capture_waveform(**capture_kwargs)
                 screenshot_path, screenshot_error = self._write_screenshot_file(package_dir, scope)
         except Exception as exc:
-            self._failed_capture_package(
+            self._preserve_failed_capture(
                 package_dir=package_dir,
                 operation=operation,
                 exc=exc,
@@ -1716,7 +1719,7 @@ class ScopeService(SessionStateAliasMixin):
                 partial_files["commands"] = str(package_dir / "commands.log")
             if screenshot_path is not None:
                 partial_files["screenshot"] = str(package_dir / "screenshot.png")
-            self._failed_capture_package(
+            self._preserve_failed_capture(
                 package_dir=package_dir,
                 operation=operation,
                 exc=exc,
