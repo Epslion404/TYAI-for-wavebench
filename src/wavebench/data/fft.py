@@ -38,9 +38,15 @@ def analyze_fft(waveform: Any, *, max_harmonic_order: int = 5) -> dict[str, Any]
     amplitudes = np.abs(spectrum) * 2.0 / (samples * coherent_gain)
     if amplitudes.size:
         amplitudes[0] = amplitudes[0] / 2.0
+    if samples % 2 == 0 and amplitudes.size > 1:
+        amplitudes[-1] = amplitudes[-1] / 2.0
     if amplitudes.size < 2:
         raise ValueError("not enough FFT bins")
-    search = amplitudes[1:]
+    # Select the dominant bin before one-sided normalization.  The Nyquist
+    # bin has no negative-frequency partner, so its correctly normalized
+    # amplitude is half the paired-bin scale and must not lose peak selection
+    # to Hann-window leakage from its adjacent bin.
+    search = np.abs(spectrum[1:])
     peak_index = int(np.argmax(search) + 1)
     peak_frequency = float(frequencies[peak_index])
     peak_amplitude = float(amplitudes[peak_index])
