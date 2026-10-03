@@ -3,7 +3,7 @@
 import os
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -153,6 +153,21 @@ def test_native_lifecycle_script_install_upgrade_rollback_and_remove(tmp_path, m
                           "example-tool.exe" if os.name == "nt" else "example-tool")
     from pathlib import Path
     assert Path(script).is_file()
+    conflict = _plugin_wheel(tmp_path, version="0.2.5", script_entries=(entries
+        + "future-tool = wavebench_example_scope:descriptor\n"))
+    foreign = Path(lifecycle.environment().scripts) / (
+        "future-tool.exe" if os.name == "nt" else "future-tool"
+    )
+    foreign.write_bytes(b"unmanaged future launcher")
+    before_upgrade = lifecycle.ledger_path.read_bytes()
+    with patch.object(lifecycle, "_pip_install") as pip:
+        for dry_run in (True, False):
+            with pytest.raises(ConfigError, match="existing launcher"):
+                lifecycle.upgrade(conflict, dry_run=dry_run)
+        pip.assert_not_called()
+    assert lifecycle.ledger_path.read_bytes() == before_upgrade
+    assert foreign.read_bytes() == b"unmanaged future launcher"
+    foreign.unlink()
     lifecycle.upgrade(desired)
     with pytest.raises(ConfigError):
         lifecycle.upgrade(broken)
