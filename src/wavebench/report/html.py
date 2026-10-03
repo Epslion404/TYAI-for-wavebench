@@ -27,7 +27,28 @@ def validate_run_report_outputs(run: RunPackage, paths: list[Path]) -> None:
     capture_dirs = [
         _resolve_artifact_path(run.path, reference.package) for reference in _capture_references(run)
     ]
-    validate_run_report_paths(run, paths, evidence_dirs=capture_dirs)
+    evidence_files = []
+    for step in run.steps:
+        artifact = step.get("artifact", {})
+        if not isinstance(artifact, dict):
+            continue
+        pipeline = artifact.get("analysis_pipeline", {})
+        if not isinstance(pipeline, dict):
+            continue
+        for field in ("manifest", "metrics"):
+            path = _optional_run_artifact_path(run.path, pipeline.get(field))
+            if path is not None:
+                evidence_files.append(path)
+        exports = pipeline.get("exports", [])
+        if isinstance(exports, list):
+            for export in exports:
+                if isinstance(export, dict):
+                    path = _optional_run_artifact_path(run.path, export.get("path"))
+                    if path is not None:
+                        evidence_files.append(path)
+    validate_run_report_paths(
+        run, paths, evidence_dirs=capture_dirs, evidence_files=evidence_files
+    )
 
 
 def write_run_report_html(run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None) -> Path:

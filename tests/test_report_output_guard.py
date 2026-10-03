@@ -165,3 +165,76 @@ def test_separate_reports_can_be_generated_and_refreshed(run_dir, tmp_path, dest
     assert "<!doctype html>" in first.read_text(encoding="utf-8").lower()
     for name, content in before.items():
         assert (run_dir / name).read_bytes() == content
+
+
+@pytest.mark.parametrize("field", ["manifest", "metrics", "export"])
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("mode", ["api", "cli", "json-cli", "pdf", "manifest"])
+def test_referenced_external_processing_files_are_protected(run_dir, tmp_path, field, relative, mode):
+    from wavebench.report.html import write_run_report_manifest
+
+    evidence = tmp_path / "external-processing" / "report-assets" / "manifest.json"
+    evidence.parent.mkdir(parents=True)
+    original = b'{"schema": "original-processing-evidence"}'
+    evidence.write_bytes(original)
+    reference = os.path.relpath(evidence, run_dir) if relative else str(evidence)
+    pipeline = {"exports": [{"path": reference}]} if field == "export" else {field: reference}
+    payload = {"status": "ok", "steps": [{"index": 0, "kind": "analysis.pipeline",
+        "status": "ok", "artifact": {"analysis_pipeline": pipeline}}]}
+    (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+    before = snapshot(tmp_path)
+    package = load_run_package(run_dir)
+    if mode in ("cli", "json-cli"):
+        args = ["run", "report", str(run_dir), "--output", str(evidence)]
+        assert main((["--json"] if mode == "json-cli" else []) + args) == 2
+    else:
+        with pytest.raises(ConfigError, match="original run evidence"):
+            if mode == "api":
+                write_run_report_html(package, evidence)
+            elif mode == "pdf":
+                write_run_report_pdf(package, evidence)
+            else:
+                write_run_report_manifest(package, output_dir=evidence.parent.parent)
+    assert snapshot(tmp_path) == before
+
+
+def test_referenced_report_name_overrides_refresh_exemption(run_dir):
+    evidence = run_dir / "report.html"
+    evidence.write_bytes(b"original analysis export")
+    payload = {"status": "ok", "steps": [{"index": 0, "kind": "analysis.pipeline",
+        "status": "ok", "artifact": {"analysis_pipeline": {
+            "exports": [{"path": "report.html"}]}}}]}
+    (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+    before = snapshot(run_dir)
+    with pytest.raises(ConfigError, match="original run evidence"):
+        write_run_report_html(load_run_package(run_dir))
+    assert snapshot(run_dir) == before
+
+
+@pytest.mark.parametrize("hardlink", [False, True])
+def test_nested_junction_evidence_is_protected(run_dir, tmp_path, hardlink):
+    if os.name != "nt":
+        pytest.skip("Windows junction")
+    import subprocess
+
+    external = tmp_path / "external"
+    external.mkdir()
+    original = external / "metrics.json"
+    original.write_bytes(b"original processing evidence")
+    junction = run_dir / "processing" / "external"
+    cycle = external / "cycle"
+    for alias, directory in ((junction, external), (cycle, run_dir / "processing")):
+        result = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(directory)],
+                                capture_output=True, timeout=10)
+        assert result.returncode == 0
+    try:
+        target = original
+        if hardlink:
+            target = tmp_path / "alias.html"
+            os.link(original, target)
+        with pytest.raises(ConfigError, match="original run evidence"):
+            write_run_report_html(load_run_package(run_dir), target)
+        assert original.read_bytes() == b"original processing evidence"
+    finally:
+        cycle.rmdir()
+        junction.rmdir()
