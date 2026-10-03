@@ -17,7 +17,7 @@ from .config import load_advisor_config, load_config, vertical_scale_from_vpp
 from .data.packages import load_capture_package, load_run_package
 from .discovery import discover_instruments
 from .doctor import doctor_records, has_doctor_errors as has_config_doctor_errors
-from .report.html import write_run_report_html, write_run_report_pdf
+from .report.html import validate_run_report_outputs, write_run_report_html, write_run_report_pdf
 from .report.index import write_report_index
 from .errors import ConfigError, WaveBenchError, error_envelope
 from .cli_parser import build_parser
@@ -1392,6 +1392,7 @@ def _main(argv: list[str] | None = None) -> int:
                     raise ConfigError(
                         "run report --pdf-output is a PDF path and must not use an HTML suffix"
                     )
+                validate_run_report_outputs(package, [output, pdf_output] if args.pdf else [output])
                 if args.analysis_resources:
                     from .data.analysis_resources import load_resource_limits
 
