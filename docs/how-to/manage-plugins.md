@@ -41,6 +41,8 @@ python -m wavebench plugin recover
 
 在安装、替换或卸载中断后，先运行 `plugin recover`。如果工具无法证明环境处于已知旧态或目标态，应保留环境和诊断信息，进行人工检查；不要通过手工删除记录来掩盖未知状态。
 
+失败回滚重装同一 wheel 时，安装器生成的 Windows 启动器可能因时间戳而改变摘要。工具会重新验证缓存 wheel、metadata、descriptor 和安装文件的 RECORD 哈希，再将验证后的摘要写入事务记录和账本；普通外部重装或篡改仍会标记为 drifted。
+
 ## 边界
 
 - V2 descriptor 只声明已实现和已测试的 capability，不会自动生成 CLI、Service 或 run plan step。
