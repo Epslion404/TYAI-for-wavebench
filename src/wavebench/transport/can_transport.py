@@ -7,10 +7,13 @@ import time
 from typing import Any
 
 from wavebench.config import CanConnectionConfig
-from wavebench.errors import ConfigError, ConnectionError, TransportIOError
+from wavebench.errors import ConfigError, ConnectionError, SessionCloseError, TransportIOError
 from wavebench.logging import CommandLogger
 
-from .contracts import BinaryQueryResult, BinaryResponseFraming, ReplayPolicy
+from .contracts import (
+    BinaryQueryResult, BinaryResponseFraming, CommandTransmission, ReplayPolicy,
+    ResponseProgress, Synchronization, TransportPhase,
+)
 
 
 @dataclass
@@ -20,6 +23,7 @@ class CanTransport:
     logger: CommandLogger
     config: CanConnectionConfig
     _pending: bytearray = field(default_factory=bytearray)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def open(cls, config: CanConnectionConfig, logger: CommandLogger | None = None) -> "CanTransport":
@@ -59,7 +63,17 @@ class CanTransport:
                 data=frame,
             ))
         except Exception as exc:
-            raise TransportIOError(f"CAN frame write failed: {exc}") from exc
+            raise TransportIOError(
+                "CAN frame write failed",
+                operation="send_frame",
+                phase=TransportPhase.SENDING,
+                replay_policy=ReplayPolicy.NO_REPLAY,
+                command_transmission=CommandTransmission.UNKNOWN,
+                response_progress=ResponseProgress.NONE,
+                synchronization=Synchronization.UNPROVEN,
+                attempts=1,
+                reason_code="frame_write_failed",
+            ) from exc
         self.logger.record("send_frame", f"<can bytes len={len(frame)}>")
 
     def read_exact(self, size: int, *, timeout_ms: int | None = None, replay: ReplayPolicy = ReplayPolicy.NO_REPLAY) -> bytes:
@@ -67,9 +81,9 @@ class CanTransport:
             raise ConfigError("CAN read size must be a positive integer")
         if ReplayPolicy(replay) is not ReplayPolicy.NO_REPLAY:
             raise ConfigError("CAN read replay is unsupported")
-        deadline = time.monotonic() + (timeout_ms if timeout_ms is not None else self.config.timeout_ms) / 1000.0
+        deadline = self._deadline(timeout_ms)
         while len(self._pending) < size:
-            self._receive_one(deadline)
+            self._receive_one(deadline, "read_exact")
         result = bytes(self._pending[:size])
         del self._pending[:size]
         self.logger.record("read_frame", f"<can bytes len={len(result)}>")
@@ -82,29 +96,55 @@ class CanTransport:
             raise ConfigError("CAN max_bytes must be an integer at least as large as the delimiter")
         if ReplayPolicy(replay) is not ReplayPolicy.NO_REPLAY:
             raise ConfigError("CAN read replay is unsupported")
-        deadline = time.monotonic() + (timeout_ms if timeout_ms is not None else self.config.timeout_ms) / 1000.0
+        deadline = self._deadline(timeout_ms)
         while True:
             marker = self._pending.find(delimiter)
             if marker >= 0:
                 end = marker + len(delimiter)
+                if end > max_bytes:
+                    raise self._read_error("read_until", "frame_too_large")
                 result = bytes(self._pending[:end])
                 del self._pending[:end]
                 return result
             if len(self._pending) >= max_bytes:
-                raise TransportIOError("CAN delimiter was not found before max_bytes")
-            self._receive_one(deadline)
+                raise self._read_error("read_until", "frame_too_large")
+            self._receive_one(deadline, "read_until")
 
-    def _receive_one(self, deadline: float) -> None:
+    def _deadline(self, timeout_ms: int | None) -> float:
+        timeout = self.config.timeout_ms if timeout_ms is None else timeout_ms
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+            raise ConfigError("CAN timeout_ms must be a positive integer")
+        return time.monotonic() + timeout / 1000.0
+
+    def _read_error(self, operation: str, reason_code: str) -> TransportIOError:
+        consumed = len(self._pending)
+        return TransportIOError(
+            "CAN raw frame read did not complete",
+            operation=operation,
+            phase=TransportPhase.READING,
+            replay_policy=ReplayPolicy.NO_REPLAY,
+            command_transmission=CommandTransmission.SENT,
+            response_progress=ResponseProgress.PARTIAL if consumed else ResponseProgress.NONE,
+            synchronization=Synchronization.LOST if consumed else Synchronization.UNPROVEN,
+            attempts=1,
+            reason_code=reason_code,
+            consumed_bytes=consumed,
+            discarded_bytes=0,
+        )
+
+    def _receive_one(self, deadline: float, operation: str) -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TransportIOError("CAN read timed out before enough frame bytes arrived")
+            raise self._read_error(operation, "frame_read_timeout")
         try:
             message = self.bus.recv(timeout=remaining)
         except Exception as exc:
-            raise TransportIOError(f"CAN read failed: {exc}") from exc
+            raise self._read_error(operation, "frame_read_failed") from exc
         if message is None:
-            raise TransportIOError("CAN read timed out before enough frame bytes arrived")
+            raise self._read_error(operation, "frame_read_timeout")
         self._pending.extend(bytes(message.data))
+        if time.monotonic() >= deadline:
+            raise self._read_error(operation, "frame_read_timeout")
 
     def write(self, command: str) -> None:
         self.send_frame(command.encode("ascii"), max_bytes=self.frame_limit)
@@ -128,10 +168,15 @@ class CanTransport:
         raise ConfigError("CAN transport has no SCPI OPC query")
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
             self.bus.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            raise SessionCloseError([("bus", exc)]) from None
+        finally:
+            self._pending.clear()
 
 
 def _validate_config(config: CanConnectionConfig) -> None:
