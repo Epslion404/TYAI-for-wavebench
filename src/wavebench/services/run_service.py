@@ -3027,7 +3027,7 @@ class RunService:
         if "expect" in step.fields:
             artifact["expect"] = evaluate_expect(artifact.get("quality", {}), step.fields["expect"])
         if "expect_fft" in step.fields:
-            fft_summary = capture_fft_summary(capture)
+            fft_summary = capture_fft_summary(capture, analysis_limits=self.analysis_limits)
             artifact["fft"] = fft_summary
             artifact["expect_fft"] = evaluate_expect(fft_summary, step.fields["expect_fft"])
         return artifact

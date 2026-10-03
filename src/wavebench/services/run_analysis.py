@@ -1,21 +1,34 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-import numpy as np
-
+from wavebench.data.analysis_io import mapped_npy
+from wavebench.data.analysis_resources import AnalysisBudget, AnalysisLimits, AnalysisResourceError
 from wavebench.data.fft import analyze_fft
 
 
-def capture_fft_summary(capture: Any) -> dict[str, Any]:
+def capture_fft_summary(capture: Any, *, analysis_limits: AnalysisLimits | None = None) -> dict[str, Any]:
     npy_path = getattr(capture, "npy_path", None)
     if npy_path is None:
         return {"status": "unavailable", "error": "missing npy artifact"}
+    limits = analysis_limits or AnalysisLimits()
     try:
-        analysis = analyze_fft(np.load(npy_path), max_harmonic_order=5)
+        with mapped_npy(Path(npy_path), limits, columns=2, source=True) as (waveform, _):
+            # Admit the original length before finite filtering or any FFT allocations.
+            # Downsampling here would change the meaning of expect_fft acceptance checks.
+            estimate = AnalysisBudget(limits).stage(
+                {"op": "fft"}, waveform.shape[0], retained_bytes=waveform.nbytes
+            )
+            analysis = analyze_fft(waveform, max_harmonic_order=5)
+    except AnalysisResourceError as exc:
+        return {
+            "status": "failed", "error": str(exc), "error_code": exc.code,
+            "resource_error": exc.evidence, "resources": limits.evidence(),
+        }
     except Exception as exc:  # noqa: BLE001 - run artifacts should explain expected analysis failures
         return {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
-    return {"status": "ok", **analysis}
+    return {"status": "ok", **analysis, "resources": {**limits.evidence(), **estimate}}
 
 
 def step_status(artifact: dict[str, Any]) -> str:
