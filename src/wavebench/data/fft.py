@@ -38,9 +38,14 @@ def analyze_fft(waveform: Any, *, max_harmonic_order: int = 5) -> dict[str, Any]
     amplitudes = np.abs(spectrum) * 2.0 / (samples * coherent_gain)
     if amplitudes.size:
         amplitudes[0] = amplitudes[0] / 2.0
+        if samples % 2 == 0:
+            # The real Nyquist bin has no negative-frequency partner.
+            amplitudes[-1] = amplitudes[-1] / 2.0
     if amplitudes.size < 2:
         raise ValueError("not enough FFT bins")
-    search = amplitudes[1:]
+    # Locate the spectral peak before amplitude calibration. Doubling Hann
+    # leakage beside Nyquist must not move a pure Nyquist tone to the next bin.
+    search = np.abs(spectrum[1:])
     peak_index = int(np.argmax(search) + 1)
     peak_frequency = float(frequencies[peak_index])
     peak_amplitude = float(amplitudes[peak_index])
