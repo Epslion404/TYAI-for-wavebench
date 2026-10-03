@@ -67,6 +67,7 @@ plugin = AdvisorPlugin(
 
 - 组名：`wavebench.advisor`；加载对象必须是 `AdvisorPlugin`，或其可调用结果。
 - entry point 名必须等于 `advisor_id`，否则记 `PluginLoadError`，不进入注册表。
+- 注册前校验 API 版本、capability 词表与外发声明；不符合合同的插件记入加载错误。
 - 第三方 entry point 默认不导入：`plugin list --category advisor --include-entry-points` 才加载。
 - 加载失败只记 doctor 记录，不抛异常；`plugin doctor --category advisor` 会输出 `error` 行。
 
@@ -97,6 +98,10 @@ python -m wavebench plugin doctor --category advisor --include-entry-points
 | 响应结构非法或选项 id 不在代码持有的选项集内 | `invalid`，不采用任何结论 |
 
 以上四种都不改变退出码，也不参与 `run.json.status`、质量门、`auto_recover` 或 capability 判定。
+
+响应中的概率、非空 `confidence` 与 `noul` 必须是 0 到 1 之间的有限数字，布尔值和数字字符串会被拒绝；`score` 必须是有限数字。`confidence` 缺失或为 `null` 表示未提供。Choice 必须提供字符串选项 id 及其概率，路由概率表中的选项也必须属于代码持有的 catalog。非法响应产出 `invalid` artifact，建议集为空。
+
+Decision artifact 的 `reason`、requested model 与 reported model 在构造时统一采用同意门的敏感文本脱敏规则，CLI 诊断与 JSON 落盘读取同一份结果。未知选项和答案类型的错误只保存固定诊断，不回显响应原文。
 
 ## 实现流程
 

@@ -269,6 +269,24 @@ def test_build_advisor_registry_records_bad_entry_point(monkeypatch):
     assert "boom" in result.load_errors[0].message
 
 
+@pytest.mark.parametrize("overrides, diagnostic", [
+    ({"api_version": "wavebench.advisor.v2"}, "unsupported api_version"),
+    ({"capabilities": ("scope.idn",)}, "must start with"),
+    ({"capabilities": ("advisor.typo",)}, "unknown advisor capability"),
+    ({"egress": transmitting_egress()}, "must declare"),
+    ({"capabilities": ("advisor.route", ADVISOR_EXTERNAL_STATE_CAPABILITY)}, "must not declare"),
+])
+def test_loader_rejects_invalid_contract_before_registration(monkeypatch, overrides, diagnostic):
+    patch_entry_points(monkeypatch, [FakeEntryPoint("example.advisor", advisor(**overrides))])
+    result = build_advisor_registry(include_entry_points=True)
+    assert [p.advisor_id for p in result.registry.list_advisors()] == [RULE_ADVISOR_ID]
+    assert result.load_errors[0].source == "entry_point:example.advisor"
+    assert diagnostic in result.load_errors[0].message
+    assert has_advisor_doctor_errors(
+        advisor_doctor_records(result.registry, load_errors=result.load_errors)
+    )
+
+
 def test_build_advisor_registry_rejects_mismatched_entry_point_name(monkeypatch):
     patch_entry_points(monkeypatch, [FakeEntryPoint("other.advisor", advisor())])
 
