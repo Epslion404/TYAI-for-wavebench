@@ -110,6 +110,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip PyVISA resource-manager discovery / 跳过 PyVISA 资源枚举",
     )
+    doctor_parser.add_argument(
+        "--discover-serial",
+        action="store_true",
+        help="List local serial ports only; does not open or probe them",
+    )
+    doctor_parser.add_argument(
+        "--discover-can",
+        action="store_true",
+        help="List local CAN adapters only; does not open a bus or send frames",
+    )
+
     capability_parser = subparsers.add_parser(
         "capability",
         help="Explain offline operation capability decisions / 离线解释操作能力",
@@ -425,7 +436,10 @@ def build_parser() -> argparse.ArgumentParser:
         "discover",
         help="Read-only scan for LAN SCPI/VISA instruments / 只读扫描局域网 SCPI/VISA 仪器",
     )
-    net_discover.add_argument("--subnet", required=True, help="Subnet to scan, e.g. 192.0.2.0/24")
+    net_discover.add_argument(
+        "--subnet",
+        help="TCP subnet to scan, e.g. 192.0.2.0/24; never used for serial or CAN enumeration",
+    )
     net_discover.add_argument(
         "--ports",
         default=",".join(str(port) for port in DEFAULT_DISCOVERY_PORTS),
@@ -458,6 +472,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-visa",
         action="store_true",
         help="Skip PyVISA resource-manager discovery / 跳过 PyVISA 资源枚举",
+    )
+
+    net_discover.add_argument(
+        "--serial",
+        action="store_true",
+        help="List local serial ports; does not open or send bytes to them",
+    )
+    net_discover.add_argument(
+        "--can",
+        action="store_true",
+        help="List local CAN adapters; does not open a bus or send CAN frames",
+    )
+    net_discover.add_argument(
+        "--mdns",
+        action="store_true",
+        help="Query _scpi._tcp.local advertisements; does not open TCP or send SCPI",
     )
 
     run_sub = run_parser.add_subparsers(dest="command", required=True)

@@ -69,9 +69,10 @@ def discover_instruments(
     include_visa: bool = True,
     include_serial: bool = False,
     include_can: bool = False,
+    include_mdns: bool = False,
 ) -> list[DiscoveryResult]:
-    if subnet is None and not (include_visa or include_serial or include_can):
-        raise ConfigError("select a TCP subnet, VISA, serial, or CAN discovery source")
+    if subnet is None and not (include_visa or include_serial or include_can or include_mdns):
+        raise ConfigError("select a TCP subnet, VISA, serial, CAN, or mDNS discovery source")
     results: list[DiscoveryResult] = []
     if include_visa:
         results.extend(discover_visa_resources(query_idn=query_idn, timeout_ms=timeout_ms))
@@ -79,6 +80,8 @@ def discover_instruments(
         results.extend(discover_serial_ports())
     if include_can:
         results.extend(discover_can_adapters())
+    if include_mdns:
+        results.extend(discover_mdns_scpi(timeout_ms=timeout_ms))
     if subnet:
         results.extend(
             discover_network(
@@ -168,6 +171,45 @@ def discover_can_adapters(
             )
         )
     return sorted(results, key=_result_sort_key)
+
+
+def discover_mdns_scpi(
+    *,
+    timeout_ms: int = 1000,
+    socket_factory: Callable[..., socket.socket] | None = None,
+) -> list[DiscoveryResult]:
+    """Query `_scpi._tcp.local` via mDNS without opening TCP or sending SCPI."""
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 1:
+        raise ConfigError("mDNS timeout_ms must be >= 1")
+    factory = socket_factory or socket.socket
+    name = b"\x05_scpi\x04_tcp\x05local\x00"
+    query = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x0c\x00\x01"
+    addresses: set[str] = set()
+    try:
+        with factory(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+            sock.settimeout(timeout_ms / 1000.0)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            sock.sendto(query, ("224.0.0.251", 5353))
+            while True:
+                try:
+                    _, sender = sock.recvfrom(9000)
+                except TimeoutError:
+                    break
+                addresses.add(str(sender[0]))
+    except OSError:
+        return []
+    return [
+        DiscoveryResult(
+            address=address,
+            port=None,
+            protocol="mdns-scpi",
+            resource=f"mdns://{address}/_scpi._tcp.local",
+            source="mdns",
+            status="listed",
+            note="DNS-SD advertisement only; no TCP connection or SCPI query sent",
+        )
+        for address in sorted(addresses, key=lambda value: int(ipaddress.ip_address(value)))
+    ]
 
 
 def discover_network(

@@ -7,6 +7,7 @@ from wavebench.discovery import (
     _probe_scpi_socket,
     discover_can_adapters,
     discover_instruments,
+    discover_mdns_scpi,
     discover_network,
     discover_serial_ports,
     parse_discovery_ports,
@@ -122,6 +123,39 @@ class DiscoveryTests(unittest.TestCase):
                 ),
                 [],
             )
+
+    def test_mdns_discovery_is_advertisement_only_without_tcp_or_scpi(self):
+        class FakeSocket:
+            def __init__(self):
+                self.destination = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, _timeout):
+                pass
+
+            def setsockopt(self, *_args):
+                pass
+
+            def sendto(self, _payload, destination):
+                self.destination = destination
+
+            def recvfrom(self, _limit):
+                if not hasattr(self, "replied"):
+                    self.replied = True
+                    return b"dns-response", ("192.0.2.44", 5353)
+                raise TimeoutError
+
+        fake = FakeSocket()
+        results = discover_mdns_scpi(timeout_ms=1, socket_factory=lambda *_args: fake)
+
+        self.assertEqual(fake.destination, ("224.0.0.251", 5353))
+        self.assertEqual([(item.protocol, item.address) for item in results], [("mdns-scpi", "192.0.2.44")])
+        self.assertIn("no TCP connection or SCPI query sent", results[0].note)
 
 
 if __name__ == "__main__":

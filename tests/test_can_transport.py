@@ -3,7 +3,7 @@ import uuid
 import pytest
 
 from wavebench.config import CanConnectionConfig
-from wavebench.errors import ConfigError
+from wavebench.errors import ConfigError, TransportIOError, error_envelope
 from wavebench.transport.can_transport import CanTransport
 
 
@@ -49,3 +49,32 @@ def test_can_fd_transport_accepts_64_byte_virtual_frame():
     finally:
         transport.close()
         peer.shutdown()
+
+
+def test_can_adapter_unavailable_has_a_stable_error_envelope():
+    pytest.importorskip("can")
+
+    with pytest.raises(Exception) as raised:
+        CanTransport.open(CanConnectionConfig(channel="missing", interface="not-a-can-interface"))
+
+    payload = error_envelope(raised.value)
+    assert payload["code"] == "can_adapter_unavailable"
+    assert payload["exit_code"] == 3
+
+
+def test_can_read_timeout_is_a_structured_transport_failure():
+    can = pytest.importorskip("can")
+    channel = f"wavebench-timeout-{uuid.uuid4()}"
+    peer = can.Bus(interface="virtual", channel=channel, receive_own_messages=False)
+    transport = CanTransport.open(CanConnectionConfig(channel=channel, interface="virtual"))
+    try:
+        with pytest.raises(TransportIOError) as raised:
+            transport.read_exact(1, timeout_ms=1)
+    finally:
+        transport.close()
+        peer.shutdown()
+
+    payload = error_envelope(raised.value)
+    assert payload["code"] == "transport_io_error"
+    assert payload["details"]["reason_code"] == "frame_read_timeout"
+    assert payload["details"]["attempts"] == 1

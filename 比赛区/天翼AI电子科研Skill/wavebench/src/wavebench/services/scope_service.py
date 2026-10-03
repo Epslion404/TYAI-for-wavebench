@@ -363,6 +363,11 @@ class ScopeService(SessionStateAliasMixin):
                 if self.config.connection.backend.strip().lower() == "serial"
                 else None
             ),
+            can_config=(
+                self.config.connection.can_connection()
+                if self.config.connection.backend.strip().lower() in {"can", "can-fd"}
+                else None
+            ),
             access=getattr(self.config.scope, "access", "read_write"),
             lease=self.lease,
         )

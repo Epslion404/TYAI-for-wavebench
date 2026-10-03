@@ -1108,6 +1108,7 @@ def _main(argv: list[str] | None = None) -> int:
                     include_visa=not args.no_visa,
                     include_serial=args.serial,
                     include_can=args.can,
+                    include_mdns=args.mdns,
                 )
                 if args.json:
                     _emit_json_result(_json_payload(results))
