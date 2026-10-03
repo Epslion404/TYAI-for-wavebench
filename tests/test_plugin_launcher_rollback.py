@@ -8,7 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from zipfile import ZipFile
 
 import pytest
@@ -68,7 +68,10 @@ def test_rollback_adopts_verified_digests_without_changing_wheel_identity(rollba
 
     assert "recovery required" not in str(error.value)
     manager._postflight.assert_called_once_with(record, rollback_reinstall=True)
-    manager._assert_distribution_file_ownership.assert_called_once_with(record["distribution"])
+    manager._assert_distribution_file_ownership.assert_has_calls([
+        call(record["distribution"], allow_missing=True),
+        call(record["distribution"]),
+    ])
     restored = manager._read_json(manager.ledger_path, "ledger")
     expected = deepcopy(original)
     expected["generation"] += 1
@@ -94,7 +97,7 @@ def test_rollback_validation_failure_keeps_ledger_and_journal(rollback_state, fa
 
     assert manager.ledger_path.read_bytes() == before
     pending = manager._read_json(manager.journal_path, "journal")
-    assert pending["stage"] == "rollback_started"
+    assert pending["stage"] == ("pip_finished" if failure == "ownership" else "rollback_started")
     assert pending["before_ledger"] == ledger
 
 

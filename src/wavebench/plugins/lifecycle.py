@@ -553,6 +553,9 @@ print(json.dumps(payload, sort_keys=True))
         original: Exception,
     ) -> None:
         try:
+            self._assert_distribution_file_ownership(
+                str(record["distribution"]), allow_missing=True
+            )
             self._update_journal(journal, "rollback_started")
             self._pip_uninstall(record["distribution"], allow_missing=True)
             if self._distribution_inventory(record["distribution"]):
@@ -583,6 +586,11 @@ print(json.dumps(payload, sort_keys=True))
             )
             if package.sha256 != record["wheel_sha256"]:
                 raise ConfigError("managed rollback wheel is missing or changed / 受管回滚 wheel 缺失或已变化")
+            # Force-reinstall also removes the failed current version's files,
+            # which may not be present in the old wheel being restored.
+            self._assert_distribution_file_ownership(
+                str(record["distribution"]), allow_missing=True
+            )
             self._update_journal(journal, "rollback_started")
             self._pip_install(wheel)
             restored = self._verified_rollback_ledger(record, ledger)
@@ -865,10 +873,14 @@ print(json.dumps(payload, sort_keys=True))
                 return path
         return None
 
-    def _assert_distribution_file_ownership(self, distribution: str) -> None:
+    def _assert_distribution_file_ownership(
+        self, distribution: str, *, allow_missing: bool = False
+    ) -> None:
         normalized = canonicalize_name(distribution)
         inventory = self._inventory(target_distribution=distribution)
         matches = inventory.get(normalized, ())
+        if not matches and allow_missing:
+            return
         if len(matches) != 1:
             raise ConfigError(
                 "managed distribution ownership is ambiguous / 受管分发的文件归属不唯一"
