@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import json
 import math
 import multiprocessing
+import os
 from pathlib import Path
 import signal
 import tempfile
@@ -81,15 +82,36 @@ def _probe_worker(ready):
     ready.wait(10)
 
 
-def _worker(target, kwargs, gate, cancel, result_path, limits):
+def _write_control_document(path, payload):
+    """Write bounded supervisor control data without importing numerical libraries."""
+    raw = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode('utf-8')
+    _write_control_bytes(path, raw)
+
+
+def _write_control_bytes(path, raw):
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as file:
+            file.write(raw)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _worker(target, kwargs, gate, cancel, result_path, progress_path, limits):
     # The parent handles console interruption and records the reason.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     gate.wait()
-    from wavebench.data.analysis_control import cancel_signal
-    from .run_pipeline import _atomic_write_bytes
-    cancel_signal.set(cancel)
     try:
+        _write_control_document(progress_path, {'stage': 'worker_initializing'})
+        from wavebench.data.analysis_control import cancel_signal
+        cancel_signal.set(cancel)
+        _write_control_document(progress_path, {'stage': 'target_running'})
         artifact = target(**kwargs)
+        _write_control_document(progress_path, {'stage': 'target_completed'})
         payload = {'artifact': artifact}
     except BaseException as exc:
         payload = {'error': error_envelope(exc, operation='analysis.worker')}
@@ -100,7 +122,8 @@ def _worker(target, kwargs, gate, cancel, result_path, limits):
     except DataError as exc:
         # Small diagnostic envelopes use the same exhaustion exception as failure manifests.
         raw = json.dumps({'error': error_envelope(exc, operation='analysis.worker_result')}).encode('utf-8')
-    _atomic_write_bytes(Path(result_path), raw)
+    # The result has already been admitted against both worker metadata budgets.
+    _write_control_bytes(result_path, raw)
 
 
 def _read_document(path, limit):
@@ -129,6 +152,8 @@ def supervise(target, kwargs, *, policy, run_dir, processing_dir, fields, source
     forced = False
     artifact = None
     worker_error = None
+    worker_stage = 'not_started'
+    worker_report_available = False
     started = time.monotonic()
     run_dir, processing_dir = Path(run_dir), Path(processing_dir)
     # The control directory is outside the worker-owned processing directory.
@@ -141,11 +166,14 @@ def supervise(target, kwargs, *, policy, run_dir, processing_dir, fields, source
     try:
         with memory_scope(policy) as scope, tempfile.TemporaryDirectory(prefix='.analysis-control-', dir=control_parent) as control:
             result_path = Path(control) / 'result.json'
-            process = context.Process(target=_worker, args=(target, kwargs, gate, cancel, str(result_path), limits))
+            progress_path = Path(control) / 'progress.json'
+            process = context.Process(target=_worker, args=(target, kwargs, gate, cancel,
+                                      str(result_path), str(progress_path), limits))
             exitcode = None
             memory = scope.evidence()
             try:
                 process.start()
+                worker_stage = 'bootstrap'
                 scope.attach(process.pid)
                 gate.set()
                 deadline = started + policy.timeout_s
@@ -178,7 +206,10 @@ def supervise(target, kwargs, *, policy, run_dir, processing_dir, fields, source
                 exitcode = process.exitcode
                 memory = scope.evidence()
                 try:
+                    progress = _read_document(progress_path, 1024)
+                    worker_stage = progress.get('stage', worker_stage)
                     payload = _read_document(result_path, max(limits.max_metadata_bytes, 65536))
+                    worker_report_available = bool(payload)
                     artifact = payload.get('artifact')
                     if not isinstance(artifact, dict) or not isinstance(artifact.get('analysis_pipeline'), dict):
                         artifact = None
@@ -226,7 +257,8 @@ def supervise(target, kwargs, *, policy, run_dir, processing_dir, fields, source
     if reason == 'analysis_worker_failed' and exitcode == 0 and manifest.get('status') == 'failed' and manifest.get('error'):
         worker_error = manifest['error']
     evidence = {**policy.evidence(), **memory, 'exitcode': exitcode, 'forced': forced,
-                'elapsed_s': time.monotonic() - started, 'reason': reason}
+                'elapsed_s': time.monotonic() - started, 'reason': reason,
+                'worker_stage': worker_stage, 'worker_report_available': worker_report_available}
     if artifact is None:
         manifest = {'schema': schema, 'source': source, 'operations': fields['operations'],
                     'stages': [], 'warnings': [], 'exports': [],
@@ -244,7 +276,10 @@ def supervise(target, kwargs, *, policy, run_dir, processing_dir, fields, source
     pipeline = artifact['analysis_pipeline']
     if reason:
         error = error_envelope(DataError(reason.replace('_', ' ')), operation='analysis.supervisor',
-                               details={'exitcode': exitcode, 'forced': forced}, cause=worker_error)
+                               details={'exitcode': exitcode, 'forced': forced,
+                                        'worker_stage': worker_stage,
+                                        'worker_report_available': worker_report_available},
+                               cause=worker_error)
         error['code'] = reason
         stage = next((f"operations[{item['index']}]" for item in manifest.get('stages', [])
                       if item.get('status') == 'running' and 'index' in item),
