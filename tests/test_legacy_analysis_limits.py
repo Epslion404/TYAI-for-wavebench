@@ -1,6 +1,8 @@
 """Keep legacy acceptance FFTs and raw report previews within analysis budgets."""
 
 import json
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,6 +10,7 @@ import numpy as np
 import pytest
 
 from wavebench.data.analysis_resources import AnalysisLimits
+from wavebench.data.analysis_io import read_json_bounded
 from wavebench.data.fft import analyze_fft
 from wavebench.data.packages import RunPackage
 from wavebench.report import html
@@ -204,6 +207,105 @@ def test_report_preview_budget_is_cumulative(tmp_path, values, dimension):
     assert first.warning == ""
     assert second.svg == ""
     assert dimension in second.warning
+
+
+@pytest.mark.parametrize("failure", ["all_nan", "render_error"])
+def test_failed_preview_keeps_scan_charge_and_blocks_later_scans(tmp_path, failure):
+    source, waveform = waveform_file(tmp_path)
+    if failure == "all_nan":
+        waveform[:, 1] = np.nan
+        np.save(source, waveform)
+    run = report_run(tmp_path, source)
+    run.run["steps"] = [{**run.run["steps"][0], "index": index} for index in range(1, 4)]
+    with patch("wavebench.report.html.np.asarray", wraps=np.asarray) as scan, patch(
+        "wavebench.report.html._waveform_svg", side_effect=ValueError("fake render error")
+    ) as svg:
+        previews = html._collect_waveform_previews(
+            run, analysis_limits=AnalysisLimits(max_work_units=256)
+        )
+    assert scan.call_count == (1 if failure == "all_nan" else 2)
+    assert svg.call_count == (0 if failure == "all_nan" else 1)
+    assert all(preview.svg == "" for preview in previews)
+    assert ("finite waveform samples" if failure == "all_nan" else "fake render error") in previews[0].warning
+    assert all("max_work_units" in preview.warning for preview in previews[1:])
+
+
+@pytest.mark.parametrize("entry,expected_reads", [("render", 4), ("manifest", 2), ("writer", 6)])
+@pytest.mark.parametrize("use_default_limits", [False, True])
+def test_all_report_metadata_reads_are_bounded_and_recover_with_warnings(
+    tmp_path, entry, expected_reads, use_default_limits,
+):
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    source, _ = waveform_file(capture_dir)
+    metadata_path = capture_dir / "custom-metadata.json"
+    run = replace(
+        report_run(capture_dir, source, metadata_path=metadata_path),
+        path=tmp_path, run_json_path=tmp_path / "run.json",
+    )
+    limits = None if use_default_limits else AnalysisLimits(max_metadata_bytes=4)
+    if use_default_limits:
+        # A sparse metadata file proves that defaults also reject before reading
+        # its payload, without allocating a large Python string.
+        with metadata_path.open("wb") as file:
+            file.seek(AnalysisLimits().max_metadata_bytes)
+            file.write(b"x")
+    unbounded_reads = []
+    original_read_text = Path.read_text
+
+    def track_read_text(path, *args, **kwargs):
+        if path == metadata_path:
+            unbounded_reads.append(path)
+            raise AssertionError("capture metadata read without admission check")
+        return original_read_text(path, *args, **kwargs)
+
+    output = tmp_path / "report.html"
+    with patch.object(Path, "read_text", track_read_text), patch(
+        "wavebench.data.analysis_io.read_json_bounded", wraps=read_json_bounded
+    ) as bounded:
+        if entry == "render":
+            rendered = html.render_run_report_html(run, analysis_limits=limits)
+            manifest = None
+        elif entry == "manifest":
+            manifest_path = html.write_run_report_manifest(run, analysis_limits=limits)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            rendered = ""
+        else:
+            html.write_run_report_html(run, output, analysis_limits=limits)
+            rendered = output.read_text(encoding="utf-8")
+            manifest = json.loads((tmp_path / "report-assets/manifest.json").read_text(encoding="utf-8"))
+    assert unbounded_reads == []
+    assert bounded.call_count == expected_reads
+    for call in bounded.call_args_list:
+        assert call.args[0] == metadata_path
+        assert isinstance(call.args[1], AnalysisLimits)
+        if limits is not None:
+            assert call.args[1] is limits
+    if rendered:
+        assert "capture metadata unavailable" in rendered
+        assert "max_metadata_bytes" in rendered
+        assert 'aria-label="waveform preview"' not in rendered
+    if manifest is not None:
+        assert manifest["waveform_previews"] == []
+        assert any("max_metadata_bytes" in warning for warning in manifest["warnings"])
+
+
+def test_signal_summary_preserves_metadata_warning_collector_after_valid_capture(tmp_path):
+    source, _ = waveform_file(tmp_path)
+    run = report_run(tmp_path, source)
+    oversized_metadata = tmp_path / "oversized.json"
+    oversized_metadata.write_text(" " * 1025, encoding="utf-8")
+    run.run["steps"].append({
+        **run.run["steps"][0], "index": 2,
+        "artifact": {"package": str(tmp_path), "metadata": str(oversized_metadata)},
+    })
+    warnings = []
+    summaries = html._collect_signal_summaries(
+        run, analysis_limits=AnalysisLimits(max_metadata_bytes=1024), warnings=warnings,
+    )
+    assert len(summaries) == 1
+    assert len(warnings) == 1
+    assert "max_metadata_bytes" in warnings[0]
 
 
 def test_run_capture_fft_uses_execution_profile_and_stops_after_budget_failure(tmp_path):
