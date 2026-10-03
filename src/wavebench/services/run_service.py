@@ -1331,6 +1331,18 @@ class RunService:
                 add(item.fields.get("source_channel") or item.fields.get("channel"))
                 for channel in item.fields.get("channels", ()):
                     add(channel)
+                # Only these operations resolve an omitted scalar to the configured output.
+                if (
+                    item.kind in {
+                        "source.status", "source.set_freq", "source.set_func",
+                        "source.set_vpp", "source.set_duty", "source.output",
+                        "source.arb_load", "sweep.frequency_response",
+                    }
+                    and item.fields.get("source_channel") is None
+                    and item.fields.get("channel") is None
+                    and self.config.source is not None
+                ):
+                    add(self.config.source.default_channel)
 
         add_step(step)
         for item in plan.steps:
