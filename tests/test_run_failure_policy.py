@@ -326,6 +326,76 @@ safety_gate = true
             patch.stopall()
 
 
+def test_safety_gate_remains_off_when_step_record_write_fails() -> None:
+    # #32: 安全门已执行 OFF 后，步骤记录写入 OSError 不应按原 ON 快照恢复 source。
+    with TemporaryDirectory() as tmp:
+        plan = load_run_plan(
+            _write_plan(
+                tmp,
+                """
+[safety]
+safety_gate = true
+off_source_channels = [1]
+
+[restore]
+source_state = true
+source_channels = [1]
+
+[[steps]]
+kind = "sleep"
+duration_s = 0.01
+""",
+            )
+        )
+        service = _service(tmp)
+        source = patch("wavebench.services.run_service.SourceService").start()
+        try:
+            from wavebench.services.source_state import RestorableSourceState
+
+            source_instance = source.return_value
+            source_instance.set_output.return_value = SimpleNamespace(output="OFF")
+            source_instance.snapshot_restorable_state.return_value = RestorableSourceState(
+                channel=1,
+                output="ON",
+                function="SIN",
+                frequency_hz=1000.0,
+                amplitude_vpp=1.0,
+                amplitude_unit="VPP",
+                restore_evidence={},
+            )
+            restore_calls: list[str] = []
+
+            def restore_restorable_state(state):
+                restore_calls.append(state.output)
+
+            source_instance.restore_restorable_state.side_effect = restore_restorable_state
+            services = RunInstrumentServices(source=source_instance)
+
+            with patch.object(service, "check"), patch.object(
+                service, "_run_instrument_services", return_value=nullcontext(services)
+            ), patch.object(
+                service,
+                "_run_step",
+                side_effect=lambda _plan, step, **_kwargs: _record(step.index, step.kind, "failed"),
+            ), patch(
+                "wavebench.services.run_service.write_step_record",
+                side_effect=OSError("disk full"),
+            ):
+                with pytest.raises(OSError):
+                    service.run(plan)
+
+            assert restore_calls == ["OFF"]
+            # 恢复后安全门还应再执行一轮 OFF。
+            off_calls = [
+                call
+                for call in source_instance.set_output.call_args_list
+                if call.kwargs.get("enabled") is False
+            ]
+            assert len(off_calls) >= 2
+        finally:
+            patch.stopall()
+
+
 def test_safety_gate_plan_fields_are_normalized() -> None:
     with TemporaryDirectory() as tmp:
         plan = load_run_plan(
