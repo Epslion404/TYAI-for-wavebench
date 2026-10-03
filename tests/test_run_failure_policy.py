@@ -326,7 +326,8 @@ safety_gate = true
             patch.stopall()
 
 
-def test_safety_gate_remains_off_when_step_record_write_fails() -> None:
+@pytest.mark.parametrize("write_failure", [OSError("disk full"), KeyboardInterrupt()])
+def test_safety_gate_remains_off_when_step_record_write_fails(write_failure) -> None:
     # #32: 安全门已执行 OFF 后，步骤记录写入 OSError 不应按原 ON 快照恢复 source。
     with TemporaryDirectory() as tmp:
         plan = load_run_plan(
@@ -379,9 +380,9 @@ duration_s = 0.01
                 side_effect=lambda _plan, step, **_kwargs: _record(step.index, step.kind, "failed"),
             ), patch(
                 "wavebench.services.run_service.write_step_record",
-                side_effect=OSError("disk full"),
+                side_effect=write_failure,
             ):
-                with pytest.raises(OSError):
+                with pytest.raises(type(write_failure)):
                     service.run(plan)
 
             assert restore_calls == ["OFF"]
