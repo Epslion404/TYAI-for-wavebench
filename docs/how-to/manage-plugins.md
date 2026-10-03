@@ -18,6 +18,8 @@ python -m wavebench plugin install <plugin-path>
 
 源码目录的检查会在临时目录构建 wheel，因此会执行受信任的 build backend。受管安装只使用当前解释器和明确给出的本地路径；它不联网下载依赖，也不修改 `wavebench.toml`。
 
+安装前检查同时覆盖 wheel 文件与安装器生成的 `console_scripts`／`gui_scripts` 启动器。插件不能覆盖 WaveBench 启动器或声明 `pip`、`easy_install` 安装器入口；与其他分发拥有的文件或未受管启动器冲突时，安装和 dry-run 都会拒绝。Windows 按最终生成名称检查大小写与 `.py*` 别名，wheel 内部重复路径和跨分发归属采用同一平台规则。合法独立启动器仍可随插件安装、升级和卸载。
+
 ## 查看已安装插件
 
 ```bash
