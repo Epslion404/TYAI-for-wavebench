@@ -1,6 +1,10 @@
 """Rollback verifies reinstalled launchers before adopting their new digests."""
 
 from copy import deepcopy
+import csv
+from base64 import urlsafe_b64encode
+from hashlib import sha256
+import io
 import json
 import os
 from pathlib import Path
@@ -155,6 +159,54 @@ def test_postflight_requires_prior_record_digest_except_during_rollback(rollback
     assert run_json.call_args.args[0][-2] == ""
 
 
+@pytest.mark.parametrize("damage", ["omitted", "rehashed"])
+def test_recover_rejects_launcher_damage_hidden_by_record(rollback_state, tmp_path, monkeypatch, damage):
+    from pip._internal.operations.install.wheel import PipScriptMaker
+
+    manager, _wheel, _record, _ledger, _journal = rollback_state
+    wheel = _plugin_wheel(tmp_path, version="0.1.0", script_entries=(
+        "\n[console_scripts]\nexample-tool = wavebench_example_scope:descriptor\n"
+    ))
+    package = inspect_plugin_wheel(wheel)
+    record = manager._package_record(package, manager._cache_wheel(package))
+    record.update(installed_record_sha256="old-record", installed_files_sha256="old-files")
+    ledger = manager._with_record(manager.empty_ledger(), record)
+    journal = manager._journal(environment=manager.environment(), operation="remove",
+                               stage="rollback_started", before_ledger=ledger, package=record)
+    manager._write_json(manager.ledger_path, ledger)
+    manager._write_json(manager.journal_path, journal)
+    scripts = Path(manager.environment().scripts)
+    scripts.mkdir()
+    maker = PipScriptMaker(None, str(scripts))
+    maker.variants = {""}
+    launcher = Path(maker.make("example-tool = wavebench_example_scope:descriptor")[0])
+    relative = os.path.relpath(launcher, manager.environment().purelib)
+    lifecycle_module._verify_generated_launchers(
+        wheel, str(scripts), manager.environment().purelib, {relative},
+    )
+    if damage == "omitted":
+        launcher.unlink()
+        rows = set()
+    else:
+        launcher.write_bytes(launcher.read_bytes() + b"tampered")
+        rows = {relative}  # The rewritten RECORD claims the new bytes are valid.
+
+    def postflight(candidate, **kwargs):
+        assert kwargs == {"rollback_reinstall": True}
+        lifecycle_module._verify_generated_launchers(
+            wheel, str(scripts), manager.environment().purelib, rows,
+        )
+        return {"record_sha256": "new-record", "files_sha256": "new-files"}
+
+    monkeypatch.setattr(manager, "_postflight", postflight)
+    monkeypatch.setattr(manager, "_record_matches_environment", lambda *args, **kwargs: False)
+    monkeypatch.setattr(manager, "_distribution_absent", lambda candidate: False)
+    with pytest.raises(ConfigError, match="manual inspection"):
+        manager.recover()
+    assert manager._read_json(manager.ledger_path, "ledger") == ledger
+    assert manager.journal_path.exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="pip Windows launcher ZIP timestamps")
 def test_native_launcher_rollback_and_recover_with_different_zip_timestamps(tmp_path, monkeypatch):
     python = _target_venv(tmp_path)
@@ -252,6 +304,31 @@ def test_native_launcher_rollback_and_recover_with_different_zip_timestamps(tmp_
     with pytest.raises(ConfigError, match="installed RECORD file is missing"):
         manager._postflight(previous, rollback_reinstall=True)
     launcher.write_bytes(launcher_bytes)
+
+    # A rewritten RECORD must not hide deletion or legitimize new launcher bytes.
+    installed_record_path = (Path(manager.environment().purelib)
+                             / "wavebench_example_scope-0.1.0.dist-info" / "RECORD")
+    record_bytes = installed_record_path.read_bytes()
+    rows = list(csv.reader(io.StringIO(record_bytes.decode())))
+    launcher_row = next(row for row in rows if row[0].endswith("example-tool.exe"))
+    output = io.StringIO(newline="")
+    csv.writer(output).writerows(row for row in rows if row is not launcher_row)
+    installed_record_path.write_text(output.getvalue(), encoding="utf-8", newline="")
+    launcher.unlink()
+    with pytest.raises(ConfigError, match="manual inspection"):
+        manager.recover()
+    launcher.write_bytes(launcher_bytes + b"tampered")
+    launcher_row[1] = "sha256=" + urlsafe_b64encode(sha256(launcher.read_bytes()).digest()).rstrip(b"=").decode()
+    launcher_row[2] = str(launcher.stat().st_size)
+    output = io.StringIO(newline="")
+    csv.writer(output).writerows(rows)
+    installed_record_path.write_text(output.getvalue(), encoding="utf-8", newline="")
+    with pytest.raises(ConfigError, match="manual inspection"):
+        manager.recover()
+    assert installed_record() == previous
+    assert manager.journal_path.exists()
+    launcher.write_bytes(launcher_bytes)
+    installed_record_path.write_bytes(record_bytes)
 
     module = Path(manager.environment().purelib) / "wavebench_example_scope" / "__init__.py"
     module_bytes = module.read_bytes()

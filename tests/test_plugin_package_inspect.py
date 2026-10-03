@@ -6,6 +6,7 @@ from hashlib import sha256
 import io
 import json
 import ntpath
+import os
 from pathlib import Path
 import posixpath
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -176,6 +177,16 @@ def test_inspect_wheel_reads_metadata_entry_points_and_hash(tmp_path):
     assert len(package.sha256) == 64
     assert package.size_bytes == path.stat().st_size
     assert package.source_kind == "wheel"
+
+
+@pytest.mark.parametrize("member", ["wavebench./__init__.py", "foreign /data.txt", "file.py."])
+def test_windows_trailing_dot_or_space_member_is_rejected(tmp_path, member):
+    wheel = _wheel(tmp_path, extra_members={member: b"alias"})
+    if os.name == "nt":
+        with pytest.raises(ConfigError, match="unsafe Windows"):
+            inspect_plugin_wheel(wheel)
+    else:
+        assert member in inspect_plugin_wheel(wheel).member_paths
 
 
 @pytest.mark.parametrize("path_rules", [ntpath, posixpath], ids=["windows", "posix"])

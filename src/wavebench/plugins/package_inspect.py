@@ -462,6 +462,8 @@ def _validate_wheel_members(infos: Iterable[object]) -> None:
         path = PurePosixPath(name)
         if path.is_absolute() or ".." in path.parts or "\\" in name:
             raise ConfigError(f"unsafe wheel member path / 不安全的 wheel 成员路径: {name}")
+        if os.name == "nt" and any(part.endswith((".", " ")) for part in path.parts):
+            raise ConfigError(f"unsafe Windows wheel member path: {name}")
         target_path = PurePosixPath(installation_path_key(name).replace("\\", "/"))
         if target_path.parts and target_path.parts[0] == "wavebench":
             raise ConfigError(
