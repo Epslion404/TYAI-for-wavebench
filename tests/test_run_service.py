@@ -1311,6 +1311,43 @@ auto_recover = true
                 self.assertTrue(artifact["quality"]["trusted_by_consistency"])
                 self.assertEqual(artifact["quality_recovery"]["consistency"]["status"], "consistent")
 
+    def test_scope_capture_exhausted_recovery_fails_quality_gate_and_stops(self):
+        with TemporaryDirectory() as tmp:
+            plan = load_run_plan(
+                write_plan(
+                    tmp,
+                    """
+[[steps]]
+kind = "scope.capture"
+label = "diverged"
+quality_gate = true
+auto_recover = true
+
+[[steps]]
+kind = "sleep"
+duration_s = 0.01
+""",
+                )
+            )
+            warning = ["low_points_per_cycle: too sparse"]
+            captures = [
+                fake_capture(tmp, "d0", warning, frequency_hz=1000.0),
+                fake_capture(tmp, "d1", warning, frequency_hz=2000.0),
+                fake_capture(tmp, "d2", warning, frequency_hz=4000.0),
+            ]
+            quality = QualityConfig(auto_recover_attempts=2, consistency_required_captures=3)
+            with patch("wavebench.services.run_service.ScopeService") as scope_cls:
+                scope = scope_cls.return_value
+                scope.capture_waveform.side_effect = captures
+
+                result = RunService(config=make_config(tmp, quality), logger=CommandLogger()).run(plan)
+
+                artifact = result.steps[0].artifact
+                self.assertEqual(result.steps[0].status, "failed")
+                self.assertEqual(artifact["quality_gate"]["status"], "failed")
+                self.assertEqual(artifact["quality_gate"]["consistency_status"], "diverged")
+                self.assertEqual(len(artifact["quality_recovery"]["attempts"]), 3)
+                self.assertEqual(len(result.steps), 1)
 
     def test_scope_capture_expect_passes_and_is_written_to_summary(self):
         with TemporaryDirectory() as tmp:
