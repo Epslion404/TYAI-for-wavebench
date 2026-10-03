@@ -398,3 +398,53 @@ safety_gate = true
             assert run_data["error"]["safety_gate"]["post_restore"]["status"] == "ok"
         finally:
             patch.stopall()
+
+
+def test_frequency_response_config_error_still_triggers_enabled_safety_gate() -> None:
+    # 扫频包装异常（cause 为 ConfigError）不得绕过已启用的安全门：
+    # source 1 / power 2 都应尝试 OFF，且失败记录保留原始 cause 与部分产物。
+    from unittest.mock import Mock
+
+    with TemporaryDirectory() as tmp:
+        plan = load_run_plan(
+            _write_plan(
+                tmp,
+                """
+[safety]
+safety_gate = true
+off_source_channels = [1]
+off_power_channels = [2]
+
+[[steps]]
+kind = 'sweep.frequency_response'
+source_channel = 1
+reference_channel = 1
+response_channel = 2
+frequencies_hz = [100, 1000]
+settle_s = 0
+""",
+            )
+        )
+        service = _service(tmp)
+        source, power, scope = Mock(), Mock(), Mock()
+        source.status.return_value = SimpleNamespace(output="ON")
+        source.set_frequency.side_effect = ConfigError("fake source rejected frequency")
+        source.set_output.return_value = power.set_output.return_value = SimpleNamespace(
+            output="OFF"
+        )
+        services = RunInstrumentServices(source=source, power=power, scope=scope)
+        with patch.object(service, "check"), patch.object(
+            service, "_run_instrument_services", return_value=nullcontext(services)
+        ):
+            result = service.run(plan)
+
+        assert source.set_frequency.call_count == 1
+        source.set_output.assert_called_once_with(channel=1, enabled=False)
+        power.set_output.assert_called_once_with(channel=2, enabled=False)
+        run_data = json.loads(result.run_json_path.read_text(encoding="utf-8"))
+        assert run_data["status"] == "failed"
+        assert run_data["error"]["code"] == "safety_gate_failed"
+        step_artifact = run_data["steps"][0]["artifact"]
+        assert step_artifact["safety_gate"]["status"] == "ok"
+        assert step_artifact["error"]["type"] == "ConfigError"
+        assert "fake source rejected frequency" in step_artifact["error"]["message"]
