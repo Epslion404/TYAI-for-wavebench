@@ -3004,6 +3004,27 @@ class RunService:
                 "attempts": attempts,
                 "consistency": consistency,
             }
+            if quality_gate:
+                # 恢复结束后仍落最终质量门结论，避免坏采集被标记 ok
+                final_warnings = list(artifact["quality"].get("warnings", []))
+                consistency_status = (
+                    consistency.get("status") if isinstance(consistency, dict) else None
+                )
+                trusted = artifact["quality"].get("trusted_by_consistency") is True
+                if trusted:
+                    artifact["quality_gate"] = {
+                        "status": "ok",
+                        "warnings": final_warnings,
+                        "trusted_by_consistency": True,
+                    }
+                elif final_warnings or consistency_status in {"diverged", "no_comparable_metrics"}:
+                    artifact["quality_gate"] = {
+                        "status": "failed",
+                        "warnings": final_warnings,
+                        "consistency_status": consistency_status,
+                    }
+                else:
+                    artifact["quality_gate"] = {"status": "ok", "warnings": []}
         elif quality_gate:
             artifact["quality_gate"] = {
                 "status": "warning" if warnings else "ok",
