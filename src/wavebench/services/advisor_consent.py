@@ -50,7 +50,8 @@ _SENSITIVE_KEY_PARTS = (
     "token",
 )
 _SENSITIVE_TEXT = re.compile(
-    r"(?i)\b(?:api[_-]?key|authorization|credential|password|secret|token)\b\s*[:=]\s*(?:bearer\s+)?\S+"
+    r"(?i)\b(?:api[_-]?key|authorization|credential|password|secret|token)\b"
+    r"[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|(?:bearer\s+)?[^\s,}]+)"
 )
 
 

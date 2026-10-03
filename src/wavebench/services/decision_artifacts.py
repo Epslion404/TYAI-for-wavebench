@@ -101,6 +101,9 @@ class DecisionArtifact:
             raise DecisionArtifactError("duration_ms must be an integer")
         if self.duration_ms < 0:
             raise DecisionArtifactError("duration_ms must be >= 0")
+        # Direct attributes also feed CLI diagnostics; sanitize before either output path.
+        for name in ("reason", "requested_model", "reported_model"):
+            object.__setattr__(self, name, redact_sensitive(getattr(self, name)))
 
     def as_dict(self) -> dict[str, Any]:
         return {

@@ -258,6 +258,9 @@ def load_advisor_entry_points() -> list[tuple[AdvisorPlugin | None, PluginLoadEr
         try:
             loaded = entry_point.load()
             plugin = _advisor_from_loaded_entry_point(entry_point, loaded)
+            errors = validate_advisor(plugin)
+            if errors:
+                raise ConfigError("; ".join(errors))
         except Exception as exc:
             results.append((None, PluginLoadError(source=_entry_point_source(entry_point), message=str(exc))))
             continue
