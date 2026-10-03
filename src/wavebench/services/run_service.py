@@ -1365,6 +1365,12 @@ class RunService:
             add_step(item)
         for channel in plan.restore.source_channels:
             add(channel)
+        if (
+            plan.restore.source_state
+            and not plan.restore.source_channels
+            and self.config.source is not None
+        ):
+            add(self.config.source.default_channel)
         if not channels and "source" in self._plan_instruments(plan) and self.config.source is not None:
             add(self.config.source.default_channel)
         return channels
