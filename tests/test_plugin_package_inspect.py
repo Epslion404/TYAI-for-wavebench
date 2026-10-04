@@ -298,6 +298,41 @@ def test_inspect_wheel_rejects_core_overrides_and_pth_files(
         inspect_plugin_wheel(path)
 
 
+@pytest.mark.parametrize("member", ["WaveBench/cli.py", "WAVEBENCH/__init__.py", "plugin-bootstrap.PTH"])
+def test_inspect_wheel_rejects_case_variant_core_and_pth_paths(tmp_path, member):
+    path = _wheel(tmp_path, extra_members={member: b"override"})
+
+    with pytest.raises(ConfigError):
+        inspect_plugin_wheel(path)
+
+
+def test_inspect_wheel_ignores_default_entry_point_values(tmp_path):
+    path = _wheel(
+        tmp_path,
+        entry_points=(
+            "[DEFAULT]\n"
+            "ghost.scope = example:descriptor\n"
+            "[wavebench.instruments]\n"
+            "example.scope = example:descriptor\n"
+        ),
+    )
+
+    assert inspect_plugin_wheel(path).driver_ids == ("example.scope",)
+
+
+def test_inspect_wheel_rejects_console_script(tmp_path):
+    path = _wheel(
+        tmp_path,
+        entry_points=(
+            "[wavebench.instruments]\nexample.scope = example:descriptor\n"
+            "[console_scripts]\nwavebench = example:main\n"
+        ),
+    )
+
+    with pytest.raises(ConfigError, match="console scripts"):
+        inspect_plugin_wheel(path)
+
+
 def test_inspect_wheel_requires_and_verifies_record(tmp_path):
     missing = _wheel(tmp_path, version="0.1.0", include_record=False)
 

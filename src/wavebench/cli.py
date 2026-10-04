@@ -2303,6 +2303,12 @@ def _main(argv: list[str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI, optionally wrapping every non-interactive result as JSON."""
 
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if "--json" not in raw_argv:
         return _main(raw_argv)

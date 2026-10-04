@@ -253,6 +253,7 @@ print(json.dumps(payload, sort_keys=True))
                 version=package.version,
             )
             if dry_run:
+                self._assert_no_pending_journal()
                 environment = self.environment()
                 ledger = self._load_ledger(environment)
                 self._assert_first_install_allowed(package, ledger)
@@ -281,6 +282,7 @@ print(json.dumps(payload, sort_keys=True))
     def remove(self, driver_id: str, *, dry_run: bool = False) -> LifecycleResult:
         environment = self.environment()
         if dry_run:
+            self._assert_no_pending_journal()
             current = self.info(driver_id)
             self._require_healthy(current)
             self._assert_distribution_file_ownership(current.distribution)
@@ -391,6 +393,7 @@ print(json.dumps(payload, sort_keys=True))
                 package.version,
             )
             if dry_run:
+                self._assert_no_pending_journal()
                 return result
             with self._locked():
                 environment = self.environment()
@@ -489,6 +492,8 @@ print(json.dumps(payload, sort_keys=True))
     ) -> None:
         try:
             self._update_journal(journal, "rollback_started")
+            if self._distribution_inventory(str(record["distribution"])):
+                self._assert_distribution_file_ownership(str(record["distribution"]))
             self._pip_uninstall(record["distribution"], allow_missing=True)
             if self._distribution_inventory(record["distribution"]):
                 raise ConfigError("rollback uninstall did not remove distribution")
@@ -511,6 +516,8 @@ print(json.dumps(payload, sort_keys=True))
     ) -> None:
         try:
             self._update_journal(journal, "rollback_started")
+            if self._distribution_inventory(str(record["distribution"])):
+                self._assert_distribution_file_ownership(str(record["distribution"]))
             self._pip_install(wheel)
             self._postflight(record)
             self._write_json(self.ledger_path, ledger)
@@ -545,8 +552,19 @@ print(json.dumps(payload, sort_keys=True))
         record = self._record(package)
         driver_id = self._record_entry_points(record)[0].driver_id
         record_key = record["normalized_distribution"]
+        self._validate_ledger_document(before, environment)
+        before_plugins = self._ledger_plugins(before)
+        before_raw = before_plugins.get(record_key)
+        if operation == "install" and before_raw is not None:
+            raise ConfigError("invalid plugin transaction journal / install journal already has the package")
+        if operation in {"remove", "upgrade", "downgrade"}:
+            if before_raw is None:
+                raise ConfigError("invalid plugin transaction journal / replacement journal lacks previous package")
+            before_record = self._record(before_raw)
+            if before_record["normalized_distribution"] != record_key:
+                raise ConfigError("invalid plugin transaction journal / package distribution is inconsistent")
         current_ledger = self._load_ledger(environment)
-        before_record_raw = self._ledger_plugins(before).get(record_key)
+        before_record_raw = before_raw
         before_record = self._record(before_record_raw) if before_record_raw is not None else None
         before_matches = (
             self._distribution_absent(record)
@@ -727,7 +745,8 @@ print(json.dumps(payload, sort_keys=True))
     ) -> str | None:
         ignored = canonicalize_name(ignored_distribution) if ignored_distribution else None
         for path in sorted(set(paths)):
-            if any(owner != ignored for owner in file_owners.get(path, ())):
+            key = str(path).replace("\\", "/").casefold()
+            if any(owner != ignored for owner in file_owners.get(key, ())):
                 return path
         return None
 
@@ -759,20 +778,26 @@ print(json.dumps(payload, sort_keys=True))
             )
 
     def _cache_wheel(self, package: PluginPackage) -> Path:
-        target_dir = self.wheel_cache / package.sha256
+        # Keep the original filename: pip validates wheel filenames.  Shorten
+        # the hash directory instead, which removes enough path depth to stay
+        # below Windows MAX_PATH without weakening the content-hash check.
+        target_dir = self.wheel_cache / package.sha256[:16]
         target = target_dir / package.wheel_path.name
         if target.is_file() and self._sha256_file(target) == package.sha256:
             return target
         target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = target_dir / f".{target.name}.tmp-{os.getpid()}"
-        with package.wheel_path.open("rb") as source, temporary.open("xb") as output:
-            shutil.copyfileobj(source, output)
-            output.flush()
-            os.fsync(output.fileno())
-        if self._sha256_file(temporary) != package.sha256:
+        descriptor, temporary_name = tempfile.mkstemp(prefix="w-", suffix=".tmp", dir=target_dir)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output, package.wheel_path.open("rb") as source:
+                shutil.copyfileobj(source, output)
+                output.flush()
+                os.fsync(output.fileno())
+            if self._sha256_file(temporary) != package.sha256:
+                raise ConfigError("cached wheel hash mismatch / 缓存 wheel 哈希不匹配")
+            os.replace(temporary, target)
+        finally:
             temporary.unlink(missing_ok=True)
-            raise ConfigError("cached wheel hash mismatch / 缓存 wheel 哈希不匹配")
-        os.replace(temporary, target)
         self._fsync_directory(target_dir)
         return target
 
@@ -1073,7 +1098,7 @@ for dist in distributions(path=paths):
         unreadable.append(normalized or "<unknown>")
         dist_files = ()
     for item in dist_files:
-        owners.setdefault(str(item), []).append(normalized)
+        owners.setdefault(str(item).replace("\\", "/").casefold(), []).append(normalized)
 print(json.dumps({
     "owners": {path: sorted(set(names)) for path, names in owners.items()},
     "unreadable": sorted(set(unreadable)),
@@ -1191,11 +1216,19 @@ print(json.dumps({
             ledger = self._migrate_ledger_v1(ledger)
         elif schema_version != LEDGER_SCHEMA_VERSION:
             raise ConfigError("unsupported plugin ledger schema / 不支持的插件账本 schema")
+        self._validate_ledger_document(ledger, environment)
+        return ledger
+
+    def _validate_ledger_document(self, ledger: dict[str, object], environment: EnvironmentInfo) -> None:
+        if ledger.get("schema_version") != LEDGER_SCHEMA_VERSION:
+            raise ConfigError("invalid plugin ledger schema / 插件账本 schema 无效")
         stored_environment = ledger.get("environment")
         if not isinstance(stored_environment, dict) or stored_environment.get("fingerprint") != environment.fingerprint:
             raise ConfigError("plugin ledger belongs to a different environment / 插件账本属于其他环境")
         self._ledger_plugins(ledger)
-        return ledger
+        generation = ledger.get("generation")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise ConfigError("invalid plugin ledger generation / 插件账本 generation 无效")
 
     @staticmethod
     def _ledger_plugins(ledger: dict[str, object]) -> dict[str, object]:

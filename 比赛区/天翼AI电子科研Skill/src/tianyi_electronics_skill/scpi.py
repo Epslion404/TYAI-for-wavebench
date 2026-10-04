@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import math
+import re
 from collections.abc import Callable
 
 MAX_TEXT_BYTES = 64 * 1024
@@ -22,7 +23,27 @@ class ScpiConfigurationError(ConfigurationError):
 
 def encode_command(command: str) -> bytes:
     """把命令编码为设备可接受的一行（统一 LF 结尾）。"""
-    return (command.rstrip() + "\n").encode("ascii", "replace")
+    if not isinstance(command, str):
+        raise ScpiConfigurationError("SCPI command must be text")
+    normalized = command.rstrip()
+    if not normalized:
+        raise ScpiConfigurationError("SCPI command must not be empty")
+    if any(character in normalized for character in ("\r", "\n", "\x00", ";")):
+        raise ScpiConfigurationError("SCPI command must be one line and must not contain command separators")
+    try:
+        return (normalized + "\n").encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ScpiConfigurationError("SCPI command must contain ASCII characters only") from exc
+
+
+_CHANNEL_RE = re.compile(r"^CHAN[1-4]$", re.IGNORECASE)
+
+
+def validate_channel(channel: str) -> str:
+    """Return a canonical oscilloscope channel name safe for command composition."""
+    if not isinstance(channel, str) or not _CHANNEL_RE.fullmatch(channel.strip()):
+        raise ScpiConfigurationError("channel must be one of CHAN1, CHAN2, CHAN3, CHAN4")
+    return channel.strip().upper()
 
 
 def classify_exception(exc: BaseException) -> str:
@@ -44,9 +65,10 @@ def parse_first_float(text: str) -> float | None:
     if not candidate:
         return None
     try:
-        return float(candidate)
-    except ValueError:
+        value = float(candidate)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return value if math.isfinite(value) else None
 
 
 def parse_block_header(header: bytes) -> tuple[int, int]:
@@ -112,7 +134,7 @@ def query_once(host: str, port: int, command: str, timeout: float = 1.5) -> str:
         sock.settimeout(timeout)
         sock.sendall(encode_command(command))
         buffer = b""
-        while b"\n" not in buffer and len(buffer) < MAX_TEXT_BYTES:
+        while not _has_line_ending(buffer) and len(buffer) < MAX_TEXT_BYTES:
             try:
                 data = sock.recv(4096)
             except TimeoutError:
@@ -189,7 +211,7 @@ class ScpiSession:
         sock = self._require()
         sock.sendall(encode_command(command))
         buffer = b""
-        while b"\n" not in buffer and len(buffer) < MAX_TEXT_BYTES:
+        while not _has_line_ending(buffer) and len(buffer) < MAX_TEXT_BYTES:
             try:
                 data = sock.recv(4096)
             except TimeoutError:
@@ -199,7 +221,7 @@ class ScpiSession:
             if not data:
                 break
             buffer += data
-        if b"\n" not in buffer and len(buffer) >= MAX_TEXT_BYTES:
+        if not _has_line_ending(buffer) and len(buffer) >= MAX_TEXT_BYTES:
             raise ValueError(f"SCPI 文本响应超过上限 {MAX_TEXT_BYTES} 字节或缺少行结束符")
         return buffer.decode("utf-8", "replace").strip()
 
@@ -211,19 +233,31 @@ class ScpiSession:
 
     def drain_errors(self, limit: int = 16) -> list[str]:
         """读空仪器的错误队列，返回非空条目（`0,"No error"` 视为干净并停止）。"""
-        found: list[str] = []
-        for _ in range(max(1, limit)):
-            text = self.query("SYST:ERR?").strip()
-            if not text or _is_no_error(text):
-                break
-            found.append(text)
-        return found
+        sock = self._require()
+        previous_timeout = sock.gettimeout()
+        # Error queues are diagnostics.  Do not turn one non-responsive queue into
+        # ``limit * session timeout`` seconds of latency for an otherwise usable run.
+        sock.settimeout(min(self.timeout, 0.25))
+        try:
+            found: list[str] = []
+            for _ in range(max(1, limit)):
+                text = self.query("SYST:ERR?").strip()
+                if not text or _is_no_error(text):
+                    break
+                found.append(text)
+            return found
+        finally:
+            sock.settimeout(previous_timeout)
+
+
+def _has_line_ending(buffer: bytes) -> bool:
+    return b"\n" in buffer or b"\r" in buffer
 
 
 def _is_no_error(text: str) -> bool:
     if "no error" in text.lower():
         return True
-    code = text.split(",", 1)[0].strip().lstrip("+")
+    code = text.split(",", 1)[0].strip().lstrip("+-")
     return code == "0"
 
 
@@ -240,4 +274,5 @@ __all__ = [
     "query_once",
     "read_definite_block",
     "recv_exact",
+    "validate_channel",
 ]

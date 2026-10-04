@@ -222,7 +222,7 @@ def read_payload(path: str | Path, max_bytes: int = MAX_PROTOCOL_PAYLOAD_BYTES) 
         raise ValueError(f"输入文件 {size} 字节超过上限 {max_bytes}")
     raw = file_path.read_bytes()
     if file_path.suffix.lower() == ".json":
-        return json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8-sig"))
     return raw
 
 

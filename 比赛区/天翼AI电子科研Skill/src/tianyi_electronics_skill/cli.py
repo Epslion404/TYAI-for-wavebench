@@ -27,7 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     discover.add_argument("--ports", default="5025,5555,4000,502")
     discover.add_argument("--timeout", type=float, default=0.35, help="单次探测超时（秒）")
     discover.add_argument("--workers", type=int, default=64)
-    discover.add_argument("--force", action="store_true", help="允许超过 4096 个主机目标")
+    discover.add_argument("--force", action="store_true", help="允许超过 max-targets 的 IPv4 扫描；IPv6 仍受上限保护")
     discover.add_argument("--probe-non-scpi", action="store_true", help="对非 SCPI 端口也发送 *IDN?")
     discover.add_argument("--mdns", action="store_true", help="额外查询 _scpi._tcp.local")
 
@@ -59,7 +59,7 @@ def _parser() -> argparse.ArgumentParser:
     fetch.add_argument("--port", type=int, default=5025)
     fetch.add_argument("--channel", default="CHAN1")
     fetch.add_argument("--timeout", type=float, default=5.0)
-    fetch.add_argument("--points", default="auto", help="采样点数，如 dmax；auto 表示不改动设备设置")
+    fetch.add_argument("--points", default="auto", help="采样点数，如 dmax；auto 不写 DATA:POINTS，但仍会设置传输格式")
     fetch.add_argument("--format", default="real", choices=("real", "ascii"))
     fetch.add_argument("--sample-rate", type=float, help="显式采样率（header 不可信时使用）")
     fetch.add_argument("--output", help="写入 *.csv 或 *.json；省略则只打印摘要")
@@ -192,9 +192,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             samples, rate = load_waveform(args.file)
             result = {"source": args.file, **analyze_samples(samples, rate if rate != 1.0 else args.sample_rate), "device_errors": []}
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
-    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+        failed_fetch = args.command == "fetch" and result.get("sample_count") == 0 and bool(result.get("errors") or result.get("failures"))
+        return 2 if result.get("ok") is False or failed_fetch else 0
+    except (OSError, RuntimeError, ValueError, TypeError, OverflowError, UnicodeError, KeyError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
 

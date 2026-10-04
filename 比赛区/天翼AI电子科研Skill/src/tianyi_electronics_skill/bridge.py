@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 HANDSHAKE_LIMIT = 512
 DEFAULT_HANDSHAKE_TIMEOUT = 30.0
@@ -176,14 +177,23 @@ class BridgeServer:
             _close(connection)
 
 
-def run_expose(server: str, token: str, local: str, *, reconnect_delay: float = 1.0) -> None:
+def run_expose(
+    server: str,
+    token: str,
+    local: str,
+    *,
+    reconnect_delay: float = 1.0,
+    stop_event: threading.Event | None = None,
+    retry_wait: Callable[[float], None] = time.sleep,
+) -> None:
     """持续注册设备；每个代理会话结束后自动重新注册。"""
     server_host, server_port = _addr(server)
     local_host, local_port = _addr(local)
     token = _validate_token(token)
     if reconnect_delay < 0:
         raise ValueError("reconnect_delay 不能为负数")
-    while True:
+    while stop_event is None or not stop_event.is_set():
+        retry_after_session = True
         try:
             with socket.create_connection((server_host, server_port), timeout=10) as upstream:
                 upstream.settimeout(DEFAULT_HANDSHAKE_TIMEOUT)
@@ -198,14 +208,19 @@ def run_expose(server: str, token: str, local: str, *, reconnect_delay: float = 
                     upstream.settimeout(None)
                     device.settimeout(None)
                     _relay(upstream, device)
+                    retry_after_session = False
                 finally:
                     _close(device)
-        except OSError:
+        except (OSError, UnicodeError, ValueError):
             pass
         finally:
             # REGISTER/READY 的握手失败同样需要退避；否则服务端拒绝时会形成重连风暴。
-            if reconnect_delay:
-                time.sleep(reconnect_delay)
+            if (
+                retry_after_session
+                and reconnect_delay
+                and (stop_event is None or not stop_event.is_set())
+            ):
+                retry_wait(reconnect_delay)
 
 
 def run_connect(server: str, token: str, listen: str) -> None:

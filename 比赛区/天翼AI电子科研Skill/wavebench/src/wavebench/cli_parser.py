@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capability_explain.add_argument(
         "--kind",
-        choices=("scope", "source", "rf_source", "power", "dmm"),
+        choices=("scope", "source", "rf_source", "power", "dmm", "sweep_analyzer"),
         default=None,
         help="Instrument kind when selecting a configured driver / 仪器类型",
     )
@@ -183,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plugin_list.add_argument(
         "--kind",
-        choices=("scope", "source", "rf_source", "power", "dmm"),
+        choices=("scope", "source", "rf_source", "power", "dmm", "sweep_analyzer"),
         default=None,
         help="Filter plugins by instrument kind / 按仪器类型过滤",
     )
