@@ -422,17 +422,41 @@ def autoscale_scope(
                     session.write(command)
                     errors = session.drain_errors()
                     result["device_errors"].extend(errors)
-                    ok = not errors
-                    result["write_results"].append({"command": command, "ok": ok, "device_errors": errors})
-                    if ok:
-                        result["commands"].append(command)
-                        query = "TIMebase:RANGe?" if command.startswith("TIMebase:RANGe") else f":{channel}:OFFS?"
-                        requested = float(command.rsplit(" ", 1)[1])
-                        readback = parse_first_float(session.query(query))
-                        result["write_results"][-1]["readback"] = readback
-                        result["write_results"][-1]["verified"] = readback is not None and math.isclose(readback, requested, rel_tol=0.02, abs_tol=1e-12)
-                    else:
+                    item = {
+                        "command": command,
+                        "write_accepted": not errors,
+                        "ok": False,
+                        "device_errors": errors,
+                    }
+                    result["write_results"].append(item)
+                    if errors:
                         result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
+                        continue
+                    # ``commands`` records what was sent.  ``ok`` and
+                    # ``applied`` are stricter: the setting must also survive
+                    # a readback verification.
+                    result["commands"].append(command)
+                    query = "TIMebase:RANGe?" if command.startswith("TIMebase:RANGe") else f":{channel}:OFFS?"
+                    requested = float(command.rsplit(" ", 1)[1])
+                    try:
+                        readback = parse_first_float(session.query(query))
+                    except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
+                        item["readback"] = None
+                        item["verified"] = False
+                        item["verification_error"] = f"{classify_exception(exc)}: {exc}"
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": classify_exception(exc),
+                            "command": query,
+                            "message": str(exc),
+                        })
+                        continue
+                    verified = readback is not None and math.isclose(readback, requested, rel_tol=0.02, abs_tol=1e-12)
+                    item["readback"] = readback
+                    item["verified"] = verified
+                    item["ok"] = verified
+                    if not verified:
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
                 successful = sum(1 for item in result["write_results"] if item["ok"])
                 result["applied"] = successful == len(writes) and bool(writes)
                 result["partially_applied"] = 0 < successful < len(writes)

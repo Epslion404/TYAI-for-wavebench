@@ -1,3 +1,4 @@
+import tianyi_electronics_skill.core as core
 from tianyi_electronics_skill.core import analyze_samples, demo_waveform, load_waveform
 
 
@@ -23,3 +24,54 @@ def test_load_json_waveform(tmp_path):
     samples, rate = load_waveform(path)
     assert samples == [0.0, 1.0, 0.0, -1.0]
     assert rate == 10
+
+
+def test_autoscale_readback_failure_is_not_reported_as_applied(monkeypatch):
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs):
+            self.writes: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def query(self, command: str) -> str:
+            if command == "*IDN?":
+                return "ACME,SCOPE,1,1"
+            if command == "TIMebase:RANGe?":
+                return "0.1"
+            raise AssertionError(f"unexpected query: {command}")
+
+        def write(self, command: str) -> None:
+            self.writes.append(command)
+
+        def drain_errors(self) -> list[str]:
+            if self.writes[-1] == "AUTOSET":
+                return ['-113,"Undefined header"']
+            return []
+
+    monkeypatch.setattr(core, "ScpiSession", FakeSession)
+    monkeypatch.setattr(core, "AUTOSCALE_CANDIDATES", ("AUTOSET",))
+    monkeypatch.setattr(
+        core,
+        "read_waveform_in_session",
+        lambda *_args, **_kwargs: {
+            "sample_count": 16,
+            "metrics": {"frequency_hz": 1000.0},
+            "warnings": [],
+            "errors": [],
+            "failures": [],
+            "device_errors": [],
+        },
+    )
+
+    result = core.autoscale_scope("example.test", apply=True)
+
+    item = result["write_results"][-1]
+    assert item["write_accepted"] is True
+    assert item["verified"] is False
+    assert item["ok"] is False
+    assert result["applied"] is False
+    assert result["partially_applied"] is False

@@ -167,6 +167,12 @@ class ScpiSession:
         self.port = port_value
         self.timeout = timeout_value
         self._socket: socket.socket | None = None
+        # Keep bytes beyond a line terminator for the next query.  TCP packet
+        # boundaries do not correspond to SCPI response boundaries.
+        self._read_buffer = bytearray()
+        # A CR may be the first half of CRLF.  If the LF arrives in the next
+        # recv, consume it before interpreting the next response.
+        self._awaiting_lf_after_cr = False
 
     def open(self) -> ScpiSession:
         if self._socket is None:
@@ -186,6 +192,8 @@ class ScpiSession:
                 self._socket.close()
             finally:
                 self._socket = None
+        self._read_buffer.clear()
+        self._awaiting_lf_after_cr = False
 
     def __enter__(self) -> ScpiSession:
         return self.open()
@@ -208,22 +216,73 @@ class ScpiSession:
         设备对该命令无响应时返回空串（真实仪器常用这种方式表示命令被拒绝）；
         响应读到一半才超时则抛错，不把不完整数据当结果。
         """
+        return self._query_line(command)
+
+    def _query_line(self, command: str, *, require_response: bool = False) -> str:
+        """Send one query and consume exactly one response line.
+
+        ``require_response`` is reserved for protocol-critical queries such as
+        ``SYST:ERR?``.  A timeout or an empty response then invalidates this
+        session, so a delayed response cannot be mistaken for the next query.
+        """
         sock = self._require()
         sock.sendall(encode_command(command))
-        buffer = b""
-        while not _has_line_ending(buffer) and len(buffer) < MAX_TEXT_BYTES:
+        while True:
+            self._discard_pending_lf()
+            line = self._take_buffered_line()
+            if line is not None:
+                text = line.decode("utf-8", "replace").strip()
+                if require_response and not text:
+                    self.close()
+                    raise TimeoutError("SCPI query returned an empty response")
+                return text
+            if len(self._read_buffer) >= MAX_TEXT_BYTES:
+                self.close()
+                raise ValueError(f"SCPI 文本响应超过上限 {MAX_TEXT_BYTES} 字节或缺少行结束符")
             try:
                 data = sock.recv(4096)
             except TimeoutError:
-                if not buffer:
+                if not self._read_buffer and not require_response:
                     return ""
+                # A partial or required response can arrive later.  Do not
+                # retain this socket for another request, or it will desync.
+                self.close()
                 raise
             if not data:
-                break
-            buffer += data
-        if not _has_line_ending(buffer) and len(buffer) >= MAX_TEXT_BYTES:
-            raise ValueError(f"SCPI 文本响应超过上限 {MAX_TEXT_BYTES} 字节或缺少行结束符")
-        return buffer.decode("utf-8", "replace").strip()
+                if self._read_buffer:
+                    text = bytes(self._read_buffer).decode("utf-8", "replace").strip()
+                    self.close()
+                    if require_response and not text:
+                        raise ConnectionError("SCPI connection closed before a response")
+                    return text
+                if require_response:
+                    self.close()
+                    raise ConnectionError("SCPI connection closed before a response")
+                return ""
+            self._read_buffer.extend(data)
+
+    def _discard_pending_lf(self) -> None:
+        if not self._awaiting_lf_after_cr or not self._read_buffer:
+            return
+        if self._read_buffer[0] == ord("\n"):
+            del self._read_buffer[0]
+        self._awaiting_lf_after_cr = False
+
+    def _take_buffered_line(self) -> bytes | None:
+        for index, byte in enumerate(self._read_buffer):
+            if byte == ord("\n"):
+                line = bytes(self._read_buffer[:index])
+                del self._read_buffer[: index + 1]
+                return line
+            if byte == ord("\r"):
+                line = bytes(self._read_buffer[:index])
+                del self._read_buffer[: index + 1]
+                if self._read_buffer[:1] == b"\n":
+                    del self._read_buffer[0]
+                else:
+                    self._awaiting_lf_after_cr = True
+                return line
+        return None
 
     def query_block(self, command: str, max_bytes: int = DEFAULT_MAX_BLOCK_BYTES) -> bytes:
         """发送命令并读取 IEEE 488.2 确定块。"""
@@ -233,21 +292,19 @@ class ScpiSession:
 
     def drain_errors(self, limit: int = 16) -> list[str]:
         """读空仪器的错误队列，返回非空条目（`0,"No error"` 视为干净并停止）。"""
-        sock = self._require()
-        previous_timeout = sock.gettimeout()
-        # Error queues are diagnostics.  Do not turn one non-responsive queue into
-        # ``limit * session timeout`` seconds of latency for an otherwise usable run.
-        sock.settimeout(min(self.timeout, 0.25))
         try:
             found: list[str] = []
             for _ in range(max(1, limit)):
-                text = self.query("SYST:ERR?").strip()
-                if not text or _is_no_error(text):
+                text = self._query_line("SYST:ERR?", require_response=True)
+                if _is_no_error(text):
                     break
                 found.append(text)
             return found
-        finally:
-            sock.settimeout(previous_timeout)
+        except (ConnectionError, TimeoutError, ValueError):
+            # A late error-queue response would otherwise be consumed by the
+            # next measurement query and corrupt the request/response order.
+            self.close()
+            raise
 
 
 def _has_line_ending(buffer: bytes) -> bool:

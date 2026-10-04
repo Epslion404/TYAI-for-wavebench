@@ -14,6 +14,39 @@ from tianyi_electronics_skill.scpi import (
 )
 
 
+class _ScriptedSocket:
+    """Minimal socket double for deterministic session-buffer tests."""
+
+    def __init__(self, responses: list[bytes | BaseException], timeout: float = 1.0) -> None:
+        self.responses = list(responses)
+        self.timeout = timeout
+        self.sent: list[bytes] = []
+        self.set_timeouts: list[float | None] = []
+        self.closed = False
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, _size: int) -> bytes:
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    def gettimeout(self) -> float:
+        return self.timeout
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeout = value  # type: ignore[assignment]
+        self.set_timeouts.append(value)
+
+    def shutdown(self, _how: int) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_parse_block_header_basic():
     assert parse_block_header(b"#15hello") == (5, 3)
     assert parse_block_header(b"#3100abc") == (100, 5)
@@ -97,3 +130,26 @@ def test_session_write_only_command_reads_nothing():
             session.write("FORM REAL")
         assert server.wait_for_commands(1)
         assert server.received == ["FORM REAL"]
+
+
+def test_session_consumes_lf_arriving_after_cr_before_next_response():
+    session = ScpiSession("example.test")
+    socket = _ScriptedSocket([b"first\r", b"\nsecond\r\n"])
+    session._socket = socket  # type: ignore[assignment]
+
+    assert session.query("FIRST?") == "first"
+    assert session.query("SECOND?") == "second"
+    assert socket.sent == [b"FIRST?\n", b"SECOND?\n"]
+
+
+def test_error_queue_timeout_is_not_treated_as_empty_and_closes_session():
+    session = ScpiSession("example.test", timeout=1.0)
+    socket = _ScriptedSocket([TimeoutError("slow error queue")])
+    session._socket = socket  # type: ignore[assignment]
+
+    with pytest.raises(TimeoutError, match="slow error queue"):
+        session.drain_errors()
+
+    assert 0.25 not in socket.set_timeouts
+    assert socket.closed is True
+    assert session._socket is None
