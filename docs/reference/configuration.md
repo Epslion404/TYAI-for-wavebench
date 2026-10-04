@@ -25,6 +25,25 @@ access = "read_only"
 
 示例中的 IP 地址是文档保留地址。真实资源、序列号、凭据和本地实验产物不得提交到公开仓库。
 
+## 串口连接
+
+`connection.backend = "serial"` 时，`[connection]` 直接持有串口参数；它们同时适用于 scope 与已配置的 source／power 驱动，每台仪器仍各用自己的 `resource`。只有选中的 descriptor 声明了 `serial` backend 时该值才可用，否则会在打开传输前被拒绝。DMM 保留独立的 `dmm.*` 串口字段（历史路径）。
+
+| 字段 | 默认值 | 约束 |
+| --- | --- | --- |
+| `resource` | 必填 | 串口设备路径，例如 `COM7`、`/dev/ttyUSB0`、`ASRL/dev/ttyUSB0::INSTR`；不接受 `TCPIP::`／`USB::`／`GPIB::` 等 LAN／USB／GPIB 形式 |
+| `baudrate` | `9600` | 必须大于 0 |
+| `bytesize` | `8` | 只能是 7 或 8 |
+| `parity` | `"N"` | `N`／`O`／`E`（也接受 `NONE`／`ODD`／`EVEN`） |
+| `stopbits` | `1` | 只能是 1、1.5 或 2 |
+| `write_termination` | `"lf"` | `lf` 或 `crlf` |
+| `read_termination` | `"lf"` | `lf` 或 `crlf` |
+| `xonxoff` | `false` | 软件流控 |
+| `rtscts` | `false` | 硬件流控 |
+| `dsrdtr` | `false` | 硬件流控 |
+
+字段、默认值与校验以 config model 为准；本表不替代 parser 的报错。
+
 ## Access policy
 
 `scope`、`source`、`rf_source`、`power` 和 `dmm` 配置可以使用以下 `access` 值：
@@ -43,7 +62,7 @@ access = "read_only"
 
 外发还需通过同意门：发送前产出完整预览（内容、字节数、sha256、逐条不可信来源），预览不联网；同意默认按次，可登记为同一 run 内有效，并绑定 endpoint 集合与允许字段集，任一变化即失效；非交互场景（run plan、CI、MCP）一律拒绝。结论写入对应 run 目录的 `decisions/`（schema `wavebench.decision.v1`），附加式，不影响 `run.json`、质量门或 `auto_recover`。
 
-实现状态与分期见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)（`Draft`）。
+开发线入口是 `python -m wavebench advisor ask --state <fixture> --config wavebench.toml [--preview | --accept-external-state]`；它只读取本表，不要求 `[connection]` 或 `[scope]`。实现状态与分期见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)（`Draft`），实现流程见[advisor 插件开发](../development/advisor-plugin-development.md)。
 
 ## 安全限制
 

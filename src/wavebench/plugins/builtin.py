@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .api import InstrumentPlugin
+from .api import AdvisorPlugin, EgressDeclaration, InstrumentPlugin
+
+RULE_ADVISOR_ID = "builtin.rule_advisor"
 
 BUILTIN_PLUGINS: tuple[InstrumentPlugin, ...] = (
     InstrumentPlugin(
@@ -123,6 +125,21 @@ BUILTIN_PLUGINS: tuple[InstrumentPlugin, ...] = (
             "dmm.xonxoff",
             "dmm.rtscts",
             "dmm.dsrdtr",
+        ),
+    ),
+)
+
+# 内置的确定性 advisor：零依赖、不联网，作为"外部 advisor 必须打败的基线"和类别内第二个实现。
+BUILTIN_ADVISORS: tuple[AdvisorPlugin, ...] = (
+    AdvisorPlugin(
+        advisor_id=RULE_ADVISOR_ID,
+        display_name="WaveBench built-in rule advisor",
+        provider="wavebench",
+        capabilities=("advisor.route",),
+        summary="Deterministic keyword-overlap baseline for closed-set routing; offline and dependency-free.",
+        egress=EgressDeclaration(
+            transmits_off_machine=False,
+            purpose="Local deterministic baseline; the state never leaves this machine.",
         ),
     ),
 )

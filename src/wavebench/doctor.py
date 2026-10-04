@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
-from .config import DmmConfig, WaveBenchConfig
+from .config import CanConnectionConfig, SerialConnectionConfig, WaveBenchConfig
 from .discovery import DEFAULT_DISCOVERY_PORTS, DiscoveryResult, discover_instruments
 from .errors import ConfigError, ResourceBusyError
 from .instruments.registry import resolve_instrument_descriptor
@@ -18,7 +18,8 @@ class DoctorTarget:
     driver: str
     resource: str | None
     expected_idn_tokens: tuple[str, ...] = ()
-    serial_config: DmmConfig | None = None
+    serial_config: SerialConnectionConfig | None = None
+    can_config: CanConnectionConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,14 @@ def doctor_records(
     discover_workers: int = 64,
     discover_max_hosts: int = 256,
     include_visa: bool = True,
+    discover_serial: bool = False,
+    discover_can: bool = False,
     discoverer: InstrumentDiscoverer | None = None,
 ) -> list[DoctorRecord]:
     timeout = timeout_ms or config.connection.timeout_ms
     targets = _doctor_targets(config)
     records = [_doctor_target(target, timeout_ms=timeout, idn_probe=idn_probe) for target in targets]
-    if discover_subnet:
+    if discover_subnet or discover_serial or discover_can:
         discovery_results = (discoverer or discover_instruments)(
             subnet=discover_subnet,
             ports=discover_ports,
@@ -62,6 +65,8 @@ def doctor_records(
             query_idn=True,
             idn_only=True,
             include_visa=include_visa,
+            include_serial=discover_serial,
+            include_can=discover_can,
         )
         records.extend(_candidate_records(targets, records, discovery_results))
     return records
@@ -141,6 +146,19 @@ def _doctor_target(
             message="resource not configured / 资源未配置",
             suggestion="set the instrument resource in wavebench.toml / 在 wavebench.toml 中配置资源",
         )
+    if target.can_config is not None:
+        return DoctorRecord(
+            severity="warning",
+            target=target.name,
+            driver=target.driver,
+            resource=resource,
+            idn=None,
+            message="CAN transport has no implicit SCPI *IDN? probe",
+            suggestion=(
+                "verify CAN interface, channel, bitrate, termination, and permissions; "
+                "use the driver-declared raw-frame protocol for an active check"
+            ),
+        )
     idn = (
         idn_probe(resource, timeout_ms)
         if idn_probe is not None
@@ -178,12 +196,16 @@ def _doctor_target(
 
 
 def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
+    serial = config.connection.backend.strip().lower() == "serial"
+    can = config.connection.backend.strip().lower() in {"can", "can-fd"}
     targets = [
         DoctorTarget(
             name="scope",
             driver=config.scope.driver,
             resource=config.connection.resource,
             expected_idn_tokens=_scope_expected_tokens(config.scope.driver, config.scope.model_hint),
+            serial_config=config.connection.serial_connection() if serial else None,
+            can_config=config.connection.can_connection() if can else None,
         )
     ]
     if config.source is not None:
@@ -193,6 +215,16 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.source.driver,
                 resource=config.source.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.source.driver),
+                serial_config=(
+                    config.connection.serial_connection(resource=config.source.resource)
+                    if serial
+                    else None
+                ),
+                can_config=(
+                    config.connection.can_connection(resource=config.source.resource)
+                    if can
+                    else None
+                ),
             )
         )
     if config.rf_source is not None:
@@ -201,7 +233,12 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 name="rf_source",
                 driver=config.rf_source.driver,
                 resource=config.rf_source.resource,
-                expected_idn_tokens=_driver_expected_tokens(config.rf_source.driver),
+            expected_idn_tokens=_driver_expected_tokens(config.rf_source.driver),
+            can_config=(
+                config.connection.can_connection(resource=config.rf_source.resource)
+                if can
+                else None
+            ),
             )
         )
     if config.power is not None:
@@ -211,6 +248,16 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.power.driver,
                 resource=config.power.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.power.driver),
+                serial_config=(
+                    config.connection.serial_connection(resource=config.power.resource)
+                    if serial
+                    else None
+                ),
+                can_config=(
+                    config.connection.can_connection(resource=config.power.resource)
+                    if can
+                    else None
+                ),
             )
         )
     if config.dmm is not None:
@@ -220,7 +267,11 @@ def _doctor_targets(config: WaveBenchConfig) -> list[DoctorTarget]:
                 driver=config.dmm.driver,
                 resource=config.dmm.resource,
                 expected_idn_tokens=_driver_expected_tokens(config.dmm.driver),
-                serial_config=config.dmm if config.dmm.backend.strip().lower() == "serial" else None,
+                serial_config=(
+                    config.dmm.serial_connection()
+                    if config.dmm.backend.strip().lower() == "serial"
+                    else None
+                ),
             )
         )
     return targets

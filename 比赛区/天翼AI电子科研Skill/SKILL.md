@@ -21,6 +21,8 @@ metadata:
 - `measure`：读取常见示波器测量值（频率、Vpp、Vmax、Vmin、Vavg、Vrms），也可以获取原始波形。
 - `fetch`：读取原始波形（二进制块或 ASCII），给出时间轴、一致性校验和离线指标，可落盘 CSV/JSON。
 - `analyze`：对 CSV/JSON 波形离线计算峰值、峰峰值、频率、RMS、占空比，硬件不可用时使用演示数据。
+- `advise`：默认使用内置离线规则基线，在固定的 `discover`、`inspect`、`analyze` 选项中推荐下一步；
+  不联网、不读设备、不生成写入类命令。
 
 所有命令的输出都包含 `device_errors`（设备错误队列），失败条目同时写进 `failures`（含 `category` 与 `message`），不把"命令被拒绝"写成"解析失败"。`category` 取值：`unsupported`（设备拒绝该命令）／`no_response`（空响应）／`parse_error`（响应无法解析）／`configuration_error`（本地参数或配置非法）／`transport_error`（网络与传输层）／`timeout`（超时）／`error_queue_unavailable`（读取错误队列本身失败）／`internal_error`（未归类的内部错误）。
 
@@ -44,6 +46,7 @@ python -m tianyi_electronics_skill inspect --address 192.168.1.20 --port 5025
 python -m tianyi_electronics_skill measure --address 192.168.1.20 --port 5025 --channel CHAN1
 python -m tianyi_electronics_skill fetch --address 192.168.1.20 --port 5025 --channel CHAN1 --output wave.csv
 python -m tianyi_electronics_skill analyze --demo
+python -m tianyi_electronics_skill advise --request "检查已有的离线波形"
 ```
 
 完整 WaveBench 源码、驱动和示例计划位于 `wavebench/`，可用于高级 run plan、报告和仪器插件。

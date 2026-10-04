@@ -18,6 +18,11 @@ from .core import (
 )
 
 
+def _local_result(*, device_errors_status: str = "not_applicable", **payload: object) -> dict[str, object]:
+    """Mark local/offline output as not having queried an instrument error queue."""
+    return {**payload, "device_errors": [], "device_errors_status": device_errors_status}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="天翼AI电子科研 TeleAgent Skill")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -53,6 +58,9 @@ def _parser() -> argparse.ArgumentParser:
     autoscale.add_argument("--channel", default="CHAN1")
     autoscale.add_argument("--timeout", type=float, default=2.0)
     autoscale.add_argument("--apply", action="store_true", help="明确授权后才写入设备设置")
+
+    advise = sub.add_parser("advise", help="离线给出下一步建议，不连接或控制设备")
+    advise.add_argument("--request", required=True, help="用户的实验或排障目标")
 
     fetch = sub.add_parser("fetch", help="读取原始波形（时间轴 + 离线指标）")
     fetch.add_argument("--address", required=True)
@@ -116,8 +124,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "discover":
             ports = tuple(int(port.strip()) for port in args.ports.split(",") if port.strip())
-            result = {"devices": discover_devices(args.subnet, ports, args.timeout, force=args.force, workers=args.workers,
-                                                    probe_non_scpi=args.probe_non_scpi), "device_errors": []}
+            result = _local_result(
+                devices=discover_devices(args.subnet, ports, args.timeout, force=args.force, workers=args.workers,
+                                         probe_non_scpi=args.probe_non_scpi),
+                device_errors_status="not_queried_during_discovery",
+            )
             if args.mdns:
                 from .core import discover_mdns
                 result["mdns"] = discover_mdns(args.timeout)
@@ -134,6 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "autoscale":
             from .core import autoscale_scope
             result = autoscale_scope(args.address, args.port, args.channel, args.timeout, apply=args.apply)
+        elif args.command == "advise":
+            from .core import advise_next_step
+            result = advise_next_step(args.request)
         elif args.command == "fetch":
             result = read_waveform(
                 args.address,
@@ -159,24 +173,33 @@ def main(argv: list[str] | None = None) -> int:
             samples, rate = load_waveform(args.file)
             rate = rate if rate != 1.0 else args.sample_rate
             metrics = analyze_samples(samples, rate)
-            result = {"source": args.file, "metrics": metrics, "device_errors": [],
-                      "output": write_waveform_svg(samples, rate, args.output, title=args.title, metrics=metrics)}
+            result = _local_result(
+                source=args.file,
+                metrics=metrics,
+                output=write_waveform_svg(samples, rate, args.output, title=args.title, metrics=metrics),
+            )
         elif args.command == "protocol":
-            from .protocols import ProtocolRegistry, capture_socketcan, read_payload
+            from .protocols import ProtocolRegistry, capture_socketcan, protocol_failure, read_payload
             if args.protocol_command == "capture-can":
-                result = {"channel": args.channel, "frames": capture_socketcan(args.channel, args.count, args.timeout), "device_errors": []}
+                result = _local_result(
+                    channel=args.channel,
+                    frames=capture_socketcan(args.channel, args.count, args.timeout),
+                    device_errors_status="not_supported_for_can_capture",
+                )
             else:
-                registry = ProtocolRegistry()
-                if getattr(args, "manifest_dir", None):
-                    registry.load_manifests(args.manifest_dir)
-                payload = read_payload(args.file)
-                if args.protocol_command == "identify":
-                    result = registry.identify(payload, {"source": args.file})
-                else:
-                    frame = registry.decode(payload, args.file)
-                    if args.sample_rate:
-                        frame.sample_rate_hz = args.sample_rate
-                    result = frame.as_dict()
+                try:
+                    registry = ProtocolRegistry()
+                    if getattr(args, "manifest_dir", None):
+                        registry.load_manifests(args.manifest_dir)
+                    payload = read_payload(args.file)
+                    if args.protocol_command == "identify":
+                        result = registry.identify(payload, {"source": args.file})
+                    else:
+                        result = registry.decode_result(payload, args.file)
+                        if result["ok"] and args.sample_rate:
+                            result["frame"]["sample_rate_hz"] = args.sample_rate
+                except (OSError, ValueError, UnicodeError, KeyError) as exc:
+                    result = protocol_failure(exc)
         elif args.command == "bridge":
             from .bridge import BridgeServer, run_connect, run_expose
             if args.bridge_command == "serve":
@@ -188,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_connect(args.server, args.token, args.listen)
             return 0
         elif args.demo or not args.file:
-            result = {**demo_waveform(args.sample_rate), "device_errors": []}
+            result = _local_result(**demo_waveform(args.sample_rate))
         else:
             samples, rate = load_waveform(args.file)
             result = {"source": args.file, **analyze_samples(samples, rate if rate != 1.0 else args.sample_rate), "device_errors": []}

@@ -60,4 +60,5 @@ API 签名、capability 映射、字段和 validator 以公共源码为准。不
 
 - [插件 Reference](../reference/plugins/index.md)
 - [管理仪器插件](../how-to/manage-plugins.md)
+- [advisor 插件开发](advisor-plugin-development.md)
 - [新增仪器驱动](instrument-drivers.md)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import re
+from collections.abc import Callable
 from dataclasses import dataclass
+import re
 from typing import Mapping, cast
 
-from wavebench.config import ConnectionConfig, DmmConfig
+from wavebench.config import CanConnectionConfig, ConnectionConfig, SerialConnectionConfig
 from wavebench.errors import ConfigError
 from wavebench.logging import CommandLogger
 from wavebench.plugins.api import PluginKind
@@ -12,6 +13,7 @@ from wavebench.services.access_policy import AccessMode, normalize_access_mode
 from wavebench.services.resource_lease import ResourceLease, resource_fingerprint
 from wavebench.transport.base import InstrumentTransport
 from wavebench.transport.binary import visa_binary_contract_supported
+from wavebench.transport.can_transport import CanTransport
 from wavebench.transport.guarded import GuardedAuditedTransport
 from wavebench.transport.pyvisa_transport import PyVisaTransport
 from wavebench.transport.rsinstrument_transport import RsInstrumentTransport
@@ -55,7 +57,8 @@ def open_instrument_driver(
     logger: CommandLogger,
     settings: Mapping[str, object] | None = None,
     options: Mapping[str, object] | None = None,
-    serial_config: DmmConfig | None = None,
+    serial_config: SerialConnectionConfig | None = None,
+    can_config: CanConnectionConfig | None = None,
     access: AccessMode = "read_write",
     lease: ResourceLease | None = None,
 ) -> OpenedInstrument:
@@ -115,6 +118,7 @@ def open_instrument_driver(
                 read_retry_delay_ms=read_retry_delay_ms,
                 logger=logger,
                 serial_config=serial_config,
+                can_config=can_config,
             )
             session_state = InstrumentSessionState()
             transport = GuardedAuditedTransport(
@@ -247,6 +251,79 @@ def _normalize_rsinstrument_socket_resource(resource: str) -> str:
     )
 
 
+@dataclass(frozen=True)
+class TransportRequest:
+    """打开一个传输所需的全部输入；后端构造器只依赖它。"""
+
+    backend: str
+    resource: str
+    connection: ConnectionConfig
+    timeout_ms: int
+    opc_timeout_ms: int
+    read_retry_attempts: int
+    read_retry_delay_ms: int
+    logger: CommandLogger
+    serial_config: SerialConnectionConfig | None = None
+    can_config: CanConnectionConfig | None = None
+
+
+TransportFactory = Callable[[TransportRequest], InstrumentTransport]
+
+
+def _open_serial(request: TransportRequest) -> InstrumentTransport:
+    if request.serial_config is None:
+        raise ConfigError("serial instrument driver requires serial configuration")
+    return SerialTransport.open(
+        request.serial_config,
+        logger=request.logger,
+        read_retry_attempts=request.read_retry_attempts,
+        read_retry_delay_ms=request.read_retry_delay_ms,
+    )
+
+
+def _open_can(request: TransportRequest) -> InstrumentTransport:
+    if request.can_config is None:
+        raise ConfigError("CAN instrument driver requires declared CAN configuration")
+    return CanTransport.open(request.can_config, logger=request.logger)
+
+
+def _open_pyvisa(request: TransportRequest) -> InstrumentTransport:
+    return PyVisaTransport.open(request.connection, logger=request.logger)
+
+
+def _open_rsinstrument(request: TransportRequest) -> InstrumentTransport:
+    """`rsinstrument` 后端保持原样：不传 `select_visa`（既有兼容路径）。"""
+    return RsInstrumentTransport.open(request.connection, logger=request.logger)
+
+
+def _open_rsinstrument_visa(request: TransportRequest) -> InstrumentTransport:
+    return RsInstrumentTransport.open(
+        request.connection,
+        logger=request.logger,
+        select_visa=_SELECT_VISA_BACKENDS.get(request.backend),
+    )
+
+
+_SELECT_VISA_BACKENDS = {
+    "rsinstrument-socket": "socketio",
+    "rsinstrument-rsvisa": "rs",
+    "rsinstrument-pyvisa-py": "pyvisa-py",
+}
+
+# 后端 -> 构造器。新增总线（例如 CAN／CAN-FD）时只需在这里注册一个构造器，
+# descriptor.backends 校验、资源 scheme 校验与「I/O 前失败」都复用现有路径。
+TRANSPORT_FACTORIES: dict[str, TransportFactory] = {
+    "serial": _open_serial,
+    "can": _open_can,
+    "can-fd": _open_can,
+    "pyvisa": _open_pyvisa,
+    "rsinstrument": _open_rsinstrument,
+    "rsinstrument-socket": _open_rsinstrument_visa,
+    "rsinstrument-rsvisa": _open_rsinstrument_visa,
+    "rsinstrument-pyvisa-py": _open_rsinstrument_visa,
+}
+
+
 def _open_transport(
     *,
     backend: str,
@@ -256,51 +333,34 @@ def _open_transport(
     read_retry_attempts: int,
     read_retry_delay_ms: int,
     logger: CommandLogger,
-    serial_config: DmmConfig | None,
+    serial_config: SerialConnectionConfig | None,
+    can_config: CanConnectionConfig | None = None,
 ) -> InstrumentTransport:
-    if backend == "serial":
-        if serial_config is None:
-            raise ConfigError("serial instrument driver requires serial configuration")
-        return SerialTransport.open(
-            serial_config,
-            logger=logger,
+    factory = TRANSPORT_FACTORIES.get(backend)
+    if factory is None:
+        raise ConfigError(f"unsupported instrument transport backend: {backend}")
+    if backend == "rsinstrument-socket":
+        resource = _normalize_rsinstrument_socket_resource(resource)
+    request = TransportRequest(
+        backend=backend,
+        resource=resource,
+        connection=ConnectionConfig(
+            backend="lan",
+            resource=resource,
+            timeout_ms=timeout_ms,
+            opc_timeout_ms=opc_timeout_ms,
             read_retry_attempts=read_retry_attempts,
             read_retry_delay_ms=read_retry_delay_ms,
-        )
-    connection = ConnectionConfig(
-        backend="lan",
-        resource=resource,
+        ),
         timeout_ms=timeout_ms,
         opc_timeout_ms=opc_timeout_ms,
         read_retry_attempts=read_retry_attempts,
         read_retry_delay_ms=read_retry_delay_ms,
+        logger=logger,
+        serial_config=serial_config,
+        can_config=can_config,
     )
-    if backend == "pyvisa":
-        return PyVisaTransport.open(connection, logger=logger)
-    if backend == "rsinstrument":
-        return RsInstrumentTransport.open(connection, logger=logger)
-    select_visa = {
-        "rsinstrument-socket": "socketio",
-        "rsinstrument-rsvisa": "rs",
-        "rsinstrument-pyvisa-py": "pyvisa-py",
-    }.get(backend)
-    if select_visa is not None:
-        if backend == "rsinstrument-socket":
-            resource = _normalize_rsinstrument_socket_resource(resource)
-            connection = ConnectionConfig(
-                backend="lan",
-                resource=resource,
-                timeout_ms=timeout_ms,
-                opc_timeout_ms=opc_timeout_ms,
-                read_retry_attempts=read_retry_attempts,
-                read_retry_delay_ms=read_retry_delay_ms,
-            )
-        return RsInstrumentTransport.open(
-            connection,
-            logger=logger,
-            select_visa=select_visa,
-        )
-    raise ConfigError(f"unsupported instrument transport backend: {backend}")
+    return factory(request)
 
 
 def _close_factory_failure(

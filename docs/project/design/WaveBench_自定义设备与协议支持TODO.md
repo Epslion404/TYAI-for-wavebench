@@ -2,6 +2,15 @@
 
 配套规范：[自定义设备与协议支持开发规范](WaveBench_自定义设备与协议支持规范.md)。状态用 `[ ]` 未开始、`[~]` 进行中、`[x]` 完成。
 
+## 平台跟踪（执行状态以 issue 为准）
+
+本页是**契约与验收清单**（稳定事实）；日常执行状态、讨论与进度看 tyai 的 issue：
+
+- 方向：[#13 [Direction] 自定义设备与协议支持](https://github.com/Epslion404/TYAI-for-wavebench/issues/13)
+- 里程碑：`M1 传输层`／`M2 协议层`／`M3 设备层`／`M4 作品包同步`／`M5 交付`
+- 过滤视图：`is:open label:track:device milestone:"M1 传输层"`（在 issue 搜索框里直接用）
+- 规则：**里程碑收尾时才回来更新勾选框**；平时不要在文件里勾进度，避免与 issue 漂移。
+
 ## 已提 issue（比赛仓库）
 
 核心侧工作统一在比赛仓库 `Epslion404/TYAI-for-wavebench` 跟踪，本页保留决策、顺序与验收记录；fork `Epslion404/wavebench` 留有同内容副本（编号相反），上游 `Scaxlibur/WaveBench` 不保留同类 issue。
@@ -17,27 +26,25 @@
 
 **范围假设（需确认）**：需求中的「窗口设备」按**串口设备**理解（与「CAN 总线设备」并列的现场总线／有线接口）。若原意是网口设备或其它含义，先修正本行再执行 M1。
 
-## M0 决策与合同冻结
+## M0 决策与合同冻结（2026-10-02 完成）
 
-- [ ] 明确第一版范围：先做**串口 + 自定义协议设备**，再做 **CAN／CAN-FD 设备**。
-  - 验收：一页结论写入本节，含不做项。
-- [ ] 写 RFC 并登记状态：通用传输后端、原始字节收发合同、是否新增设备 kind。
-  - 触点：`docs/project/rfcs/`、`docs/rfcs/index.md`。
-  - 依赖：无。这是后续所有改动的前置。
-- [ ] 裁决设备类别：新增 kind（如 `bus_device`）还是复用现有 kind + descriptor 扩展。
-  - 触点：`src/wavebench/plugins/api.py`（`VALID_PLUGIN_KINDS`、`PluginKind`）、`src/wavebench/instruments/api.py`（`InstrumentDescriptor.kind`）。
-  - 影响：新增 kind 会牵动 config 校验、CLI parser／handler、service、run plan step、artifact、报告与 capability 校验，工作量远大于「复用 kind + 新 capability」。
-- [ ] 裁决串口参数归属：`ConnectionConfig` 增加串口字段，还是新建 `SerialConnectionConfig` 并让 `DmmConfig` 复用它。
-  - 触点：`src/wavebench/config.py`（`ConnectionConfig`、`DmmConfig`、`SCOPE_CONNECTION_BACKENDS` 校验）、`wavebench.example.toml`。
-- [ ] 明确非 SCPI 设备的证据与恢复等价物：用什么读回证明状态、哪些字段声明为未覆盖。
-  - 参考：`src/wavebench/instruments/source_restore.py` 的声明式思路（`supported`／`operations`／`fields`／`excluded_fields`）。
+- [x] 明确第一版范围：先做**串口 + 自定义协议设备**，再做 **CAN／CAN-FD 设备**；不做项见 RFC §6（不新增 kind、不引入默认安装依赖、无回读能力不开写）。
+- [x] 写 RFC 并登记状态：[自定义设备与协议支持 RFC](../rfcs/WaveBench_自定义设备与协议支持RFC.md) 已提交，并在 [RFC 索引](../../rfcs/index.md) 的 `Draft` 段登记。
+- [x] 裁决设备类别：**首版不新增 kind**，复用现有 kind + descriptor 扩展 + 新 capability；不属于任何既有类别的设备首版只走只读探测与原始帧读取（不进 run plan）。依据见 RFC §2.2。
+- [x] 裁决串口参数归属：**新增 `SerialConnectionConfig`**，`_open_transport` 只认它，`DmmConfig` 负责构造它（DMM 行为零变化、回归锁定）。依据见 RFC §2.3。
+- [x] 明确非 SCPI 设备的证据与恢复等价物：必须显式声明可读回字段与未覆盖项；没有回读能力的设备默认只读。依据见 RFC §2.4。
+- 附加冻结：重放／重试分类（RFC §2.5）、依赖策略（RFC §2.6）。
+- 实现按 RFC §4 分期；阶段 1（`SerialConnectionConfig` + 后端查表分派）可开工。
 
 ## M1 传输层
 
-- [ ] `_open_transport` 支持新后端与分派：`can`，串口通用化；如 RFC 通过再加 `udp`／裸 `socket`。
+- [~] `_open_transport` 支持新后端与分派：`can`，串口通用化；如 RFC 通过再加 `udp`／裸 `socket`。
+  - 进展（2026-10-02）：**查表分派已落地**（`TRANSPORT_FACTORIES` + `TransportRequest`，RFC 阶段 1）；未声明的后端仍在 I/O 前抛 `ConfigError`（有测试锁定）。`can` 后端待阶段 4。
   - 触点：`src/wavebench/instruments/factory.py::_open_transport`、`_select_backend`、`descriptor.backends`。
   - 验收：未声明的后端仍必须在真实 I/O 前抛 `ConfigError`；既有后端行为零变化。
-- [ ] 串口配置去 DMM 专用化：`serial_config: DmmConfig` 改为通用串口配置。
+- [x] 串口配置去 DMM 专用化：`serial_config: DmmConfig` 改为通用串口配置。
+  - 进展（2026-10-02）：**类型已通用化**——新增 `SerialConnectionConfig`，`_open_transport`／`SerialTransport.open` 只认它，`DmmConfig.serial_connection()` 负责转换，DMM 路径行为不变（回归测试锁定）。
+  - 已决（2026-10-02，追认实现）：scope／source／power 通过 `[connection]` 声明串口；`connection.backend = "serial"` 时由 Core 工厂把 `ConnectionConfig.serial_connection(resource=...)` 交给描述符声明的 driver（RFC §7 第 2 项，实现见 [#4](https://github.com/Epslion404/TYAI-for-wavebench/issues/4) 对应的合并 `a0a2b28`）。
   - 触点：`src/wavebench/instruments/factory.py`、`src/wavebench/transport/serial_transport.py`、`src/wavebench/config.py`。
   - 验收：DMM 串口路径回归通过；scope／source／power 在 descriptor 声明 `serial` 后可打开串口。
 - [ ] CAN／CAN-FD 传输实现，依赖进可选 extra（默认安装不引入）。
@@ -50,13 +57,15 @@
 
 ## M2 协议层
 
-- [ ] 原始字节收发合同：在不破坏现有 `InstrumentTransport` 的前提下增加按帧读写（如 `send_frame`／`read_exact`／`read_until`），并复用 `ReplayPolicy`、session 健康与租约。
+- [x] 原始字节收发合同：`InstrumentTransport` 增 `send_frame`／`read_exact`／`read_until`（#5，master `f7ce0a6`），复用 `ReplayPolicy`、session 健康与租约。
+  - 串口实现离线覆盖拆包、定界符、超限、部分超时与重放分类；只读模式下由 guarded 层在后端 I/O 前拦下；其它后端调用时报 `raw_frame_unsupported`。
+  - 合并后待补的文档与校验见 [#28](https://github.com/Epslion404/TYAI-for-wavebench/issues/28)。
   - 触点：`src/wavebench/transport/base.py`、`transport/contracts.py`、`transport/guarded.py`、`transport/session.py`。
 - [ ] 自定义帧定义：定长、长度字段、分隔符、转义、校验和（CRC16 等）、最大帧长、帧间隔与响应超时。
   - 验收：帧格式非法／超长／校验失败必须结构化失败，不得当作有效响应。
 - [ ] 声明式协议描述（TOML），形状参考现有声明式 SCPI 插件。
   - 触点：`src/wavebench/plugins/scpi.py`、`docs/project/reference/plugins/scpi-plugin.example.toml`。
-- [ ] 重试与重放策略分类：明确哪些帧 `SAFE_TO_REPLAY`、哪些 `NO_REPLAY`；二进制采集不得用普通读取重试。
+- [x] 重试与重放策略分类：合同已在 RFC §2.5 冻结（幂等只读 `SAFE_TO_REPLAY`、写／触发 `NO_REPLAY`、二进制采集 `READ_CONTINUATION_ONLY`）；代码落地随阶段 2。
   - 触点：`src/wavebench/transport/contracts.py`、`docs/project/rfcs/WaveBench_transport重放与session健康RFC.md`。
 
 ## M3 设备层接入
@@ -72,13 +81,14 @@
 
 - [ ] `比赛区/天翼AI电子科研Skill/src/tianyi_electronics_skill/` 扩展 `discover`／`inspect`／`measure`／`analyze` 支持新设备类别。
 - [ ] 更新 `SKILL.md`、`README.md`、`agents/openai.yaml`，并补 `examples/` 离线示例（无硬件可跑）。
-- [ ] 同步内嵌快照 `比赛区/天翼AI电子科研Skill/wavebench/`（整目录覆盖，勿手改单文件）并重新打包 `比赛区/天翼AI电子科研Skill.zip`。
-  - 验收：快照与根目录同名文件逐字节一致（`tool-of-rei/`、`skills/` 差异除外）；zip 解包内容与目录一致。
+- [ ] 同步内嵌快照 `比赛区/天翼AI电子科研Skill/wavebench/`（整目录覆盖，勿手改单文件）。
+  - 验收：快照与根目录同名文件逐字节一致。
+  - ~~重新打包 zip~~ 已作废：按[仓库协作与分支约定](仓库协作与分支约定.md)，zip 不再入库，打包产物改走 GitHub Release。
 
 ## M5 验证与交付
 
 - [ ] 离线三件套：`python -m pytest -q`、`python -m ruff check .`、`python scripts/generate_docs.py --check`，外加 `audit_docs.py --quiet-warnings`。
-- [ ] 实机验收清单（单独授权后执行）：IDN、接线、初态、写前快照、回读、未恢复项、产物目录。
+- [ ] 实机验收清单（单独授权后执行）：见 [M5 实机验收清单](WaveBench_M5实机验收清单.md)（设备线与 Jev 线共用，默认不动硬件）。
 - [ ] 文档同步：canonical Reference（配置／CLI／run schema／artifact／插件）+ `CHANGELOG.md`。
 - [ ] 提交推送（GitHub 操作手动带 `http.proxy=http://127.0.0.1:7897`）。
 

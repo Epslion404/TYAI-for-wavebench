@@ -59,7 +59,7 @@ def parse_discovery_ports(text: str | Sequence[int]) -> tuple[int, ...]:
 
 def discover_instruments(
     *,
-    subnet: str,
+    subnet: str | None = None,
     ports: str | Sequence[int] = DEFAULT_DISCOVERY_PORTS,
     timeout_ms: int = 300,
     workers: int = 64,
@@ -67,23 +67,149 @@ def discover_instruments(
     query_idn: bool = True,
     idn_only: bool = False,
     include_visa: bool = True,
+    include_serial: bool = False,
+    include_can: bool = False,
+    include_mdns: bool = False,
 ) -> list[DiscoveryResult]:
-    parsed_ports = parse_discovery_ports(ports)
+    if subnet is None and not (include_visa or include_serial or include_can or include_mdns):
+        raise ConfigError("select a TCP subnet, VISA, serial, CAN, or mDNS discovery source")
     results: list[DiscoveryResult] = []
     if include_visa:
         results.extend(discover_visa_resources(query_idn=query_idn, timeout_ms=timeout_ms))
-    results.extend(
-        discover_network(
-            subnet,
-            ports=parsed_ports,
-            timeout_ms=timeout_ms,
-            workers=workers,
-            max_hosts=max_hosts,
-            query_idn=query_idn,
-            include_open=not idn_only,
+    if include_serial:
+        results.extend(discover_serial_ports())
+    if include_can:
+        results.extend(discover_can_adapters())
+    if include_mdns:
+        results.extend(discover_mdns_scpi(timeout_ms=timeout_ms))
+    if subnet:
+        results.extend(
+            discover_network(
+                subnet,
+                ports=ports,
+                timeout_ms=timeout_ms,
+                workers=workers,
+                max_hosts=max_hosts,
+                query_idn=query_idn,
+                include_open=not idn_only,
+            )
         )
-    )
     return _dedupe_results(results)
+
+
+def discover_serial_ports(
+    *,
+    port_lister: Callable[[], Iterable[object]] | None = None,
+) -> list[DiscoveryResult]:
+    """List local serial adapters without opening a port or writing probe bytes."""
+    if port_lister is None:
+        try:
+            from serial.tools import list_ports  # type: ignore[import-not-found]
+        except Exception:
+            return []
+        port_lister = list_ports.comports
+    results: list[DiscoveryResult] = []
+    try:
+        ports = port_lister()
+    except Exception:
+        return []
+    for port in ports:
+        resource = str(getattr(port, "device", "")).strip()
+        if not resource:
+            continue
+        description = str(getattr(port, "description", "")).strip()
+        hwid = str(getattr(port, "hwid", "")).strip()
+        details = "; ".join(item for item in (description, hwid) if item)
+        results.append(
+            DiscoveryResult(
+                address="",
+                port=None,
+                protocol="serial",
+                resource=resource,
+                source="serial",
+                status="listed",
+                note=(details + "; " if details else "") + "enumerated only; no probe bytes sent",
+            )
+        )
+    return sorted(results, key=_result_sort_key)
+
+
+def discover_can_adapters(
+    *,
+    config_lister: Callable[[], Iterable[object]] | None = None,
+) -> list[DiscoveryResult]:
+    """List local python-can adapter configurations without opening a bus or sending frames."""
+    if config_lister is None:
+        try:
+            import can  # type: ignore[import-not-found]
+        except Exception:
+            return []
+        config_lister = can.detect_available_configs
+    try:
+        configurations = config_lister()
+    except Exception:
+        return []
+    results: list[DiscoveryResult] = []
+    for configuration in configurations:
+        if not isinstance(configuration, dict):
+            continue
+        channel = str(configuration.get("channel", "")).strip()
+        if not channel:
+            continue
+        interface = str(configuration.get("interface", "")).strip()
+        fd = bool(configuration.get("fd", False))
+        note_parts = [part for part in (interface, "enumerated only; no CAN frames sent") if part]
+        results.append(
+            DiscoveryResult(
+                address="",
+                port=None,
+                protocol="can-fd" if fd else "can",
+                resource=channel,
+                source="can",
+                status="listed",
+                note="; ".join(note_parts),
+            )
+        )
+    return sorted(results, key=_result_sort_key)
+
+
+def discover_mdns_scpi(
+    *,
+    timeout_ms: int = 1000,
+    socket_factory: Callable[..., socket.socket] | None = None,
+) -> list[DiscoveryResult]:
+    """Query `_scpi._tcp.local` via mDNS without opening TCP or sending SCPI."""
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 1:
+        raise ConfigError("mDNS timeout_ms must be >= 1")
+    factory = socket_factory or socket.socket
+    name = b"\x05_scpi\x04_tcp\x05local\x00"
+    query = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x0c\x00\x01"
+    addresses: set[str] = set()
+    try:
+        with factory(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+            sock.settimeout(timeout_ms / 1000.0)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            sock.sendto(query, ("224.0.0.251", 5353))
+            while True:
+                try:
+                    _, sender = sock.recvfrom(9000)
+                except TimeoutError:
+                    break
+                addresses.add(str(sender[0]))
+    except OSError:
+        return []
+    return [
+        DiscoveryResult(
+            address=address,
+            port=None,
+            protocol="mdns-scpi",
+            resource=f"mdns://{address}/_scpi._tcp.local",
+            source="mdns",
+            status="listed",
+            note="DNS-SD advertisement only; no TCP connection or SCPI query sent",
+        )
+        for address in sorted(addresses, key=lambda value: int(ipaddress.ip_address(value)))
+    ]
 
 
 def discover_network(

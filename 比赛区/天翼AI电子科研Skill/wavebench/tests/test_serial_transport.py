@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from wavebench.config import DmmConfig
+from wavebench.config import SerialConnectionConfig
 from wavebench.errors import SessionCloseError, TransportIOError
 from wavebench.logging import CommandLogger
 from wavebench.transport.contracts import ReplayPolicy
@@ -51,10 +51,8 @@ class SerialTransportTests(unittest.TestCase):
 
     def test_open_applies_configured_framing_and_disables_flow_control(self):
         session = FakeSerialSession()
-        config = DmmConfig(
-            driver="dm3058",
+        config = SerialConnectionConfig(
             resource="/dev/serial/by-id/usb-test",
-            backend="serial",
             baudrate=9600,
             bytesize=8,
             parity="N",
@@ -86,15 +84,13 @@ class SerialTransportTests(unittest.TestCase):
         self.assertEqual(transport.read_termination, b"\n")
 
     def test_open_rejects_invalid_termination_before_opening_session(self):
-        config = DmmConfig(
-            "dm3058",
-            "/dev/serial/by-id/usb-test",
-            "serial",
-            9600,
-            8,
-            "N",
-            1,
-            3000,
+        config = SerialConnectionConfig(
+            resource="/dev/serial/by-id/usb-test",
+            baudrate=9600,
+            bytesize=8,
+            parity="N",
+            stopbits=1,
+            timeout_ms=3000,
             write_termination="invalid",
         )
 

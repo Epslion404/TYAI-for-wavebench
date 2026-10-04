@@ -1,0 +1,59 @@
+name: 合同与裁决（RFC）
+description: 先冻结合同再动代码：写清要冻结合同、不做项与验收门
+title: "[RFC] "
+labels: ["kind:rfc"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        需要冻结公共合同／做取舍裁决时用本模板。裁决结论要回写仓库内的 RFC 页面与索引状态（`Draft` → `Accepted` → 实现）。
+  - type: dropdown
+    id: track
+    attributes:
+      label: 支线
+      options:
+        - 自定义设备与协议支持（track:device）
+        - Jev 轻量化自动决策（track:advisor）
+        - 其余 Core 能力
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: 要冻结的合同
+      description: 接口、字段、语义、生命周期；append-only 还是破坏性变更
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: 需要裁决的取舍
+      description: 每个决策点给出候选与推荐，附理由与影响面
+      placeholder: |
+        1. 是否新增设备 kind？
+           - A 新增：牵动 config／CLI／run plan／报告
+           - B 复用 + capability（推荐）：改动局部
+    validations:
+      required: true
+  - type: textarea
+    id: not_doing
+    attributes:
+      label: 明确不做的事
+      description: 边界之外的东西也要写清，避免后续反复
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收门
+      description: 合同落地后可机械检查的判据（命令／测试／行为）
+    validations:
+      required: true
+  - type: input
+    id: rfc_path
+    attributes:
+      label: RFC 页面路径
+      description: 冻结后该合同所在的仓库页面
+      placeholder: docs/project/rfcs/WaveBench_xxxRFC.md
+    validations:
+      required: false

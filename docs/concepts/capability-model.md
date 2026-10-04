@@ -14,6 +14,10 @@ descriptor 由 registry 解析并校验，声明仪器 kind、driver 标识和�
 
 同一个 capability 在不同型号、固件或接线下可以有不同 profile、限制和证据状态。这些事实属于仪器插件仓库。Core 文档只说明 capability 的通用含义和检查方式；查找某型号是否支持某项操作时，应以安装插件的 descriptor 和插件仓库为准。
 
+## advisor 类别不在本模型内
+
+`advisor` 插件的能力名（`advisor.*`）不属于 instrument capability 模型，也不参与 access policy、安全门或运行质量判定。它们只描述 advisor 能回答哪类问题，外发边界由 `[advisor]` 配置与同意门约束；详见[插件模型](plugin-model.md)与[advisor 插件开发](../development/advisor-plugin-development.md)。
+
 ## 相关页面
 
 - [架构与职责](architecture.md)

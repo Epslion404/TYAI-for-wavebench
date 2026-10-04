@@ -1,24 +1,22 @@
 # AGENTS.md
 
-WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan、报告、TUI、插件 API）。本仓库是它的比赛提交分支。
+WaveBench 是 MIT 许可的 Python 3.11+ 仪器测量台（VISA/SCPI、run plan、报告、TUI、插件 API）。本仓库的 `master` 是 **Core 主线**：上游基座 + advisor 实施；**比赛作品包只在 `competition` 线**（master 上已移除，见「已知不一致」）。
 
 ## 分支定位
 
-- `competition`（当前分支）是「天翼AI杯」作品提交分支：只有一条根提交，文件树基于上游 `44506c4`，再加 `比赛区/` 与后续 docs／advisor 改动。不要把上游历史 merge/rebase 进来，也不要从这个分支向母仓库 Scaxlibur/WaveBench 开 PR。
-- 远端：`origin` = `Epslion404/wavebench`（公开 fork；`master` 已强推回上游状态 `44506c4`，等于上游镜像，已不含比赛包）；`tyai` = `Epslion404/TYAI-for-wavebench`（**private 比赛仓库**，默认分支 `master`，issue 与 PR 都在那里跟踪）；`upstream` = `Scaxlibur/WaveBench`（只读，push URL 为 `no_push`）。
-- `master`（本地与 `tyai`）是比赛主线：「上游基座 + 比赛内容 + advisor 实施」（`68148a0` 天翼Start_1.0、`a9e49e3` add range of finding、`6dc5263` RFC、`51d6136` 草案入仓、`514b76f` 同意门 + decision artifact）。公开 fork 已清空这条路：**比赛内容只存在于本地与 `tyai`**；面向上游的改动从 `upstream/master` 拉聚焦分支，**不要把 `master` 推到 `origin`**（会把比赛内容重新推回公开 fork）。
-- advisor 线不再单独开先遣分支：实现已直接合并进 `master`（tyai PR #9 已 merged，`feat/advisor-plugin-category` 已删除）。后续 Phase 4（插件类别抽象 + lifecycle + CLI）按需要新开分支或直接提交 `master`。
-- 上游 PR 分支：`docs/advisor-plugin-rfc`（#20）、`split/agent-scope-observe-advise`（#4）。
-- CI 只在 push 到 `master`/`main` 或 PR 时触发，推 `competition` 不会跑，本地检查要自己执行。
+- **服务范围（2026-10-02 起）**：本会话与这两条分支只服务 `Epslion404/TYAI-for-wavebench`（`tyai`）——issue、PR、Release、打包与评审都在那里。`origin`（公开 fork）与 `upstream`（`Scaxlibur/WaveBench`）只作历史镜像与只读参考，**不再作为工作目标**：不为它们准备分支、不向上游提 PR。
+- `master`（当前分支）是 Core 主线：`44506c4`（上游）→ 比赛作品包（`68148a0`／`a9e49e3`，**已在本分支移除**）→ advisor 实施（`6dc5263`／`51d6136`／`514b76f` 及后续修复）。它只存在于本地与 `tyai`；**不要把 `master` 推到 `origin`**。
+- 远端：`origin` = `Epslion404/wavebench`（历史镜像；`master` 已是上游状态 `44506c4`）；`tyai` = `Epslion404/TYAI-for-wavebench`（**唯一服务对象**：private 比赛仓库，默认分支 `master`，issue／PR／Release 都在那里）；`upstream` = `Scaxlibur/WaveBench`（历史镜像，只读，push URL 为 `no_push`）。
+- `competition` 是**比赛提交线**（孤儿根提交）：`比赛区/`（作品包）唯一事实源在这里，提交／打包／Release 都从它出。
+- 历史：上游 `#20`（advisor RFC）与 `#4`（agent scope）保持现状，不由本会话跟进；`docs/advisor-plugin-rfc`、`split/agent-scope-observe-advise` 两个分支只作记录保留。
+- CI 只在 push 到 `master`/`main` 或 PR 时触发；`competition` 不跑，本地检查要自己执行（`tyai` 的 Actions 已关闭，避免空转失败）。
 
 ## 目录职责
 
 - `src/wavebench/`：核心实现（cli、services、drivers、transport、plugins、tui）。行为事实源依次为实现、`--help`、`run schema`、`run template --list`、`wavebench.example.toml`；文档和技能正文不能覆盖它们。
-- `比赛区/天翼AI电子科研Skill/`：比赛作品包（TeleAgent Skill）。`src/tianyi_electronics_skill/` 只用标准库（socket SCPI + 信号分析），`numpy`/`pyvisa` 是可选 extras。
-- `比赛区/天翼AI电子科研Skill/wavebench/`：根项目的**独立快照**。与根目录同名的 467 个文件内容逐字节相同，另有 `skills/` 与根 `.agents/skills/` 重复；根目录缺少 `tool-of-rei/release-notes/`。改根目录不会影响它，反之亦然，要同步就整目录覆盖。
-- `比赛区/天翼AI电子科研Skill.zip`（8.66 MB）：作品包的打包副本。改目录后必须重新打包，否则内容漂移。
-- `测试区/.temp/full_discover.py`：临时脚本（pyvisa 枚举 + 硬编码网段 `10.17.216.0/24` 的 SCPI 端口扫描），不是测试套件。
-- `docs/project/`：项目带文档（不进入文档站）。当前两条线的记录：自定义设备与协议支持见 `docs/project/design/WaveBench_自定义设备与协议支持规范.md` 与同名 TODO；advisor 线见 `docs/project/rfcs/WaveBench_advisor插件RFC.md` 与 `docs/project/design/advisor-draft/`（seam 草案、阶段 1 骨架、规划文件）。
+- `比赛区/`：**不在 master 上**。比赛作品包（TeleAgent Skill，含 `tianyi_electronics_skill` 与内嵌 wavebench 快照）只存在于 `competition` 分支与 Release 产物；要改包先 `git checkout competition`。
+- `测试区/`：上游内容（`git rm` 掉的那个临时发现脚本已移出仓库，备份在仓库外 `D:\Documents\Code\TY_AI\tools\scratch\full_discover.py`）。
+- `docs/project/`：项目带文档（不进入文档站）。**两条扩展支线的执行清单**：`docs/project/design/WaveBench_自定义设备与协议支持TODO.md`（配套 `docs/project/rfcs/WaveBench_自定义设备与协议支持RFC.md` 与同名规范）、`docs/project/design/WaveBench_Jev轻量化自动决策TODO.md`（配套 `docs/project/rfcs/WaveBench_advisor插件RFC.md` 与 `docs/project/design/advisor-draft/`）。**协作与分支规则先读 `docs/project/design/仓库协作与分支约定.md`**。
 - `.agents/skills/`：两个 Agent Skill 入口 —— `wavebench/SKILL.md`（真机操作、安全门、开发验证）和 `wavebench-docs/SKILL.md`（文档治理）。根 `SKILL.md` 只是指向前者的指针；排查真机行为时按需读 `wavebench/references/`，不要凭记忆推断。
 
 ## 命令（仓库根）
@@ -38,7 +36,7 @@ mkdocs build --strict                        # 文档站，需 pip install -e ".
 
 - `pdf` extra（weasyprint）只在 Linux CI 安装，Windows 用 `dev,analysis,tui` 即可。
 - 不连接仪器的命令：`run schema`、`run template --list`、`run check --plan <plan>`、`run report`。
-- 作品包在其自身目录内独立验证：`python -m pytest -q`；离线演示 `python -m tianyi_electronics_skill analyze --demo`。
+- 作品包在 `competition` 分支上、于其自身目录内独立验证：`git checkout competition` → `cd 比赛区/天翼AI电子科研Skill` → `python -m pytest -q`；离线演示 `python -m tianyi_electronics_skill analyze --demo`。
 - GitHub 操作手动带代理：`git -c http.proxy=http://127.0.0.1:7897 <fetch|push|ls-remote>`；`gh` 需要 `$env:HTTPS_PROXY`（本机直连会超时）。
 - 仓库外的本地助手（取 PR／commit、merge、cherry-pick，自动带代理并拦「孤儿历史 merge」）：`D:\Documents\Code\TY_AI\tools\wbflow.ps1`，例如 `powershell -NoProfile -File <path> pr-cherry 20 -Repo <repo>`。
 
@@ -51,8 +49,7 @@ mkdocs build --strict                        # 文档站，需 pip install -e ".
 
 ## 已知不一致
 
-- `docs/development/documentation.md` 要求给文档审计器传 `--term-allowlist`，但 `audit_docs.py` 已无该参数，照抄会报未知参数。
-- `比赛区/天翼AI电子科研Skill/README.md` 的安装示例用的是作者本机绝对路径，按当前目录替换。
+- 文档审计器（`audit_docs.py`）只做确定性检查，不接受 `--term-allowlist`；`docs/tech-doc-term-allowlist.json` 是 `tech-doc-style-chinese` 中文文案检查器（`lint_copy_rules.py`）的输入，别把该参数传给审计器。
+- `master` 不含 `比赛区/`：包内容只保留在 `competition` 分支与 Release 产物中；历史提交（`68148a0`／`a9e49e3` 等）里仍可按 SHA 取到。
+- 比赛作品包不再把 zip 归档提交进仓库：以后的打包走 GitHub Release（Release 挂在 `tyai`）。
 - 提交信息沿用上游约定：`feat|fix|docs|test|chore|refactor|perf(scope): 说明`，正文以英文为主。
-- `master` 已带比赛内容（与旧约定「master = 干净上游镜像」不同），上游 PR #27 由它提出且 diff 超过 300 个文件。
-- `competition` 里的 `比赛区/` 落后于 `master` 的版本：`a9e49e3` 增加了 CAN／协议示例（`examples/protocols/`）、采集产物、更新了 README／SKILL.md 与 zip，尚未同步过来。

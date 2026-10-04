@@ -1,0 +1,22 @@
+# 按支线与类型给发布说明分组（配合 tag vX.Y.Z 与 gh release create --generate-notes）
+changelog:
+  categories:
+    - title: 比赛作品包
+      labels:
+        - track:package
+    - title: 自定义设备与协议支持
+      labels:
+        - track:device
+    - title: Jev 轻量化自动决策
+      labels:
+        - track:advisor
+    - title: 文档
+      labels:
+        - kind:docs
+        - documentation
+    - title: 缺陷修复
+      labels:
+        - bug
+    - title: 其他变更
+      labels:
+        - "*"

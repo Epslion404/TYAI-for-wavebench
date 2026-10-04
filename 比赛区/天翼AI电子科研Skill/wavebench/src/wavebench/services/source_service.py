@@ -606,6 +606,16 @@ class SourceService(SessionStateAliasMixin):
             logger=self.logger,
             settings={"check_errors": source.check_errors},
             options=getattr(source, "options", {}),
+            serial_config=(
+                self.config.connection.serial_connection(resource=source.resource)
+                if self.config.connection.backend.strip().lower() == "serial"
+                else None
+            ),
+            can_config=(
+                self.config.connection.can_connection(resource=source.resource)
+                if self.config.connection.backend.strip().lower() in {"can", "can-fd"}
+                else None
+            ),
             access=getattr(source, "access", "read_write"),
             lease=self.lease,
         )

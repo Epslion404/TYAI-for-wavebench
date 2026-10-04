@@ -40,10 +40,13 @@ _AUTHORIZED_IO = frozenset(
         "query_opc",
         "write",
         "write_bytes",
+        "send_frame",
+        "read_exact",
+        "read_until",
     }
 )
 _VERIFICATION_IO = frozenset(
-    {"query", "query_float_list", "query_bin_block", "query_opc"}
+    {"query", "query_float_list", "query_bin_block", "query_opc", "read_exact", "read_until"}
 )
 _SAFE_REASON = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 
