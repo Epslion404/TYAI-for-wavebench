@@ -54,6 +54,7 @@ from .cli_output import (
     _print_scpi_doctor,
     _print_scpi_probe_result,
     _print_scpi_plugin_info,
+    _print_protocol_plugin_info,
     _print_power_protection_status,
     _print_power_status,
     _print_run_plan_summary,
@@ -121,6 +122,7 @@ from .plugins.registry import (
     plugin_doctor_records,
 )
 from .plugins.scpi import has_scpi_doctor_errors, load_scpi_plugin, probe_scpi_plugin, scpi_plugin_doctor_records
+from .plugins.protocol import has_protocol_doctor_errors, load_protocol_plugin, protocol_plugin_doctor_records
 from .services.scope_service import ScopeService
 from .services.source_service import SourceService
 from .services.rf_source_service import RfSourceService
@@ -1095,6 +1097,14 @@ def _main(argv: list[str] | None = None) -> int:
                     )
                     _print_scpi_probe_result(result)
                     return 0 if result.matched else 2
+            if args.command == "protocol":
+                if args.protocol_command == "check":
+                    records = protocol_plugin_doctor_records(args.path)
+                    _print_scpi_doctor(records)
+                    return 2 if has_protocol_doctor_errors(records) else 0
+                if args.protocol_command == "info":
+                    _print_protocol_plugin_info(load_protocol_plugin(args.path))
+                    return 0
         if args.domain == "net":
             if args.command == "discover":
                 results = discover_instruments(

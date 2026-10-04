@@ -50,8 +50,23 @@ class CanTransport:
             raise CanDependencyError(
                 "CAN support requires the optional wavebench[can] dependency"
             ) from exc
+        bus_options = {
+            "interface": config.interface,
+            "channel": config.channel,
+            "fd": config.fd,
+            **{
+                key: value
+                for key, value in {
+                    "bitrate": config.bitrate,
+                    "data_bitrate": config.data_bitrate,
+                    "sample_point": config.sample_point,
+                    "data_sample_point": config.data_sample_point,
+                }.items()
+                if value is not None
+            },
+        }
         try:
-            bus = can.Bus(interface=config.interface, channel=config.channel, fd=config.fd)
+            bus = can.Bus(**bus_options)
         except Exception as exc:
             raise CanAdapterUnavailableError("configured CAN adapter is unavailable") from exc
         return cls(config.channel or "", bus, logger or CommandLogger(), config)
@@ -245,6 +260,20 @@ def _validate_config(config: CanConnectionConfig) -> None:
         raise ConfigError("CAN arbitration ID is not configured or out of range")
     if config.timeout_ms <= 0:
         raise ConfigError("CAN timeout_ms must be > 0")
+    if not isinstance(config.fd, bool):
+        raise ConfigError("CAN fd must be a boolean")
+    for setting_name, value in (("bitrate", config.bitrate), ("data_bitrate", config.data_bitrate)):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+            raise ConfigError(f"CAN {setting_name} must be a positive integer when set")
+    if config.data_bitrate is not None and not config.fd:
+        raise ConfigError("CAN data_bitrate requires fd=True")
+    for setting_name, value in (("sample_point", config.sample_point), ("data_sample_point", config.data_sample_point)):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 1
+        ):
+            raise ConfigError(f"CAN {setting_name} must be within (0, 1] when set")
+    if config.data_sample_point is not None and not config.fd:
+        raise ConfigError("CAN data_sample_point requires fd=True")
 
 
 __all__ = ["CanAdapterUnavailableError", "CanDependencyError", "CanTransport"]

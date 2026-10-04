@@ -431,6 +431,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Probe timeout in milliseconds / 探测超时毫秒数",
     )
 
+    plugin_protocol = plugin_sub.add_parser(
+        "protocol",
+        help="Validate local declarative non-SCPI protocol plugins / 检查本地声明式非 SCPI 协议插件",
+    )
+    plugin_protocol_sub = plugin_protocol.add_subparsers(dest="protocol_command", required=True)
+    plugin_protocol_check = plugin_protocol_sub.add_parser(
+        "check",
+        help="Validate a local protocol plugin TOML file without opening a transport / 离线检查协议插件 TOML",
+    )
+    plugin_protocol_check.add_argument("path", help="Path to a protocol plugin TOML file / 协议插件 TOML 路径")
+    plugin_protocol_info = plugin_protocol_sub.add_parser(
+        "info",
+        help="Show a local protocol plugin TOML contract / 显示本地协议插件 TOML 合同",
+    )
+    plugin_protocol_info.add_argument("path", help="Path to a protocol plugin TOML file / 协议插件 TOML 路径")
+
     net_sub = net_parser.add_subparsers(dest="command", required=True)
     net_discover = net_sub.add_parser(
         "discover",

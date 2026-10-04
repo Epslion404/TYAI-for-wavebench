@@ -1266,6 +1266,13 @@ max_source_vpp = 2.0
         self.assertEqual(args.backend, "rsinstrument")
         self.assertEqual(args.timeout_ms, 250)
 
+    def test_plugin_protocol_check_accepts_path(self):
+        args = build_parser().parse_args(["plugin", "protocol", "check", "plugin.toml"])
+        self.assertEqual(args.domain, "plugin")
+        self.assertEqual(args.command, "protocol")
+        self.assertEqual(args.protocol_command, "check")
+        self.assertEqual(args.path, "plugin.toml")
+
     def test_plugin_list_prints_builtin_plugins(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -1462,6 +1469,38 @@ max_source_vpp = 2.0
         self.assertIn("driver_id=example.scope", output)
         self.assertIn("origin=local", output)
         self.assertIn("scpi_idn_query=*IDN?", output)
+
+    def test_plugin_protocol_info_prints_declared_frame_contract(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "protocol.toml"
+            path.write_text(
+                '''
+driver_id = "example.bus-scope"
+kind = "scope"
+display_name = "Example Bus Scope"
+manufacturer = "Example"
+models = ["BUS1"]
+capabilities = ["scope.idn"]
+summary = "Example protocol."
+
+[protocol]
+framing = "fixed"
+magic_hex = "AA55"
+header_bytes = 2
+fixed_length = 4
+max_frame_bytes = 64
+'''.strip(),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = main(["plugin", "protocol", "info", str(path)])
+
+        self.assertEqual(code, 0)
+        output = stdout.getvalue()
+        self.assertIn("protocol_framing=fixed", output)
+        self.assertIn("protocol_magic_hex=AA55", output)
+        self.assertIn("protocol_max_frame_bytes=64", output)
 
     def test_plugin_scpi_probe_prints_result(self):
         from wavebench.plugins.scpi import ScpiProbeResult

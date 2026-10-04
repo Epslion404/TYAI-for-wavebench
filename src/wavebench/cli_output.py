@@ -51,6 +51,7 @@ from .plugins.api import AdvisorPlugin, InstrumentPlugin, PluginDoctorRecord
 from .plugins.market import MarketPlugin
 from .plugins.lifecycle import InstalledPlugin, LifecycleResult
 from .plugins.package_inspect import PluginPackage
+from .plugins.protocol import DeclarativeProtocolPlugin
 from .plugins.scpi import DeclarativeScpiPlugin, ScpiProbeResult
 from .services.run_plan import RunPlan, RunStep
 from .services.scope_service import ScopeStatusSummary
@@ -324,6 +325,20 @@ def _print_market_plugin_info(plugin: MarketPlugin) -> None:
 def _print_scpi_plugin_info(scpi_plugin: DeclarativeScpiPlugin) -> None:
     _print_plugin_info(scpi_plugin.plugin)
     print(f"scpi_idn_query={scpi_plugin.idn_query}")
+
+
+def _print_protocol_plugin_info(protocol_plugin: DeclarativeProtocolPlugin) -> None:
+    _print_plugin_info(protocol_plugin.plugin)
+    frame = protocol_plugin.frame
+    print(f"protocol_framing={frame.framing}")
+    print(f"protocol_magic_hex={frame.magic.hex().upper()}")
+    print(f"protocol_header_bytes={frame.header_bytes}")
+    print(f"protocol_max_frame_bytes={frame.max_frame_bytes}")
+    print(f"protocol_sample_type={frame.sample_type}")
+    print(f"protocol_endian={frame.endian}")
+    print(f"protocol_checksum={frame.checksum}")
+    print(f"protocol_response_timeout_ms={frame.response_timeout_ms}")
+    print(f"protocol_inter_frame_gap_ms={frame.inter_frame_gap_ms}")
 
 
 def _print_scpi_doctor(records: list[tuple[str, str, str]]) -> None:
