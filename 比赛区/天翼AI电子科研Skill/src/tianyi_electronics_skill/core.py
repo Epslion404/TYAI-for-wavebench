@@ -381,6 +381,11 @@ def autoscale_scope(
                     result["device_errors"].extend(errors)
                     if errors:
                         result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
+                        result["failures"].append({
+                            "category": "unsupported",
+                            "command": command,
+                            "message": "; ".join(errors),
+                        })
                         result["write_results"].append({"command": command, "ok": False, "device_errors": errors})
                         continue
                     result["commands"].append(command)
@@ -431,6 +436,11 @@ def autoscale_scope(
                     result["write_results"].append(item)
                     if errors:
                         result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
+                        result["failures"].append({
+                            "category": "unsupported",
+                            "command": command,
+                            "message": "; ".join(errors),
+                        })
                         continue
                     # ``commands`` records what was sent.  ``ok`` and
                     # ``applied`` are stricter: the setting must also survive
@@ -439,16 +449,41 @@ def autoscale_scope(
                     query = "TIMebase:RANGe?" if command.startswith("TIMebase:RANGe") else f":{channel}:OFFS?"
                     requested = float(command.rsplit(" ", 1)[1])
                     try:
-                        readback = parse_first_float(session.query(query))
+                        raw_readback = session.query(query)
                     except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
                         item["readback"] = None
                         item["verified"] = False
-                        item["verification_error"] = f"{classify_exception(exc)}: {exc}"
+                        category = classify_exception(exc)
+                        item["verification_error"] = f"{category}: {exc}"
                         result["unsupported"].append({"command": command, "reason": "readback verification failed"})
                         result["failures"].append({
-                            "category": classify_exception(exc),
+                            "category": category,
                             "command": query,
                             "message": str(exc),
+                        })
+                        continue
+                    if not raw_readback.strip():
+                        readback = None
+                        item["readback"] = None
+                        item["verified"] = False
+                        item["verification_error"] = "no_response: 设置后的回读响应为空"
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": "no_response",
+                            "command": query,
+                            "message": "设置后的回读响应为空",
+                        })
+                        continue
+                    readback = parse_first_float(raw_readback)
+                    if readback is None:
+                        item["readback"] = None
+                        item["verified"] = False
+                        item["verification_error"] = "parse_error: 设置后的回读响应无法解析为数值"
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": "parse_error",
+                            "command": query,
+                            "message": f"设置后的回读响应无法解析为数值: {raw_readback!r}",
                         })
                         continue
                     verified = readback is not None and math.isclose(readback, requested, rel_tol=0.02, abs_tol=1e-12)
@@ -457,6 +492,11 @@ def autoscale_scope(
                     item["ok"] = verified
                     if not verified:
                         result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": "unsupported",
+                            "command": query,
+                            "message": f"设置后的回读值 {readback:g} 与请求值 {requested:g} 不匹配",
+                        })
                 successful = sum(1 for item in result["write_results"] if item["ok"])
                 result["applied"] = successful == len(writes) and bool(writes)
                 result["partially_applied"] = 0 < successful < len(writes)
