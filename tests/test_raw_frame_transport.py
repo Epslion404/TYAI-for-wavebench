@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from wavebench.errors import TransportIOError
+from wavebench.config import SerialConnectionConfig
+from wavebench.errors import SessionHealthError, TransportIOError
 from wavebench.logging import CommandLogger
 from wavebench.transport.guarded import GuardedAuditedTransport
 from wavebench.transport.serial_transport import SerialTransport
 
 
 class _SerialSession:
+    timeout = 1.0
+
     def __init__(self, reads: list[bytes] | None = None) -> None:
         self.writes: list[bytes] = []
         self.reads = list(reads or [])
@@ -148,6 +151,216 @@ def test_read_until_enforces_one_timeout_budget_across_split_reads(monkeypatch) 
     assert raised.value.consumed_bytes == 2
     assert session.timeouts == pytest.approx([0.05, 0.02])
     assert session.timeout == 1.0
+
+
+def _read_test_frame(transport, operation: str, **kwargs) -> bytes:
+    if operation == "read_exact":
+        return transport.read_exact(2, **kwargs)
+    return transport.read_until(b"\n", max_bytes=2, **kwargs)
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+@pytest.mark.parametrize("late_chunk", [False, True], ids=["partial", "late-complete"])
+def test_default_frame_deadline_poisons_guarded_session_without_replay(
+    monkeypatch, operation: str, late_chunk: bool,
+) -> None:
+    clock = {"now": 0.0}
+
+    class TimedSession(_SerialSession):
+        timeout = 0.05
+
+        def __init__(self) -> None:
+            super().__init__([b"A", b"\n", b"N"])
+            self.timeouts: list[float] = []
+
+        def read(self, size: int) -> bytes:
+            self.timeouts.append(self.timeout)
+            if not late_chunk and self.timeout < 0.04:
+                clock["now"] += self.timeout
+                return b""
+            clock["now"] += 0.04
+            return super().read(size)
+
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: clock["now"])
+    session = TimedSession()
+    logger = CommandLogger()
+
+    def open_serial(**kwargs):
+        assert kwargs["timeout"] == 0.05
+        session.timeout = kwargs["timeout"]
+        return session
+
+    monkeypatch.setattr("serial.Serial", open_serial)
+    config = SerialConnectionConfig(
+        resource="COM7", baudrate=9600, bytesize=8, parity="N", stopbits=1, timeout_ms=50,
+    )
+    transport = GuardedAuditedTransport(SerialTransport.open(config, logger))
+
+    with pytest.raises(TransportIOError) as raised:
+        _read_test_frame(transport, operation, replay="read_continuation_only")
+
+    assert raised.value.reason_code == "frame_read_timeout"
+    assert raised.value.operation == operation
+    assert raised.value.consumed_bytes == (2 if late_chunk else 1)
+    assert raised.value.attempts == 1
+    assert raised.value.replay_policy.value == "read_continuation_only"
+    assert raised.value.response_progress.value == "partial"
+    assert raised.value.synchronization.value == "lost"
+    assert session.timeouts == pytest.approx([0.05, 0.01])
+    assert session.timeout == 0.05
+    assert session.reads == ([b"N"] if late_chunk else [b"\n", b"N"])
+    assert session.writes == []
+    assert not any(entry.direction == "read_frame" for entry in logger.entries)
+    assert transport.session_state.health.value == "poisoned"
+    with pytest.raises(SessionHealthError):
+        _read_test_frame(transport, operation)
+    assert len(session.timeouts) == 2
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+@pytest.mark.parametrize("timeout_ms", [20, 100], ids=["shorter", "longer"])
+def test_explicit_frame_timeout_overrides_connection_timeout(
+    monkeypatch, operation: str, timeout_ms: int,
+) -> None:
+    clock = {"now": 0.0}
+
+    class TimedSession(_SerialSession):
+        timeout = 0.05
+
+        def __init__(self) -> None:
+            super().__init__([b"A", b"\n"])
+            self.timeouts: list[float] = []
+
+        def read(self, size: int) -> bytes:
+            self.timeouts.append(self.timeout)
+            clock["now"] += 0.03
+            return super().read(size)
+
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: clock["now"])
+    session = TimedSession()
+    transport = SerialTransport("COM7", session, CommandLogger())
+
+    if timeout_ms == 20:
+        with pytest.raises(TransportIOError) as raised:
+            _read_test_frame(transport, operation, timeout_ms=timeout_ms)
+        assert raised.value.reason_code == "frame_read_timeout"
+        assert raised.value.consumed_bytes == 1
+        assert session.timeouts == pytest.approx([0.02])
+    else:
+        assert _read_test_frame(transport, operation, timeout_ms=timeout_ms) == b"A\n"
+        assert session.timeouts == pytest.approx([0.1, 0.07])
+    assert session.timeout == 0.05
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+@pytest.mark.parametrize("timeout_ms", [None, 50], ids=["default", "explicit"])
+def test_successful_frame_restores_timeout_and_leaves_next_frame_unread(
+    monkeypatch, operation: str, timeout_ms: int | None,
+) -> None:
+    clock = {"now": 0.0}
+
+    class TimedSession(_SerialSession):
+        timeout = 0.1
+
+        def __init__(self) -> None:
+            super().__init__([b"A", b"\n", b"N"])
+            self.sizes: list[int] = []
+            self.timeouts: list[float] = []
+
+        def read(self, size: int) -> bytes:
+            self.sizes.append(size)
+            self.timeouts.append(self.timeout)
+            clock["now"] += 0.01
+            return super().read(size)
+
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: clock["now"])
+    session = TimedSession()
+    transport = SerialTransport("COM7", session, CommandLogger())
+
+    assert _read_test_frame(transport, operation, timeout_ms=timeout_ms) == b"A\n"
+
+    budget = 0.1 if timeout_ms is None else 0.05
+    assert session.timeouts == pytest.approx([budget, budget - 0.01])
+    assert session.sizes == ([2, 1] if operation == "read_exact" else [1, 1])
+    assert session.reads == [b"N"]
+    assert session.timeout == 0.1
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+@pytest.mark.parametrize("timeout_ms", [None, 50], ids=["default", "explicit"])
+def test_frame_backend_exception_restores_timeout(
+    monkeypatch, operation: str, timeout_ms: int | None,
+) -> None:
+    clock = {"now": 0.0}
+
+    class FailingSession(_SerialSession):
+        timeout = 0.1
+
+        def read(self, size: int) -> bytes:
+            if self.reads:
+                clock["now"] += 0.01
+                return super().read(size)
+            raise OSError("serial disconnected")
+
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: clock["now"])
+    session = FailingSession([b"A"])
+    transport = SerialTransport("COM7", session, CommandLogger())
+
+    with pytest.raises(TransportIOError) as raised:
+        _read_test_frame(transport, operation, timeout_ms=timeout_ms)
+
+    assert raised.value.reason_code == "frame_read_failed"
+    assert raised.value.consumed_bytes == 1
+    assert session.timeout == 0.1
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+@pytest.mark.parametrize("default_timeout", [None, 0.0, float("inf"), float("nan"), "missing"])
+def test_frame_requires_a_finite_default_or_explicit_timeout(
+    operation: str, default_timeout,
+) -> None:
+    class Session:
+        def read(self, size: int) -> bytes:
+            raise AssertionError("invalid default timeout must fail before I/O")
+
+    session = Session()
+    if default_timeout != "missing":
+        session.timeout = default_timeout
+    transport = GuardedAuditedTransport(SerialTransport("COM7", session, CommandLogger()))
+
+    with pytest.raises(TransportIOError) as raised:
+        _read_test_frame(transport, operation)
+
+    assert raised.value.reason_code == "frame_timeout_invalid"
+    assert raised.value.attempts == 0
+    assert raised.value.consumed_bytes == 0
+    assert transport.session_state.health.value == "healthy"
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+def test_explicit_frame_timeout_works_with_unbounded_session(monkeypatch, operation: str) -> None:
+    monkeypatch.setattr("wavebench.transport.serial_transport.time.monotonic", lambda: 0.0)
+    session = _SerialSession([b"A", b"\n"])
+    session.timeout = None
+    transport = SerialTransport("COM7", session, CommandLogger())
+
+    assert _read_test_frame(transport, operation, timeout_ms=50) == b"A\n"
+    assert session.timeout is None
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+def test_raw_frame_read_rejects_safe_replay_before_io(operation: str) -> None:
+    session = _SerialSession([b"A", b"\n"])
+    transport = GuardedAuditedTransport(SerialTransport("COM7", session, CommandLogger()))
+
+    with pytest.raises(TransportIOError) as raised:
+        _read_test_frame(transport, operation, replay="safe_to_replay")
+
+    assert raised.value.reason_code == "frame_replay_unsupported"
+    assert raised.value.attempts == 0
+    assert session.reads == [b"A", b"\n"]
+    assert session.writes == []
+    assert transport.session_state.health.value == "healthy"
 
 
 def test_read_until_rejects_an_unterminated_frame_at_its_limit() -> None:
