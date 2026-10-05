@@ -419,6 +419,7 @@ def autoscale_scope(
                 result["warnings"].append("未取得足够波形指标，无法生成等效 autoscale 建议")
             if apply and result["suggestions"]:
                 writes = []
+                derived_results: list[dict] = []
                 if "timebase_range_s" in result["suggestions"]:
                     writes.append(f"TIMebase:RANGe {result['suggestions']['timebase_range_s']:.12g}")
                 if "channel_offset_v" in result["suggestions"]:
@@ -434,6 +435,7 @@ def autoscale_scope(
                         "device_errors": errors,
                     }
                     result["write_results"].append(item)
+                    derived_results.append(item)
                     if errors:
                         result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
                         result["failures"].append({
@@ -493,11 +495,11 @@ def autoscale_scope(
                     if not verified:
                         result["unsupported"].append({"command": command, "reason": "readback verification failed"})
                         result["failures"].append({
-                            "category": "unsupported",
+                            "category": "verification_failed",
                             "command": query,
                             "message": f"设置后的回读值 {readback:g} 与请求值 {requested:g} 不匹配",
                         })
-                successful = sum(1 for item in result["write_results"] if item["ok"])
+                successful = sum(1 for item in derived_results if item["ok"])
                 result["applied"] = successful == len(writes) and bool(writes)
                 result["partially_applied"] = 0 < successful < len(writes)
                 result["mode"] = "derived_settings"

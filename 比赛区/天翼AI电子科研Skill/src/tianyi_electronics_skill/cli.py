@@ -219,6 +219,17 @@ def main(argv: list[str] | None = None) -> int:
             samples, rate = load_waveform(args.file)
             result = {"source": args.file, **analyze_samples(samples, rate if rate != 1.0 else args.sample_rate), "device_errors": []}
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+        if args.command == "autoscale":
+            if not args.apply:
+                # A dry run never claims to have changed the device.  It is
+                # successful when the inspection itself completed; an actual
+                # transport/parse failure remains an execution failure.
+                return 2 if result.get("errors") or result.get("failures") else 0
+            if result.get("applied"):
+                return 0
+            if result.get("partially_applied"):
+                return 3
+            return 2
         failed_fetch = args.command == "fetch" and result.get("sample_count") == 0 and bool(result.get("errors") or result.get("failures"))
         return 2 if result.get("ok") is False or failed_fetch else 0
     except (OSError, RuntimeError, ValueError, TypeError, OverflowError, UnicodeError, KeyError) as exc:

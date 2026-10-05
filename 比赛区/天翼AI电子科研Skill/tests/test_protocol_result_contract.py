@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import tianyi_electronics_skill.core as core
 from tianyi_electronics_skill.cli import main
 from tianyi_electronics_skill.protocols import ProtocolRegistry
 
@@ -71,3 +72,22 @@ def test_cli_valid_override_preserves_frame_and_envelope(tmp_path, capsys):
     assert result["frame"]["sample_rate_hz"] == 2000
     assert result["frame"]["samples"] == [1]
     assert result["device_errors"] == ["reported"]
+
+
+@pytest.mark.parametrize(
+    ("apply", "result", "expected_status"),
+    [
+        (False, {"applied": False, "partially_applied": False, "failures": [], "errors": []}, 0),
+        (True, {"applied": True, "partially_applied": False, "failures": [], "errors": []}, 0),
+        (True, {"applied": False, "partially_applied": False, "failures": [{"category": "no_response"}], "errors": []}, 2),
+        (True, {"applied": False, "partially_applied": True, "failures": [{"category": "verification_failed"}], "errors": []}, 3),
+    ],
+)
+def test_cli_autoscale_exit_status_contract(monkeypatch, capsys, apply, result, expected_status):
+    monkeypatch.setattr(core, "autoscale_scope", lambda *_args, **_kwargs: result)
+    command = ["autoscale", "--address", "127.0.0.1"]
+    if apply:
+        command.append("--apply")
+
+    assert main(command) == expected_status
+    assert json.loads(capsys.readouterr().out) == result

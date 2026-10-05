@@ -68,3 +68,5 @@ Autoscale is explicit and safe by default:
 python -m tianyi_electronics_skill autoscale --address 192.168.1.20 --channel CHAN1
 python -m tianyi_electronics_skill autoscale --address 192.168.1.20 --channel CHAN1 --apply
 ```
+
+Exit status for `autoscale` is part of the machine contract: `0` means a completed read-only suggestion run or a fully verified apply; `2` means no requested setting was verified; `3` means only some requested settings were verified. Inspect `failures`, `unsupported`, and `write_results` before attempting another write.

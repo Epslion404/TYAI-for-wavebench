@@ -78,7 +78,7 @@ def test_autoscale_readback_failure_is_not_reported_as_applied(monkeypatch):
     assert result["applied"] is False
     assert result["partially_applied"] is False
     assert result["failures"] == [{
-        "category": "unsupported",
+        "category": "verification_failed",
         "command": "TIMebase:RANGe?",
         "message": "设置后的回读值 0.1 与请求值 0.005 不匹配",
     }]
@@ -187,3 +187,52 @@ def test_autoscale_rejected_write_is_structured_failure(monkeypatch):
         "command": "AUTOSET",
         "message": '-113,"Undefined header"',
     }]
+
+
+def test_autoscale_partial_apply_counts_only_derived_writes(monkeypatch):
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs):
+            self.writes: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def query(self, command: str) -> str:
+            responses = {
+                "*IDN?": "ACME,SCOPE,1,1",
+                "TIMebase:RANGe?": "0.005",
+                ":CHAN1:OFFS?": "1.0",
+            }
+            return responses[command]
+
+        def write(self, command: str) -> None:
+            self.writes.append(command)
+
+        def drain_errors(self) -> list[str]:
+            if self.writes[-1] == "AUTOSET":
+                return ['-113,"Undefined header"']
+            return []
+
+    monkeypatch.setattr(core, "ScpiSession", FakeSession)
+    monkeypatch.setattr(core, "AUTOSCALE_CANDIDATES", ("AUTOSET",))
+    monkeypatch.setattr(
+        core,
+        "read_waveform_in_session",
+        lambda *_args, **_kwargs: {
+            "sample_count": 16,
+            "metrics": {"frequency_hz": 1000.0, "minimum_v": -1.0, "maximum_v": 1.0},
+            "warnings": [],
+            "errors": [],
+            "failures": [],
+            "device_errors": [],
+        },
+    )
+
+    result = core.autoscale_scope("example.test", apply=True)
+
+    assert result["applied"] is False
+    assert result["partially_applied"] is True
+    assert [item["ok"] for item in result["write_results"][-2:]] == [True, False]
