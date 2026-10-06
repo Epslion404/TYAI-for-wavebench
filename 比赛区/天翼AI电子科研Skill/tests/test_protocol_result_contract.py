@@ -78,6 +78,7 @@ def test_cli_valid_override_preserves_frame_and_envelope(tmp_path, capsys):
     ("apply", "result", "expected_status"),
     [
         (False, {"applied": False, "partially_applied": False, "failures": [], "errors": []}, 0),
+        (False, {"applied": False, "partially_applied": False, "failures": [{"category": "timeout"}], "errors": []}, 2),
         (True, {"applied": True, "partially_applied": False, "failures": [], "errors": []}, 0),
         (True, {"applied": False, "partially_applied": False, "failures": [{"category": "no_response"}], "errors": []}, 2),
         (True, {"applied": False, "partially_applied": True, "failures": [{"category": "verification_failed"}], "errors": []}, 3),

@@ -413,6 +413,11 @@ def autoscale_scope(
             result["waveform"] = {"sample_count": waveform.get("sample_count", 0), "metrics": metrics,
                                   "warnings": waveform.get("warnings", []), "errors": waveform.get("errors", []),
                                   "failures": waveform.get("failures", [])}
+            # A dry run is successful only if it could actually inspect the
+            # waveform.  Preserve the acquisition failure at the top level so
+            # callers do not have to special-case the nested waveform object.
+            result["errors"].extend(waveform.get("errors", []))
+            result["failures"].extend(waveform.get("failures", []))
             if waveform.get("device_errors"):
                 result["device_errors"].extend(waveform["device_errors"])
             if not result["suggestions"]:
@@ -507,6 +512,15 @@ def autoscale_scope(
         category = classify_exception(exc)
         result["errors"].append(f"{category}: {exc}")
         result["failures"].append({"category": category, "command": "autoscale", "message": str(exc)})
+        # An exception after one or more derived writes must not erase a
+        # setting already confirmed by readback.  Vendor autoset entries do
+        # not have ``write_accepted`` and intentionally do not count here.
+        if apply and any(
+            item.get("write_accepted") and item.get("ok")
+            for item in result["write_results"]
+        ):
+            result["applied"] = False
+            result["partially_applied"] = True
     return result
 
 
