@@ -4,10 +4,10 @@ The kernel-backed lock is the only ownership fact.  A sidecar JSON file is
 diagnostic metadata only; stale metadata may be removed after a non-blocking
 lock proves that the lock is free, while the ``.lock`` inode is never unlinked.
 
-Leases also hold the old v1 fingerprints for equivalent spellings.  Keeping
-these locks in the v1 directory protects both acquisition orders when an old
-process is still running.  Two old processes still need upgrading to gain the
-new alias protection.
+Leases also hold the old v1 fingerprints for enumerated equivalent spellings
+and every caller-supplied spelling. Keeping these locks in the v1 directory
+protects both acquisition orders for those identities. Arbitrary port padding
+cannot be enumerated; all processes must upgrade for complete alias protection.
 
 The old case folding conflated the three-part INSTR resource class with the
 LAN device named instr.  Their canonical identities are now distinct, but their
@@ -79,7 +79,8 @@ def normalize_resource(resource: object) -> str:
         board = int(prefix.group("board") or "0")
         parts[0] = f"tcpip{board}" if board else "tcpip"
         # TCPIP[board]::host[::LAN device][::INSTR].  SOCKET endpoints
-        # keep their explicit port and class, including port 5025.
+        # keep their explicit port and class, including port 5025; only the
+        # numeric spelling of a SOCKET port is folded below.
         original_parts = " ".join(resource.strip().split()).split("::")
         if len(parts) == 2 or (len(parts) == 3 and original_parts[-1] == "INSTR"):
             parts = [*parts[:2], "inst0", "instr"]
@@ -87,6 +88,8 @@ def normalize_resource(resource: object) -> str:
             parts.append("instr")
         elif len(parts) == 3:
             raise ConfigError("TCPIP SOCKET resource requires a host and an explicit port")
+        if len(parts) == 4 and parts[-1] == "socket" and re.fullmatch(r"[0-9]+", parts[2]):
+            parts[2] = str(int(parts[2]))
         return "::".join(parts)
     return normalized
 
@@ -209,8 +212,10 @@ class ResourceLease:
     _locks: list[FileLock] = field(default_factory=list, init=False, repr=False)
     _acquired: bool = field(default=False, init=False, repr=False)
     _lease_id: str | None = field(default=None, init=False, repr=False)
+    _legacy_resources: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._legacy_resources.add(_normalize_resource_v1(self.resource))
         self.resource = normalize_resource(self.resource)
         self.directory = Path(self.directory).expanduser()
         self.lock_id = normalize_lock_id(self.lock_id)
@@ -232,9 +237,14 @@ class ResourceLease:
 
     @property
     def _lock_paths(self) -> list[Path]:
+        # Keep the caller's old spelling as well as the canonical identity.
+        # Arbitrarily padded ports cannot all be enumerated for v1 processes.
+        identities = _v1_resource_identities(self.resource)
+        for resource in self._legacy_resources:
+            identities.update(_v1_resource_identities(resource))
         fingerprints = {
             hashlib.sha256(f"{resource}\x00{self.lock_id}".encode("utf-8")).hexdigest()
-            for resource in _v1_resource_identities(self.resource)
+            for resource in identities
         }
         return [self.directory / f"{fingerprint}.lock" for fingerprint in sorted(fingerprints)]
 
@@ -299,9 +309,13 @@ class ResourceLease:
         self.release()
 
     def holder_metadata(self) -> dict[str, Any] | None:
-        """Read sidecar metadata without changing the lock state."""
+        """Read diagnostic sidecars without proving ownership; use status for that."""
 
         paths = [self.metadata_path, *(path.with_suffix(".json") for path in self._lock_paths)]
+        return self._read_holder_metadata(paths)
+
+    @staticmethod
+    def _read_holder_metadata(paths: Iterable[Path]) -> dict[str, Any] | None:
         for path in dict.fromkeys(paths):
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
@@ -329,20 +343,48 @@ class ResourceLease:
         if not any(path.exists() for path in self._lock_paths):
             return self._status_payload(held=False, stale_metadata=False, metadata=None)
         locks: list[FileLock] = []
-        held = False
+        busy_paths: list[Path] = []
         try:
             try:
-                locks = self._acquire_locks("exclusive")
-            except FileLockBusy:
-                held = True
+                # Keep every free probe locked while collecting diagnostics:
+                # its sidecar cannot describe a current holder. Do not stop at
+                # the first busy alias and then prefer stale canonical JSON.
+                for path in self._lock_paths:
+                    lock = FileLock(path, mode="exclusive")
+                    try:
+                        lock.acquire()
+                    except FileLockBusy:
+                        busy_paths.append(path)
+                    else:
+                        locks.append(lock)
             except (FileLockUnavailable, FileLockError) as exc:
                 raise ConfigError(f"unable to inspect resource lease: {exc}") from exc
-            metadata = self.holder_metadata()
+            held = bool(busy_paths)
+            ambiguous = False
+            if held:
+                candidates = [
+                    value for path in busy_paths
+                    if (value := self._read_holder_metadata([path.with_suffix(".json")])) is not None
+                ]
+                # Sidecars remain diagnostics, not the ownership fact. Missing
+                # or conflicting holder records must not select an arbitrary
+                # legacy process or fall back to a provably free lock's JSON.
+                ambiguous = (
+                    not candidates
+                    or not isinstance(candidates[0].get("lease_id"), str)
+                    or not candidates[0]["lease_id"]
+                    or any(value != candidates[0] for value in candidates[1:])
+                )
+                metadata = None if ambiguous else candidates[0]
+            else:
+                metadata = self.holder_metadata()
             stale = not held and metadata is not None
         finally:
             for lock in reversed(locks):
                 lock.release()
-        return self._status_payload(held=held, stale_metadata=stale, metadata=metadata)
+        return self._status_payload(
+            held=held, stale_metadata=stale, metadata=metadata, metadata_ambiguous=ambiguous,
+        )
 
     def clear_stale_metadata(self) -> bool:
         """Remove only sidecar metadata after proving the lock is free."""
@@ -380,6 +422,7 @@ class ResourceLease:
         held: bool,
         stale_metadata: bool,
         metadata: dict[str, Any] | None,
+        metadata_ambiguous: bool = False,
     ) -> dict[str, Any]:
         return {
             "schema": LEASE_SCHEMA,
@@ -392,6 +435,7 @@ class ResourceLease:
             "lock_path": str(self.lock_path),
             "metadata_path": str(self.metadata_path),
             "metadata": metadata,
+            "metadata_ambiguous": metadata_ambiguous,
         }
 
     def _metadata(self) -> dict[str, Any]:
@@ -467,13 +511,15 @@ class ResourceLeaseManager:
             for resource in resources
         ]
         leases.sort(key=lambda lease: (lease.fingerprint, lease.resource))
+        unique: dict[str, ResourceLease] = {}
+        for lease in leases:
+            if lease.fingerprint in unique:
+                unique[lease.fingerprint]._legacy_resources.update(lease._legacy_resources)
+            else:
+                unique[lease.fingerprint] = lease
         acquired: list[ResourceLease] = []
-        seen: set[str] = set()
         try:
-            for lease in leases:
-                if lease.fingerprint in seen:
-                    continue
-                seen.add(lease.fingerprint)
+            for lease in unique.values():
                 acquired.append(lease.acquire())
             return acquired
         except Exception:

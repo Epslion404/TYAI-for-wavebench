@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ _EQUIVALENT_RESOURCES = [
     ("TCPIP::bench::socket", "TCPIP0::bench::socket::INSTR"),
     ("TCPIP::bench::instr", "TCPIP0::bench::instr::INSTR"),
     ("TCPIP::bench::5025::SOCKET", "TCPIP00::BENCH::5025::socket"),
+    ("TCPIP2::bench::5025::SOCKET", "tcpip02::BENCH::00005025::socket"),
     ("ASRL1", "asrl1::INSTR"),
     ("ASRL001", "asrl001::INSTR"),
 ]
@@ -136,7 +138,21 @@ def test_equivalent_resources_contend_across_processes(
     assert _child_attempt(tmp_path, second) == "acquired"
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_socket_port_padding_contends_across_processes(tmp_path: Path, reverse: bool) -> None:
+    first = "TCPIP::bench::5025::SOCKET"
+    second = "TCPIP0::BENCH::05025::socket"
+    if reverse:
+        first, second = second, first
+    with ResourceLease(first, directory=tmp_path):
+        assert _child_attempt(tmp_path, second) == "busy"
+    assert _child_attempt(tmp_path, second) == "acquired"
+
+
 _LEGACY_IDENTITIES = [
+    ("TCPIP::bench::05025::SOCKET", "tcpip::bench::05025::socket"),
+    ("TCPIP00::bench::05025::SOCKET", "tcpip0::bench::05025::socket"),
+    ("TCPIP::bench::05025::SOCKET", "tcpip::bench::5025::socket"),
     ("TCPIP0::192.0.2.10::inst0::INSTR", "tcpip::192.0.2.10::instr"),
     ("TCPIP::192.0.2.10::INSTR", "tcpip::192.0.2.10::inst0::instr"),
     ("TCPIP::192.0.2.10::INSTR", "tcpip0::192.0.2.10::inst0"),
@@ -180,6 +196,71 @@ def test_v1_lock_migration_contends_in_both_acquisition_orders(
         assert _child_attempt(tmp_path, resource, legacy_identity=legacy_identity) == "acquired"
 
 
+def test_status_ignores_stale_canonical_metadata_while_legacy_lock_is_held(tmp_path: Path) -> None:
+    lease = ResourceLease("TCPIP::bench::INSTR", directory=tmp_path)
+    with lease:
+        pass
+    lease.metadata_path.write_text(json.dumps({"lease_id": "stale-canonical"}), encoding="utf-8")
+    old_fingerprint = hashlib.sha256(b"tcpip::bench::instr\x00").hexdigest()
+    old_path = tmp_path / f"{old_fingerprint}.lock"
+    old_metadata = old_path.with_suffix(".json")
+
+    with file_lock.FileLock(old_path):
+        old_metadata.write_text(json.dumps({"lease_id": "active-legacy"}), encoding="utf-8")
+        status = lease.status()
+        assert status["held"] is True
+        assert status["stale_metadata"] is False
+        assert status["metadata"]["lease_id"] == "active-legacy"
+        assert lease.clear_stale_metadata() is False
+        assert _child_attempt(tmp_path, "TCPIP0::bench::inst0::INSTR") == "busy"
+    assert lease.clear_stale_metadata() is True
+    assert old_path.exists()
+    assert lease.lock_path.exists()
+
+
+@pytest.mark.parametrize("holder_ids", [("old-a", "old-b"), (None, None)])
+def test_status_reports_ambiguous_legacy_holders_without_stale_fallback(
+    tmp_path: Path, holder_ids: tuple[str | None, str | None],
+) -> None:
+    lease = ResourceLease("TCPIP::bench::INSTR", directory=tmp_path)
+    with lease:
+        pass
+    lease.metadata_path.write_text(json.dumps({"lease_id": "stale"}), encoding="utf-8")
+    old_identities = ("tcpip::bench::instr", "tcpip::bench")
+
+    with ExitStack() as stack:
+        for identity, holder_id in zip(old_identities, holder_ids):
+            fingerprint = hashlib.sha256(f"{identity}\x00".encode("utf-8")).hexdigest()
+            path = tmp_path / f"{fingerprint}.lock"
+            stack.enter_context(file_lock.FileLock(path))
+            if holder_id:
+                path.with_suffix(".json").write_text(json.dumps({"lease_id": holder_id}), encoding="utf-8")
+        status = lease.status()
+        assert status["held"] is True
+        assert status["metadata"] is None
+        assert status["metadata_ambiguous"] is True
+        assert lease.clear_stale_metadata() is False
+
+
+@pytest.mark.parametrize("legacy_first", [False, True])
+def test_unenumerated_v1_socket_padding_requires_all_processes_to_upgrade(
+    tmp_path: Path, legacy_first: bool,
+) -> None:
+    # v1 hashes unbounded port spellings independently. A new caller using
+    # only the unpadded spelling cannot enumerate every old hash. This test
+    # records the mixed-version limitation, not a new/new mutual-exclusion guarantee.
+    old_identity = "tcpip::bench::0000005025::socket"
+    old_fingerprint = hashlib.sha256(f"{old_identity}\x00".encode("utf-8")).hexdigest()
+    old_path = tmp_path / f"{old_fingerprint}.lock"
+    resource = "TCPIP::bench::5025::SOCKET"
+    if legacy_first:
+        with file_lock.FileLock(old_path):
+            assert _child_attempt(tmp_path, resource) == "acquired"
+    else:
+        with ResourceLease(resource, directory=tmp_path):
+            assert _child_attempt(tmp_path, resource, legacy_identity=old_identity) == "acquired"
+
+
 @pytest.mark.parametrize(("first", "second"), [
     ("TCPIP::192.0.2.10::INSTR", "TCPIP::192.0.2.11::INSTR"),
     ("TCPIP::bench::INSTR", "TCPIP1::bench::INSTR"),
@@ -189,6 +270,8 @@ def test_v1_lock_migration_contends_in_both_acquisition_orders(
     ("TCPIP::bench::inst1::INSTR", "TCPIP::bench::instr"),
     ("TCPIP::bench::5025::SOCKET", "TCPIP::bench::SOCKET::INSTR"),
     ("TCPIP::bench::5025::SOCKET", "TCPIP::bench::5026::SOCKET"),
+    ("TCPIP::bench::05025::SOCKET", "TCPIP::bench::05026::SOCKET"),
+    ("TCPIP::bench::05025::SOCKET", "TCPIP1::bench::05025::SOCKET"),
     ("TCPIP::bench::INSTR", "TCPIP::bench::5025::SOCKET"),
     ("ASRL1::INSTR", "ASRL2::INSTR"),
     ("COM1", "COM2"),
@@ -278,6 +361,19 @@ def test_acquire_many_deduplicates_visa_defaults(tmp_path: Path) -> None:
         assert _child_attempt(tmp_path, "ASRL1") == "busy"
 
 
+def test_acquire_many_keeps_legacy_locks_for_every_supplied_port_spelling(tmp_path: Path) -> None:
+    manager = ResourceLeaseManager(tmp_path)
+    with manager.hold_many([
+        "TCPIP::bench::5025::SOCKET", "TCPIP::bench::05025::SOCKET",
+        "TCPIP::bench::005025::SOCKET",
+    ]) as leases:
+        assert len(leases) == 1
+        for port in ("5025", "05025", "005025"):
+            assert _child_attempt(
+                tmp_path, "unused", legacy_identity=f"tcpip::bench::{port}::socket",
+            ) == "busy"
+
+
 def test_stale_cleanup_removes_malformed_legacy_metadata_only_when_free(tmp_path: Path) -> None:
     identity = "asrl1"
     fingerprint = hashlib.sha256(f"{identity}\x00".encode("utf-8")).hexdigest()
@@ -296,6 +392,7 @@ def test_stale_cleanup_removes_malformed_legacy_metadata_only_when_free(tmp_path
 def test_windows_default_lease_directory_uses_local_app_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("WAVEBENCH_LEASE_DIR", raising=False)
     monkeypatch.setattr(lease_module, "_is_windows", lambda: True)
     monkeypatch.setenv("LOCALAPPDATA", r"C:\\Users\\tester\\AppData\\Local")
 
