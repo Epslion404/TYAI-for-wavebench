@@ -242,6 +242,61 @@ def test_status_reports_ambiguous_legacy_holders_without_stale_fallback(
         assert lease.clear_stale_metadata() is False
 
 
+@pytest.mark.parametrize("reverse", [False, True], ids=["valid-first", "valid-last"])
+@pytest.mark.parametrize(
+    "other_record", ["missing", "invalid-json", "invalid-utf8", "invalid-id", "same", "conflict"],
+)
+def test_status_checks_every_busy_sidecar_across_processes(
+    tmp_path: Path, reverse: bool, other_record: str,
+) -> None:
+    paths = sorted(
+        tmp_path / (hashlib.sha256(f"{identity}\x00".encode("utf-8")).hexdigest() + ".lock")
+        for identity in ("tcpip::bench::instr", "tcpip::bench")
+    )
+    if reverse:
+        paths.reverse()
+    record = {"lease_id": "active", "pid": os.getpid()}
+    script = """
+import json
+from pathlib import Path
+import sys
+from wavebench.services.resource_lease import ResourceLease
+lease = ResourceLease('TCPIP::bench::INSTR', directory=Path(sys.argv[1]))
+status = lease.status()
+status['cleanup_removed'] = lease.clear_stale_metadata()
+print(json.dumps(status))
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    with ExitStack() as stack:
+        for path in paths:
+            stack.enter_context(file_lock.FileLock(path))
+        paths[0].with_suffix(".json").write_text(json.dumps(record), encoding="utf-8")
+        if other_record == "invalid-utf8":
+            paths[1].with_suffix(".json").write_bytes(b"\xff\xfe")
+        elif other_record != "missing":
+            text = {
+                "invalid-json": "{broken",
+                "invalid-id": json.dumps({"lease_id": None}),
+                "same": json.dumps(record),
+                "conflict": json.dumps({"lease_id": "other"}),
+            }[other_record]
+            paths[1].with_suffix(".json").write_text(text, encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, "-X", "utf8", "-c", script, str(tmp_path)],
+            env=environment, capture_output=True, text=True, check=True, timeout=20,
+        )
+        status = json.loads(completed.stdout)
+        assert status["held"] is True
+        assert status["stale_metadata"] is False
+        assert status["metadata_ambiguous"] is (other_record != "same")
+        assert status["metadata"] == (record if other_record == "same" else None)
+        assert status["cleanup_removed"] is False
+        assert _child_attempt(tmp_path, "TCPIP::bench::INSTR") == "busy"
+    assert ResourceLease("TCPIP::bench::INSTR", directory=tmp_path).clear_stale_metadata() is True
+    assert all(path.exists() for path in paths)
+
+
 @pytest.mark.parametrize("legacy_first", [False, True])
 def test_unenumerated_v1_socket_padding_requires_all_processes_to_upgrade(
     tmp_path: Path, legacy_first: bool,
