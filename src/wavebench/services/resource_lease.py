@@ -319,7 +319,7 @@ class ResourceLease:
         for path in dict.fromkeys(paths):
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
             if isinstance(value, dict):
                 return dict(value)
@@ -363,14 +363,14 @@ class ResourceLease:
             ambiguous = False
             if held:
                 candidates = [
-                    value for path in busy_paths
-                    if (value := self._read_holder_metadata([path.with_suffix(".json")])) is not None
+                    self._read_holder_metadata([path.with_suffix(".json")])
+                    for path in busy_paths
                 ]
                 # Sidecars remain diagnostics, not the ownership fact. Missing
                 # or conflicting holder records must not select an arbitrary
                 # legacy process or fall back to a provably free lock's JSON.
                 ambiguous = (
-                    not candidates
+                    any(value is None for value in candidates)
                     or not isinstance(candidates[0].get("lease_id"), str)
                     or not candidates[0]["lease_id"]
                     or any(value != candidates[0] for value in candidates[1:])
