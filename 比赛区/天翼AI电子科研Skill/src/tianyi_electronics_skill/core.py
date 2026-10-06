@@ -9,9 +9,11 @@ from __future__ import annotations
 import ipaddress
 import math
 import socket
+import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 
 from .analysis import analyze_samples, demo_waveform
 from .dialects import AUTOSCALE_CANDIDATES, MEASUREMENT_ITEMS, detect_vendor, measure_candidates
@@ -341,6 +343,21 @@ def measure_scope(
     return result
 
 
+@contextmanager
+def _autoscale_session(session: ScpiSession, result: dict) -> Iterator[ScpiSession]:
+    """Record close failures independently of the operation being completed."""
+    session.__enter__()
+    try:
+        yield session
+    finally:
+        try:
+            session.__exit__(*sys.exc_info())
+        except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
+            category = classify_exception(exc)
+            result["errors"].append(f"{category}: {exc}")
+            result["failures"].append({"category": category, "command": "close", "message": str(exc)})
+
+
 def autoscale_scope(
     host: str,
     port: int = 5025,
@@ -370,13 +387,21 @@ def autoscale_scope(
         "errors": [],
         "failures": [],
     }
+    planned_write_count = 0
+    active_command = "configure_session"
     try:
-        with ScpiSession(host, port, timeout) as session:
-            result["idn"] = session.query("*IDN?")
+        session = ScpiSession(host, port, timeout)
+        active_command = "connect"
+        with _autoscale_session(session, result):
+            active_command = "*IDN?"
+            result["idn"] = session.query(active_command)
             result["vendor"] = detect_vendor(result["idn"] or "")
             if apply:
                 for command in AUTOSCALE_CANDIDATES:
+                    planned_write_count = 1
+                    active_command = command
                     session.write(command)
+                    active_command = "SYST:ERR?"
                     errors = session.drain_errors()
                     result["device_errors"].extend(errors)
                     if errors:
@@ -395,10 +420,11 @@ def autoscale_scope(
                         "verification": "device_error_queue_clean",
                     })
                     result["warnings"].append("通用 autoset 无可移植状态回读；成功仅表示设备错误队列为空")
-                    result["applied"] = True
                     result["mode"] = "vendor_autoset"
                     return result
+            active_command = "read_waveform_in_session"
             waveform = read_waveform_in_session(session, channel, sample_rate=None)
+            active_command = "derive_suggestions"
             metrics = waveform.get("metrics") or {}
             frequency = metrics.get("frequency_hz")
             vpp = metrics.get("peak_to_peak_v")
@@ -424,13 +450,16 @@ def autoscale_scope(
                 result["warnings"].append("未取得足够波形指标，无法生成等效 autoscale 建议")
             if apply and result["suggestions"]:
                 writes = []
-                derived_results: list[dict] = []
                 if "timebase_range_s" in result["suggestions"]:
                     writes.append(f"TIMebase:RANGe {result['suggestions']['timebase_range_s']:.12g}")
                 if "channel_offset_v" in result["suggestions"]:
                     writes.append(f":{channel}:OFFS {result['suggestions']['channel_offset_v']:.12g}")
+                planned_write_count = len(writes)
+                result["mode"] = "derived_settings"
                 for command in writes:
+                    active_command = command
                     session.write(command)
+                    active_command = "SYST:ERR?"
                     errors = session.drain_errors()
                     result["device_errors"].extend(errors)
                     item = {
@@ -440,7 +469,6 @@ def autoscale_scope(
                         "device_errors": errors,
                     }
                     result["write_results"].append(item)
-                    derived_results.append(item)
                     if errors:
                         result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
                         result["failures"].append({
@@ -456,6 +484,7 @@ def autoscale_scope(
                     query = "TIMebase:RANGe?" if command.startswith("TIMebase:RANGe") else f":{channel}:OFFS?"
                     requested = float(command.rsplit(" ", 1)[1])
                     try:
+                        active_command = query
                         raw_readback = session.query(query)
                     except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
                         item["readback"] = None
@@ -504,23 +533,18 @@ def autoscale_scope(
                             "command": query,
                             "message": f"设置后的回读值 {readback:g} 与请求值 {requested:g} 不匹配",
                         })
-                successful = sum(1 for item in derived_results if item["ok"])
-                result["applied"] = successful == len(writes) and bool(writes)
-                result["partially_applied"] = 0 < successful < len(writes)
-                result["mode"] = "derived_settings"
+            active_command = "close"
     except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
         category = classify_exception(exc)
         result["errors"].append(f"{category}: {exc}")
-        result["failures"].append({"category": category, "command": "autoscale", "message": str(exc)})
-        # An exception after one or more derived writes must not erase a
-        # setting already confirmed by readback.  Vendor autoset entries do
-        # not have ``write_accepted`` and intentionally do not count here.
-        if apply and any(
-            item.get("write_accepted") and item.get("ok")
-            for item in result["write_results"]
-        ):
-            result["applied"] = False
-            result["partially_applied"] = True
+        result["failures"].append({"category": category, "command": active_command, "message": str(exc)})
+    finally:
+        if apply:
+            # Failed vendor probes do not count; derived entries become ok
+            # only after readback.  Closing cannot undo verified settings.
+            successful = sum(1 for item in result["write_results"] if item["ok"])
+            result["applied"] = planned_write_count > 0 and successful == planned_write_count
+            result["partially_applied"] = 0 < successful < planned_write_count
     return result
 
 

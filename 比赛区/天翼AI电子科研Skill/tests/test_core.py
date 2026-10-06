@@ -329,6 +329,6 @@ def test_autoscale_exception_after_verified_write_remains_partial(monkeypatch):
     assert result["write_results"][-1]["verified"] is True
     assert result["failures"][-1] == {
         "category": "timeout",
-        "command": "autoscale",
+        "command": "SYST:ERR?",
         "message": "error queue timed out",
     }

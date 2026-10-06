@@ -226,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                 # transport/parse failure remains an execution failure.
                 return 2 if result.get("errors") or result.get("failures") else 0
             if result.get("applied"):
-                return 0
+                return 2 if result.get("errors") else 0
             if result.get("partially_applied"):
                 return 3
             return 2

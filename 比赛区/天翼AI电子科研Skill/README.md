@@ -69,4 +69,4 @@ python -m tianyi_electronics_skill autoscale --address 192.168.1.20 --channel CH
 python -m tianyi_electronics_skill autoscale --address 192.168.1.20 --channel CHAN1 --apply
 ```
 
-Exit status for `autoscale` is part of the machine contract: `0` means a completed read-only suggestion run or a fully verified apply; `2` means no requested setting was verified; `3` means only some requested settings were verified. Inspect `failures`, `unsupported`, and `write_results` before attempting another write.
+Exit status for `autoscale` is part of the machine contract: `0` means a completed read-only suggestion run or a fully verified apply with successful cleanup; `2` means execution failed or no requested setting was verified; `3` means only some requested settings were verified. If every setting was verified but closing the connection failed, retain `applied=true` and return `2`; the close failure does not turn a complete application into a partial one. Inspect `failures` (including the failed command), `unsupported`, and `write_results` before attempting another write.

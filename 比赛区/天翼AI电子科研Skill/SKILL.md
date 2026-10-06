@@ -32,6 +32,10 @@ metadata:
 - `2`：执行失败，或 `autoscale --apply` 未能验证应用任一设置。JSON 中保留 `failures`、`unsupported` 与 `write_results`。
 - `3`：`autoscale --apply` 只验证应用了部分设置；应根据 `write_results` 与 `failures` 决定是否人工恢复或重试。
 
+`applied` 与 `partially_applied` 按已验证的设置统计，连接关闭等清理错误另记 `failures`。全部设置已验证但关闭失败时，保留 `applied=true`、`partially_applied=false`，退出码为 `2`；只有部分设置已验证且后续失败时退出码为 `3`。失败条目的 `command` 为实际执行的 SCPI 命令，连接或清理阶段则明确记录 `connect`、`configure_session` 或 `close`。
+
+SCPI 查询使用一次查询的总截止时间。文本与二进制块共享接收缓冲，消费可分段到达的 CRLF 及块尾终止符。超时或不完整响应使会话失效并关闭；再次通信需要新会话，不能把迟到响应当成下一条命令的结果，也不自动重放写入或查询。
+
 ## 推荐工作流
 
 1. 先调用 `discover` 或让用户提供 `TCPIP::<ip>::INSTR`，不要猜测设备地址。

@@ -26,8 +26,8 @@ class UnsupportedCommandError(RuntimeError):
     """设备错误队列明确拒绝了配置命令。"""
 
 
-def _append_failure(result: dict, category: str, message: str) -> None:
-    failure = {"category": category, "message": message}
+def _append_failure(result: dict, category: str, command: str, message: str) -> None:
+    failure = {"category": category, "command": command, "message": message}
     result["failures"].append(failure)
     result["errors"].append(f"{category}: {message}")
 
@@ -139,45 +139,61 @@ def _collect_waveform(
     max_bytes: int = DEFAULT_MAX_BLOCK_BYTES,
 ) -> None:
     """在已打开的会话里完成一次波形读取（读取失败抛异常，由调用方记录）。"""
-    channel = validate_channel(channel)
-    result["channel"] = channel
-    result["idn"] = session.query("*IDN?")
-    result["vendor"] = detect_vendor(result["idn"])
-    for command in FORMAT_COMMANDS[waveform_format]:
-        session.write(command)
-        rejected = session.drain_errors()
-        if rejected:
-            result["device_errors"].extend(rejected)
-            raise UnsupportedCommandError(f"{command}: {'; '.join(rejected)}")
-    if points != "auto":
-        session.write(f"{channel}:DATA:POINts {points}")
-        rejected = session.drain_errors()
-        if rejected:
-            result["device_errors"].extend(rejected)
-            result["warnings"].append(f"points={points} 被设备拒绝: {'; '.join(rejected)}")
+    command = "validate_channel"
+    try:
+        channel = validate_channel(channel)
+        result["channel"] = channel
+        command = "*IDN?"
+        result["idn"] = session.query(command)
+        result["vendor"] = detect_vendor(result["idn"])
+        for format_command in FORMAT_COMMANDS[waveform_format]:
+            command = format_command
+            session.write(command)
+            command = "SYST:ERR?"
+            rejected = session.drain_errors()
+            if rejected:
+                result["device_errors"].extend(rejected)
+                command = format_command
+                raise UnsupportedCommandError(f"{command}: {'; '.join(rejected)}")
+        if points != "auto":
+            command = f"{channel}:DATA:POINts {points}"
+            session.write(command)
+            command = "SYST:ERR?"
+            rejected = session.drain_errors()
+            if rejected:
+                result["device_errors"].extend(rejected)
+                result["warnings"].append(f"points={points} 被设备拒绝: {'; '.join(rejected)}")
 
-    header = session.query(DATA_HEADER_QUERY.format(channel=channel))
-    command = DATA_QUERY.format(channel=channel)
-    if waveform_format == "real":
-        samples = decode_waveform_block(session.query_block(command, max_bytes))
-    else:
-        samples = decode_ascii_waveform(session.query(command))
-    if not samples:
-        raise ValueError("设备返回了空波形或无法解析的波形数据")
+        command = DATA_HEADER_QUERY.format(channel=channel)
+        header = session.query(command)
+        command = DATA_QUERY.format(channel=channel)
+        if waveform_format == "real":
+            samples = decode_waveform_block(session.query_block(command, max_bytes))
+        else:
+            samples = decode_ascii_waveform(session.query(command))
+        if not samples:
+            raise ValueError("设备返回了空波形或无法解析的波形数据")
 
-    info = parse_waveform_header(header, len(samples))
-    result["header_raw"] = info["header_raw"]
-    result["xstart_s"] = info["xstart_s"]
-    result["xinc_s"] = info["xinc_s"]
-    result["header_consistent"] = info["header_consistent"]
-    result["warnings"].extend(info["warnings"])
-    result["samples"] = samples
-    result["sample_count"] = len(samples)
+        command = DATA_HEADER_QUERY.format(channel=channel)
+        info = parse_waveform_header(header, len(samples))
+        result["header_raw"] = info["header_raw"]
+        result["xstart_s"] = info["xstart_s"]
+        result["xinc_s"] = info["xinc_s"]
+        result["header_consistent"] = info["header_consistent"]
+        result["warnings"].extend(info["warnings"])
+        result["samples"] = samples
+        result["sample_count"] = len(samples)
 
-    if result["sample_rate_hz"] is None and info["header_consistent"] and info["xinc_s"]:
-        result["sample_rate_hz"] = 1.0 / info["xinc_s"]
-    if samples:
-        result["metrics"] = analyze_samples(samples, result["sample_rate_hz"])
+        command = "analyze_samples"
+        if result["sample_rate_hz"] is None and info["header_consistent"] and info["xinc_s"]:
+            result["sample_rate_hz"] = 1.0 / info["xinc_s"]
+        if samples:
+            result["metrics"] = analyze_samples(samples, result["sample_rate_hz"])
+    except (OSError, ValueError, ConnectionError, TimeoutError, UnsupportedCommandError) as exc:
+        # Add context without wrapping: callers still classify the original
+        # exception type, and its traceback/cause remain intact.
+        exc.scpi_command = command
+        raise
 
 
 def read_waveform(
@@ -200,8 +216,12 @@ def read_waveform(
     channel = validate_channel(channel)
 
     result = _new_result(host, port, channel, points, waveform_format, sample_rate)
+    command = "configure_session"
     try:
-        with ScpiSession(host, port, timeout) as session:
+        session = ScpiSession(host, port, timeout)
+        command = "connect"
+        with session:
+            command = "_collect_waveform"
             _collect_waveform(
                 result,
                 session,
@@ -210,11 +230,15 @@ def read_waveform(
                 waveform_format=waveform_format,
                 max_bytes=max_bytes,
             )
+            command = "SYST:ERR?"
             result["device_errors"].extend(session.drain_errors())
+            command = "close"
     except UnsupportedCommandError as exc:
-        _append_failure(result, "unsupported", str(exc))
+        _append_failure(result, "unsupported", getattr(exc, "scpi_command", command), str(exc))
     except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
-        _append_failure(result, classify_exception(exc), str(exc))
+        _append_failure(
+            result, classify_exception(exc), getattr(exc, "scpi_command", command), str(exc)
+        )
     return result
 
 
@@ -240,14 +264,18 @@ def read_waveform_in_session(
             max_bytes=max_bytes,
         )
     except UnsupportedCommandError as exc:
-        _append_failure(result, "unsupported", str(exc))
+        _append_failure(
+            result, "unsupported", getattr(exc, "scpi_command", "_collect_waveform"), str(exc)
+        )
     except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
-        _append_failure(result, classify_exception(exc), str(exc))
+        _append_failure(
+            result, classify_exception(exc), getattr(exc, "scpi_command", "_collect_waveform"), str(exc)
+        )
     finally:
         try:
             result["device_errors"].extend(session.drain_errors())
         except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
-            _append_failure(result, ERROR_QUEUE_UNAVAILABLE, f"SYST:ERR?: {exc}")
+            _append_failure(result, ERROR_QUEUE_UNAVAILABLE, "SYST:ERR?", f"SYST:ERR?: {exc}")
     return result
 
 
