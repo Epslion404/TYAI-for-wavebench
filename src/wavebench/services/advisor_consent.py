@@ -51,7 +51,9 @@ _SENSITIVE_KEY_PARTS = (
 )
 _SENSITIVE_TEXT = re.compile(
     r"(?i)\b(?:api[_-]?key|authorization|credential|password|secret|token)\b"
-    r"[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|(?:bearer\s+)?[^\s,}]+)"
+    # Consume escaped characters as pairs so an escaped quote cannot end the value.
+    r"[\"']?\s*[:=]\s*(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|"
+    r"(?:bearer\s+)?[^\s,}]+)"
 )
 
 

@@ -17,6 +17,10 @@ from wavebench.services.decision_artifacts import (
 OPTIONS = (RoutingOption("scope", "Scope help", "wavebench scope --help", False),)
 BAD_NUMBERS = [float("nan"), float("inf"), -float("inf"), -0.1, 1.5,
                "oops", "0.9", None, True, [], {}, 10**400]
+ESCAPED_CREDENTIALS = [
+    json.dumps({"api_key": value})
+    for value in ('prefix"AUDIT_DUMMY', 'prefix\\"AUDIT_DUMMY\\tail', 'AUDIT_DUMMY\\')
+] + [r"{'token': 'prefix\'AUDIT_DUMMY\\tail'}"]
 
 
 def response(**overrides):
@@ -100,6 +104,7 @@ def test_probability_boundaries_remain_valid(probability):
 @pytest.mark.parametrize("model", [
     "fake api_key=AUDIT_DUMMY", 'fake {"api_key": "AUDIT_DUMMY extra"}',
     "fake {'token': 'AUDIT_DUMMY extra'}",
+    *("fake " + text + " diagnosis=keep" for text in ESCAPED_CREDENTIALS),
 ])
 def test_response_diagnostics_are_safe_in_cli_and_persisted_artifact(valid, model, tmp_path, capsys):
     raw = response(choice="scope" if valid else "token=AUDIT_DUMMY")
@@ -113,13 +118,42 @@ def test_response_diagnostics_are_safe_in_cli_and_persisted_artifact(valid, mode
     assert "AUDIT_DUMMY" not in capsys.readouterr().out
     assert "AUDIT_DUMMY" not in path.read_text(encoding="utf-8")
     assert "AUDIT_DUMMY" not in str(artifact)
+    assert "AUDIT_DUMMY" not in artifact.reported_model
+    if "diagnosis=keep" in model:
+        assert "diagnosis=keep" in artifact.reported_model
 
 
-def test_direct_artifact_diagnostics_are_redacted(capsys):
+@pytest.mark.parametrize("credential", [
+    "token=AUDIT_DUMMY", "api_key=AUDIT_DUMMY", "password=AUDIT_DUMMY",
+    "authorization: Bearer AUDIT_DUMMY", *ESCAPED_CREDENTIALS,
+])
+def test_direct_artifact_diagnostics_are_redacted(credential, tmp_path, capsys):
     artifact = DecisionArtifact(
-        status="invalid", requested_model="fake token=AUDIT_DUMMY",
-        reported_model="fake api_key=AUDIT_DUMMY", reason="failure password=AUDIT_DUMMY",
+        status="invalid", requested_model=f"fake {credential} diagnosis=keep",
+        reported_model=f"fake {credential} diagnosis=keep",
+        reason=f"failure {credential} diagnosis=keep",
     )
+    for diagnostic in (artifact.requested_model, artifact.reported_model, artifact.reason):
+        assert "AUDIT_DUMMY" not in diagnostic
+        assert "diagnosis=keep" in diagnostic
     print_decision_artifact(artifact)
-    assert "AUDIT_DUMMY" not in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "AUDIT_DUMMY" not in output
+    assert "diagnosis=keep" in output
     assert "AUDIT_DUMMY" not in artifact.to_json()
+    path = write_decision_artifact(artifact, run_dir=tmp_path, advisor_id="fake")
+    assert "AUDIT_DUMMY" not in path.read_text(encoding="utf-8")
+
+
+def test_normal_artifact_diagnostics_are_preserved(capsys):
+    artifact = DecisionArtifact(
+        status="invalid", requested_model="fake.v1", reported_model="fake.v2",
+        reason="invalid_advisor_response: answer probability must be within 0..1",
+    )
+    assert artifact.requested_model == "fake.v1"
+    assert artifact.reported_model == "fake.v2"
+    assert artifact.reason == "invalid_advisor_response: answer probability must be within 0..1"
+    print_decision_artifact(artifact)
+    output = capsys.readouterr().out
+    assert "fake.v1" in output and "fake.v2" in output
+    assert artifact.reason in output
