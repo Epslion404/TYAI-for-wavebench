@@ -74,16 +74,22 @@ def test_read_block_rejects_oversized_declared_length():
     with FakeScpiServer({"CHAN1:DATA?": encode_block(b"\x00" * 64)}) as server:
         host, port = server.address
         with ScpiSession(host, port, timeout=2.0) as session:
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError) as raised:
                 session.query_block("CHAN1:DATA?", max_bytes=16)
+            assert raised.value.scpi_command == "CHAN1:DATA?"
+            assert session._socket is None
 
 
 def test_read_block_times_out_when_payload_incomplete():
     with FakeScpiServer({"CHAN1:DATA?": b"#3100"}) as server:
         host, port = server.address
         with ScpiSession(host, port, timeout=0.3) as session:
-            with pytest.raises(TimeoutError):
+            with pytest.raises(TimeoutError) as raised:
                 session.query_block("CHAN1:DATA?")
+            assert raised.value.scpi_command == "CHAN1:DATA?"
+            assert session._socket is None
+            with pytest.raises(ConnectionError):
+                session.query("NEXT?")
 
 
 def test_read_block_rejects_text_answer():
@@ -147,9 +153,10 @@ def test_error_queue_timeout_is_not_treated_as_empty_and_closes_session():
     socket = _ScriptedSocket([TimeoutError("slow error queue")])
     session._socket = socket  # type: ignore[assignment]
 
-    with pytest.raises(TimeoutError, match="slow error queue"):
+    with pytest.raises(TimeoutError, match="slow error queue") as raised:
         session.drain_errors()
 
+    assert raised.value.scpi_command == "SYST:ERR?"
     assert 0.25 not in socket.set_timeouts
     assert socket.closed is True
     assert session._socket is None
