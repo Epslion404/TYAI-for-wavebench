@@ -91,7 +91,8 @@ class DecisionArtifactTests(unittest.TestCase):
                 _artifact(), run_dir, advisor_id="typesafe.jev", timestamp="20260929T104827Z"
             )
 
-            self.assertEqual(written, run_dir / "decisions" / "20260929T104827Z-typesafe.jev.json")
+            self.assertEqual(written.parent, run_dir / "decisions")
+            self.assertRegex(written.name, r"^20260929T104827Z-typesafe\.jev-[0-9a-f]{32}\.json$")
             payload = json.loads(written.read_text(encoding="utf-8"))
             self.assertEqual(payload["schema"], "wavebench.decision.v1")
             self.assertEqual(payload["status"], "refused")
@@ -99,10 +100,11 @@ class DecisionArtifactTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), content, f"{path.name} must not change")
             self.assertEqual(sorted(p.name for p in run_dir.iterdir()), ["decisions", "run.json", "steps", "summary.csv"])
 
-            with self.assertRaises(artifacts.DecisionArtifactError):
-                artifacts.write_artifact(
-                    _artifact(), run_dir, advisor_id="typesafe.jev", timestamp="20260929T104827Z"
-                )
+            second = artifacts.write_artifact(
+                _artifact(), run_dir, advisor_id="typesafe.jev", timestamp="20260929T104827Z"
+            )
+            self.assertNotEqual(written, second)
+            self.assertEqual(written.read_bytes(), second.read_bytes())
 
     def test_artifact_redacts_sensitive_values(self):
         payload = _artifact(
