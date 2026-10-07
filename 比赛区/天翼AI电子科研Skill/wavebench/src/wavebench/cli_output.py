@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 from typing import Any
@@ -327,18 +328,19 @@ def _print_scpi_plugin_info(scpi_plugin: DeclarativeScpiPlugin) -> None:
     print(f"scpi_idn_query={scpi_plugin.idn_query}")
 
 
-def _print_protocol_plugin_info(protocol_plugin: DeclarativeProtocolPlugin) -> None:
-    _print_plugin_info(protocol_plugin.plugin)
-    frame = protocol_plugin.frame
-    print(f"protocol_framing={frame.framing}")
-    print(f"protocol_magic_hex={frame.magic.hex().upper()}")
-    print(f"protocol_header_bytes={frame.header_bytes}")
-    print(f"protocol_max_frame_bytes={frame.max_frame_bytes}")
-    print(f"protocol_sample_type={frame.sample_type}")
-    print(f"protocol_endian={frame.endian}")
-    print(f"protocol_checksum={frame.checksum}")
-    print(f"protocol_response_timeout_ms={frame.response_timeout_ms}")
-    print(f"protocol_inter_frame_gap_ms={frame.inter_frame_gap_ms}")
+def _protocol_plugin_info_payload(declaration: DeclarativeProtocolPlugin) -> dict[str, Any]:
+    frame = asdict(declaration.frame)
+    for field in ("magic", "delimiter", "escape"):
+        value = frame.pop(field)
+        frame[f"{field}_hex"] = value.hex().upper() if value is not None else None
+    return {"plugin": asdict(declaration.plugin), "protocol": frame}
+
+
+def _print_protocol_plugin_info(declaration: DeclarativeProtocolPlugin) -> None:
+    _print_plugin_info(declaration.plugin)
+    for key, value in _protocol_plugin_info_payload(declaration)["protocol"].items():
+        if value is not None:
+            print(f"protocol_{key}={value}")
 
 
 def _print_scpi_doctor(records: list[tuple[str, str, str]]) -> None:

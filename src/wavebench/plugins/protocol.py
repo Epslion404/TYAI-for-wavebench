@@ -1,16 +1,36 @@
-"""Declarative, non-SCPI frame definitions for local instrument plugins.
+"""Offline declarative binary frame contracts (Core device RFC, stage 2).
 
-The module deliberately describes and validates frames only.  Opening a transport,
-reading bytes, and choosing a driver remain Core responsibilities; callers pass a
-complete frame from ``read_exact`` or ``read_until`` to ``validate_frame``.
+Wire layout is header + payload + optional CRC16/Modbus + optional delimiter.
+The length field counts payload bytes, or header + payload when
+length_includes_header=true; it never counts CRC or delimiter. CRC covers the
+header and payload, is little endian, and precedes the delimiter. Fixed length
+counts the whole frame. All framings require the complete declared header.
+
+Delimiter framing terminates at the FIRST delimiter, including one in the header
+or CRC: embedded delimiters and concatenated frames are rejected. For a length
+prefixed frame a delimiter is a trailer, so payload delimiters are allowed.
+escape_hex is unsupported and fails closed at declaration time: no byte-stuffing
+encoding has been agreed. Drivers must not interpret it as an inert annotation.
+
+Manifests are bounded to 1 MiB, headers/frames to 64 MiB. Length fields occupy
+1, 2 or 4 bytes wholly inside the header and count bytes without scaling. Timing
+values are integers up to 2**31-1 ms (timeout positive, gap nonnegative). Required
+fields never default to None; booleans are not accepted as integer quantities.
+Sample/endian/checksum declarations use closed allowlists below. A supplied
+length is checked against these bounds before any payload allocation or decoding.
+
+This module returns original wire bytes and opens no transport. Request mapping,
+payload decoding, stream splitting and executable driver selection are outside
+this contract. Parsing failures use Core's bounded, payload-free transport error
+attributes; they describe a supplied response, not an actual transmission here.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 import tomllib
+from typing import Any
 
 from wavebench.errors import ConfigError, TransportIOError
 from wavebench.transport.contracts import (
@@ -26,16 +46,15 @@ from .registry import PluginRegistry, plugin_doctor_records
 
 
 MAX_DECLARED_FRAME_BYTES = 64 * 1024 * 1024
+MAX_PROTOCOL_MANIFEST_BYTES = 1024 * 1024
+MAX_PROTOCOL_TIME_MS = 2**31 - 1
 _FRAMINGS = {"fixed", "length_prefixed", "delimiter"}
-_CHECKSUMS = {"none", "crc16_modbus"}
-_SAMPLE_TYPES = {"f32", "f64", "i16", "u16", "i32", "u32"}
 _ENDIANS = {"little", "big"}
+_SAMPLE_TYPES = {"f32", "f64", "i16", "u16", "i32", "u32"}
 
 
 @dataclass(frozen=True)
 class FrameDefinition:
-    """A bounded binary frame contract declared by a local TOML plugin."""
-
     framing: str
     magic: bytes
     header_bytes: int
@@ -53,67 +72,53 @@ class FrameDefinition:
     delimiter: bytes | None = None
     escape: bytes | None = None
 
+    def __post_init__(self) -> None:
+        if self.escape is not None:
+            raise ConfigError("protocol.escape_hex is unsupported; byte-stuffing encoding is not defined")
+
     def validate_frame(self, frame: bytes) -> bytes:
-        """Return one proven frame or raise a structured parsing failure.
-
-        The returned bytes are the original on-wire frame.  Payload extraction and
-        vendor field decoding belong to the executable driver, so declarations do
-        not gain implicit write or device-control authority.
-        """
-
+        """Validate exactly one complete wire frame without allocating from its length."""
         if not isinstance(frame, bytes):
             raise ConfigError("protocol frame must be bytes")
-        if len(frame) > self.max_frame_bytes:
-            raise _frame_error("frame_too_large", len(frame))
-        if len(frame) < len(self.magic) or not frame.startswith(self.magic):
-            raise _frame_error("frame_magic_mismatch", len(frame))
-        if self.framing == "fixed":
-            if len(frame) != self.fixed_length:
-                raise _frame_error("frame_length_invalid", len(frame))
-        elif self.framing == "length_prefixed":
-            self._validate_length_prefixed_frame(frame)
-        else:
-            self._validate_delimiter_frame(frame)
-        self._validate_checksum(frame)
-        return frame
-
-    def _validate_length_prefixed_frame(self, frame: bytes) -> None:
-        assert self.length_offset is not None
-        assert self.length_bytes is not None
-        assert self.length_endian is not None
-        field_end = self.length_offset + self.length_bytes
-        if len(frame) < field_end:
-            raise _frame_error("frame_header_incomplete", len(frame))
-        declared = int.from_bytes(frame[self.length_offset:field_end], self.length_endian)
-        trailer_bytes = 0
-        if self.delimiter is not None:
-            trailer_bytes = len(self.delimiter)
-        checksum_bytes = 2 if self.checksum == "crc16_modbus" else 0
-        expected = declared + checksum_bytes + trailer_bytes
-        if not self.length_includes_header:
-            expected += self.header_bytes
-        if expected > self.max_frame_bytes:
-            raise _frame_error("frame_too_large", len(frame))
-        if len(frame) != expected:
-            raise _frame_error("frame_length_invalid", len(frame))
-        if self.delimiter is not None and not frame.endswith(self.delimiter):
-            raise _frame_error("frame_delimiter_missing", len(frame))
-
-    def _validate_delimiter_frame(self, frame: bytes) -> None:
-        assert self.delimiter is not None
-        if not frame.endswith(self.delimiter):
-            raise _frame_error("frame_delimiter_missing", len(frame))
-
-    def _validate_checksum(self, frame: bytes) -> None:
-        if self.checksum == "none":
-            return
+        size = len(frame)
+        if size > self.max_frame_bytes:
+            raise _frame_error("frame_too_large", size)
+        if size < self.header_bytes:
+            raise _frame_error("frame_header_incomplete", size)
+        if not frame.startswith(self.magic):
+            raise _frame_error("frame_magic_mismatch", size)
         trailer = len(self.delimiter or b"")
-        if len(frame) < trailer + 2:
-            raise _frame_error("frame_checksum_missing", len(frame))
-        payload_end = len(frame) - trailer - 2
-        expected = int.from_bytes(frame[payload_end : payload_end + 2], "little")
-        if _crc16_modbus(frame[:payload_end]) != expected:
-            raise _frame_error("frame_checksum_failed", len(frame))
+        crc_bytes = 2 if self.checksum == "crc16_modbus" else 0
+        minimum = self.header_bytes + crc_bytes + trailer
+        if self.framing == "fixed":
+            if size != self.fixed_length:
+                raise _frame_error("frame_length_invalid", size)
+        elif self.framing == "length_prefixed":
+            assert self.length_offset is not None and self.length_bytes is not None
+            assert self.length_endian is not None
+            end = self.length_offset + self.length_bytes
+            declared = int.from_bytes(frame[self.length_offset:end], self.length_endian)
+            body = declared if self.length_includes_header else self.header_bytes + declared
+            if body < self.header_bytes:
+                raise _frame_error("frame_length_invalid", size)
+            expected = body + crc_bytes + trailer
+            if expected > self.max_frame_bytes:
+                raise _frame_error("frame_too_large", size)
+            if size != expected:
+                raise _frame_error("frame_length_invalid", size)
+        if size < minimum:
+            raise _frame_error("frame_length_invalid", size)
+        if self.delimiter is not None:
+            if not frame.endswith(self.delimiter):
+                raise _frame_error("frame_delimiter_missing", size)
+            if self.framing == "delimiter" and frame.find(self.delimiter) != size - trailer:
+                raise _frame_error("frame_multiple_delimiters", size)
+        if crc_bytes:
+            payload_end = size - trailer - crc_bytes
+            expected_crc = int.from_bytes(frame[payload_end:payload_end + 2], "little")
+            if _crc16_modbus(frame[:payload_end]) != expected_crc:
+                raise _frame_error("frame_checksum_failed", size)
+        return frame
 
 
 @dataclass(frozen=True)
@@ -123,143 +128,173 @@ class DeclarativeProtocolPlugin:
 
 
 def load_protocol_plugin(path: str | Path) -> DeclarativeProtocolPlugin:
-    """Read and validate a local non-SCPI protocol TOML declaration."""
-
+    """Read at most 1 MiB, then validate metadata and all required frame fields."""
     plugin_path = Path(path)
     try:
-        raw = tomllib.loads(plugin_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError) as exc:
-        raise ConfigError(f"unable to read protocol plugin {plugin_path}: {exc}") from exc
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"invalid protocol plugin TOML {plugin_path}: {exc}") from exc
+        with plugin_path.open("rb") as stream:
+            data = stream.read(MAX_PROTOCOL_MANIFEST_BYTES + 1)
+        if len(data) > MAX_PROTOCOL_MANIFEST_BYTES:
+            raise ConfigError("protocol plugin manifest exceeds maximum size")
+        raw = tomllib.loads(data.decode("utf-8"))
+    # tomllib may also expose Python's integer-digit limit or recursion limit.
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ConfigError(f"unable to parse protocol plugin {plugin_path}: {exc}") from exc
     return _parse_protocol_plugin(raw)
 
 
 def protocol_plugin_doctor_records(path: str | Path) -> list[tuple[str, str, str]]:
     try:
-        protocol_plugin = load_protocol_plugin(path)
+        declaration = load_protocol_plugin(path)
     except ConfigError as exc:
         return [("error", str(path), str(exc))]
-    records = plugin_doctor_records(PluginRegistry((protocol_plugin.plugin,)))
+    records = plugin_doctor_records(PluginRegistry((declaration.plugin,)))
     return [(record.severity, record.subject, record.message) for record in records]
 
 
 def has_protocol_doctor_errors(records: list[tuple[str, str, str]]) -> bool:
-    return any(record[0] == "error" for record in records)
+    return any(severity == "error" for severity, _, _ in records)
 
 
 def _parse_protocol_plugin(raw: Any) -> DeclarativeProtocolPlugin:
-    if not isinstance(raw, dict):
-        raise ConfigError("protocol plugin file must contain a TOML table")
-    protocol = raw.get("protocol")
-    if not isinstance(protocol, dict):
+    if not isinstance(raw, dict) or not isinstance(raw.get("protocol"), dict):
         raise ConfigError("protocol plugin field 'protocol' must be a table")
-    plugin = _parse_plugin_metadata(raw)
-    return DeclarativeProtocolPlugin(plugin=plugin, frame=_parse_frame_definition(protocol))
-
-
-def _parse_plugin_metadata(raw: dict[str, Any]) -> InstrumentPlugin:
+    # Validate required frame fields before any shape arithmetic.
+    frame = _parse_frame_definition(raw["protocol"])
     try:
         plugin = InstrumentPlugin(
-            driver_id=_required_text(raw, "driver_id"),
-            kind=_required_text(raw, "kind"),
-            display_name=_required_text(raw, "display_name"),
-            manufacturer=_required_text(raw, "manufacturer"),
-            models=_required_text_tuple(raw, "models"),
-            capabilities=_required_text_tuple(raw, "capabilities"),
-            summary=_required_text(raw, "summary"),
-            api_version=_optional_text(raw, "api_version", SUPPORTED_PLUGIN_API_VERSION),
-            package=_optional_text(raw, "package", "local"),
+            driver_id=_text(raw, "driver_id"),
+            kind=_text(raw, "kind"),
+            display_name=_text(raw, "display_name"),
+            manufacturer=_text(raw, "manufacturer"),
+            models=_texts(raw, "models", required=True),
+            capabilities=_texts(raw, "capabilities", required=True),
+            summary=_text(raw, "summary"),
+            api_version=_text(raw, "api_version", SUPPORTED_PLUGIN_API_VERSION),
+            package=_text(raw, "package", "local"),
             origin="local",
-            idn_patterns=_optional_text_tuple(raw, "idn_patterns"),
-            config_fields=_optional_text_tuple(raw, "config_fields"),
+            idn_patterns=_texts(raw, "idn_patterns"),
+            config_fields=_texts(raw, "config_fields"),
         )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     if plugin.kind not in VALID_PLUGIN_KINDS:
-        raise ConfigError(f"unsupported kind {plugin.kind!r}; expected one of {', '.join(VALID_PLUGIN_KINDS)}")
+        raise ConfigError(f"unsupported kind {plugin.kind!r}")
     if plugin.api_version != SUPPORTED_PLUGIN_API_VERSION:
-        raise ConfigError(
-            f"unsupported api_version {plugin.api_version!r}; expected {SUPPORTED_PLUGIN_API_VERSION!r}"
-        )
-    return plugin
+        raise ConfigError(f"unsupported api_version {plugin.api_version!r}")
+    return DeclarativeProtocolPlugin(plugin, frame)
 
 
 def _parse_frame_definition(raw: dict[str, Any]) -> FrameDefinition:
-    framing = _required_choice(raw, "framing", _FRAMINGS)
-    magic = _required_hex(raw, "magic_hex")
-    max_frame_bytes = _required_positive_int(raw, "max_frame_bytes")
-    if max_frame_bytes > MAX_DECLARED_FRAME_BYTES:
-        raise ConfigError(f"protocol.max_frame_bytes must be <= {MAX_DECLARED_FRAME_BYTES}")
-    header_bytes = _required_positive_int(raw, "header_bytes")
-    if header_bytes < len(magic) or header_bytes > max_frame_bytes:
+    framing = _choice(raw, "framing", _FRAMINGS)
+    magic = _hex(raw, "magic_hex", required=True)
+    header = _integer(raw, "header_bytes", 1, MAX_DECLARED_FRAME_BYTES)
+    maximum = _integer(raw, "max_frame_bytes", 1, MAX_DECLARED_FRAME_BYTES)
+    sample_type = _choice(raw, "sample_type", _SAMPLE_TYPES)
+    endian = _choice(raw, "endian", _ENDIANS)
+    checksum = _choice(raw, "checksum", {"none", "crc16_modbus"}, "none")
+    assert magic is not None
+    if not len(magic) <= header <= maximum:
         raise ConfigError("protocol.header_bytes must be within magic length..max_frame_bytes")
-    checksum = _optional_choice(raw, "checksum", "none", _CHECKSUMS)
-    definition = FrameDefinition(
-        framing=framing,
-        magic=magic,
-        header_bytes=header_bytes,
-        max_frame_bytes=max_frame_bytes,
-        response_timeout_ms=_optional_positive_int(raw, "response_timeout_ms", 1_000),
-        inter_frame_gap_ms=_optional_nonnegative_int(raw, "inter_frame_gap_ms", 0),
-        sample_type=_required_choice(raw, "sample_type", _SAMPLE_TYPES),
-        endian=_required_choice(raw, "endian", _ENDIANS),
-        checksum=checksum,
-        fixed_length=_optional_positive_int(raw, "fixed_length", None),
-        length_offset=_optional_nonnegative_int(raw, "length_offset", None),
-        length_bytes=_optional_choice_int(raw, "length_bytes", None, {1, 2, 4}),
-        length_endian=_optional_choice(raw, "length_endian", None, {"little", "big"}),
-        length_includes_header=_optional_bool(raw, "length_includes_header", False),
-        delimiter=_optional_hex(raw, "delimiter_hex"),
-        escape=_optional_hex(raw, "escape_hex"),
-    )
-    _validate_frame_shape(definition)
-    return definition
-
-
-def _validate_frame_shape(frame: FrameDefinition) -> None:
-    if frame.framing == "fixed":
-        if frame.fixed_length is None:
-            raise ConfigError("protocol.fixed_length is required for fixed framing")
-        if not frame.header_bytes <= frame.fixed_length <= frame.max_frame_bytes:
-            raise ConfigError("protocol.fixed_length must be within header_bytes..max_frame_bytes")
-        if any(value is not None for value in (frame.length_offset, frame.length_bytes, frame.length_endian)):
-            raise ConfigError("fixed framing must not declare length-prefixed fields")
-        if frame.delimiter is not None or frame.escape is not None:
-            raise ConfigError("fixed framing must not declare delimiter or escape")
-        return
-    if frame.framing == "length_prefixed":
-        if None in (frame.length_offset, frame.length_bytes, frame.length_endian):
+    if "escape_hex" in raw:
+        raise ConfigError("protocol.escape_hex is unsupported; byte-stuffing encoding is not defined")
+    fixed = _optional_integer(raw, "fixed_length", 1, maximum)
+    offset = _optional_integer(raw, "length_offset", 0, header)
+    width = _optional_integer(raw, "length_bytes", 1, 4)
+    length_endian = _choice(raw, "length_endian", _ENDIANS) if "length_endian" in raw else None
+    includes = raw.get("length_includes_header", False)
+    if not isinstance(includes, bool):
+        raise ConfigError("protocol.length_includes_header must be a boolean")
+    delimiter = _hex(raw, "delimiter_hex")
+    crc_bytes = 2 if checksum == "crc16_modbus" else 0
+    minimum = header + crc_bytes + len(delimiter or b"")
+    if minimum > maximum:
+        raise ConfigError("protocol header and trailers exceed max_frame_bytes")
+    length_keys = {"length_offset", "length_bytes", "length_endian"}
+    if framing == "fixed":
+        if fixed is None or fixed < minimum:
+            raise ConfigError("protocol.fixed_length must include header and checksum")
+        if length_keys.intersection(raw) or includes or delimiter is not None:
+            raise ConfigError("fixed framing must not declare length fields or delimiter")
+    elif framing == "length_prefixed":
+        if offset is None or width is None or length_endian is None:
             raise ConfigError("length_prefixed framing requires length_offset, length_bytes, and length_endian")
-        assert frame.length_offset is not None and frame.length_bytes is not None
-        if frame.length_offset + frame.length_bytes > frame.header_bytes:
+        if width not in {1, 2, 4}:
+            raise ConfigError("protocol.length_bytes must be one of: 1, 2, 4")
+        if offset + width > header:
             raise ConfigError("protocol length field must be fully contained in header_bytes")
-        if frame.fixed_length is not None:
+        if fixed is not None:
             raise ConfigError("length_prefixed framing must not declare fixed_length")
-        return
-    if frame.delimiter is None:
-        raise ConfigError("delimiter framing requires delimiter_hex")
-    if frame.header_bytes != len(frame.magic):
-        raise ConfigError("delimiter framing header_bytes must equal the magic length")
-    if frame.escape is not None and frame.escape == frame.delimiter:
-        raise ConfigError("protocol.escape_hex must differ from delimiter_hex")
-    if any(value is not None for value in (frame.fixed_length, frame.length_offset, frame.length_bytes, frame.length_endian)):
-        raise ConfigError("delimiter framing must not declare fixed or length-prefixed fields")
+    else:
+        if delimiter is None:
+            raise ConfigError("delimiter framing requires delimiter_hex")
+        if fixed is not None or length_keys.intersection(raw) or includes:
+            raise ConfigError("delimiter framing must not declare fixed or length fields")
+    return FrameDefinition(
+        framing=framing, magic=magic, header_bytes=header, max_frame_bytes=maximum,
+        response_timeout_ms=_integer(raw, "response_timeout_ms", 1, MAX_PROTOCOL_TIME_MS, 1000),
+        inter_frame_gap_ms=_integer(raw, "inter_frame_gap_ms", 0, MAX_PROTOCOL_TIME_MS, 0),
+        sample_type=sample_type, endian=endian, checksum=checksum, fixed_length=fixed,
+        length_offset=offset, length_bytes=width, length_endian=length_endian,
+        length_includes_header=includes, delimiter=delimiter,
+    )
 
 
-def _frame_error(reason_code: str, consumed_bytes: int) -> TransportIOError:
+def _integer(raw: dict[str, Any], key: str, minimum: int, maximum: int,
+             default: int | None = None) -> int:
+    value = raw.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ConfigError(f"protocol.{key} must be an integer within {minimum}..{maximum}")
+    return value
+
+
+def _optional_integer(raw: dict[str, Any], key: str, minimum: int, maximum: int) -> int | None:
+    return _integer(raw, key, minimum, maximum) if key in raw else None
+
+
+def _choice(raw: dict[str, Any], key: str, choices: set[str], default: str | None = None) -> str:
+    value = raw.get(key, default)
+    if not isinstance(value, str) or value not in choices:
+        raise ConfigError(f"protocol.{key} must be one of: {', '.join(sorted(choices))}")
+    return value
+
+
+def _hex(raw: dict[str, Any], key: str, *, required: bool = False) -> bytes | None:
+    if key not in raw and not required:
+        return None
+    value = raw.get(key)
+    if not isinstance(value, str) or not value or len(value) % 2:
+        raise ConfigError(f"protocol.{key} must be a non-empty even-length hexadecimal string")
+    try:
+        result = bytes.fromhex(value)
+    except ValueError as exc:
+        raise ConfigError(f"protocol.{key} must be hexadecimal") from exc
+    if not result:
+        raise ConfigError(f"protocol.{key} must be non-empty")
+    return result
+
+
+def _text(raw: dict[str, Any], key: str, default: str | None = None) -> str:
+    value = raw.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"protocol plugin field {key!r} must be a non-empty string")
+    return value.strip()
+
+
+def _texts(raw: dict[str, Any], key: str, *, required: bool = False) -> tuple[str, ...]:
+    value = raw.get(key, [])
+    if not isinstance(value, list) or (required and not value):
+        raise ConfigError(f"protocol plugin field {key!r} must contain a list of strings")
+    return tuple(_text({key: item}, key) for item in value)
+
+
+def _frame_error(reason_code: str, size: int) -> TransportIOError:
     return TransportIOError(
-        "declared protocol frame failed validation",
-        operation="protocol.validate_frame",
-        phase=TransportPhase.PARSING,
-        replay_policy=ReplayPolicy.NO_REPLAY,
+        "declared protocol frame failed validation", operation="protocol.validate_frame",
+        phase=TransportPhase.PARSING, replay_policy=ReplayPolicy.NO_REPLAY,
         command_transmission=CommandTransmission.SENT,
-        response_progress=ResponseProgress.COMPLETE if consumed_bytes else ResponseProgress.NONE,
-        synchronization=Synchronization.LOST if consumed_bytes else Synchronization.UNPROVEN,
-        attempts=1,
-        reason_code=reason_code,
-        consumed_bytes=consumed_bytes,
-        discarded_bytes=consumed_bytes,
+        response_progress=ResponseProgress.COMPLETE if size else ResponseProgress.NONE,
+        synchronization=Synchronization.LOST if size else Synchronization.UNPROVEN,
+        attempts=1, reason_code=reason_code, consumed_bytes=size, discarded_bytes=size,
     )
 
 
@@ -272,108 +307,8 @@ def _crc16_modbus(data: bytes) -> int:
     return crc & 0xFFFF
 
 
-def _required_text(raw: dict[str, Any], key: str) -> str:
-    value = raw.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"protocol plugin field {key!r} must be a non-empty string")
-    return value.strip()
-
-
-def _optional_text(raw: dict[str, Any], key: str, default: str) -> str:
-    return _required_text({key: raw.get(key, default)}, key)
-
-
-def _required_text_tuple(raw: dict[str, Any], key: str) -> tuple[str, ...]:
-    result = _optional_text_tuple(raw, key)
-    if not result:
-        raise ConfigError(f"protocol plugin field {key!r} must contain at least one string")
-    return result
-
-
-def _optional_text_tuple(raw: dict[str, Any], key: str) -> tuple[str, ...]:
-    values = raw.get(key, [])
-    if not isinstance(values, list):
-        raise ConfigError(f"protocol plugin field {key!r} must be a list")
-    if any(not isinstance(value, str) or not value.strip() for value in values):
-        raise ConfigError(f"protocol plugin field {key!r} must contain strings")
-    return tuple(value.strip() for value in values)
-
-
-def _required_positive_int(raw: dict[str, Any], key: str) -> int:
-    return _optional_positive_int(raw, key, None)
-
-
-def _optional_positive_int(raw: dict[str, Any], key: str, default: int | None) -> int | None:
-    value = raw.get(key, default)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ConfigError(f"protocol.{key} must be a positive integer")
-    return value
-
-
-def _optional_nonnegative_int(raw: dict[str, Any], key: str, default: int | None) -> int | None:
-    value = raw.get(key, default)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ConfigError(f"protocol.{key} must be a non-negative integer")
-    return value
-
-
-def _required_choice(raw: dict[str, Any], key: str, choices: set[str]) -> str:
-    return _optional_choice(raw, key, None, choices)
-
-
-def _optional_choice(raw: dict[str, Any], key: str, default: str | None, choices: set[str]) -> str | None:
-    value = raw.get(key, default)
-    if value is None:
-        return None
-    if not isinstance(value, str) or value not in choices:
-        raise ConfigError(f"protocol.{key} must be one of: {', '.join(sorted(choices))}")
-    return value
-
-
-def _optional_choice_int(raw: dict[str, Any], key: str, default: int | None, choices: set[int]) -> int | None:
-    value = raw.get(key, default)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value not in choices:
-        raise ConfigError(f"protocol.{key} must be one of: {', '.join(str(item) for item in sorted(choices))}")
-    return value
-
-
-def _optional_bool(raw: dict[str, Any], key: str, default: bool) -> bool:
-    value = raw.get(key, default)
-    if not isinstance(value, bool):
-        raise ConfigError(f"protocol.{key} must be a boolean")
-    return value
-
-
-def _required_hex(raw: dict[str, Any], key: str) -> bytes:
-    value = _optional_hex(raw, key)
-    if value is None:
-        raise ConfigError(f"protocol.{key} must be a non-empty hexadecimal string")
-    return value
-
-
-def _optional_hex(raw: dict[str, Any], key: str) -> bytes | None:
-    value = raw.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value or len(value) % 2:
-        raise ConfigError(f"protocol.{key} must be a non-empty even-length hexadecimal string")
-    try:
-        return bytes.fromhex(value)
-    except ValueError as exc:
-        raise ConfigError(f"protocol.{key} must be hexadecimal") from exc
-
-
 __all__ = [
-    "DeclarativeProtocolPlugin",
-    "FrameDefinition",
-    "MAX_DECLARED_FRAME_BYTES",
-    "has_protocol_doctor_errors",
-    "load_protocol_plugin",
-    "protocol_plugin_doctor_records",
+    "DeclarativeProtocolPlugin", "FrameDefinition", "MAX_DECLARED_FRAME_BYTES",
+    "MAX_PROTOCOL_MANIFEST_BYTES", "MAX_PROTOCOL_TIME_MS", "load_protocol_plugin",
+    "protocol_plugin_doctor_records", "has_protocol_doctor_errors",
 ]

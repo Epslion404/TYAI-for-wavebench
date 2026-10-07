@@ -1489,6 +1489,8 @@ magic_hex = "AA55"
 header_bytes = 2
 fixed_length = 4
 max_frame_bytes = 64
+sample_type = "u16"
+endian = "little"
 '''.strip(),
                 encoding="utf-8",
             )

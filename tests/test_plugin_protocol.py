@@ -58,7 +58,8 @@ endian = "little"
 @pytest.mark.parametrize(
     "protocol, expected",
     [
-        ('framing = "fixed"\nheader_bytes = 1\nfixed_length = 4\nmax_frame_bytes = 8', "magic_hex"),
+        ('framing = "fixed"\nheader_bytes = 1\nfixed_length = 4\nmax_frame_bytes = 8\n'
+         'sample_type = "u16"\nendian = "little"', "magic_hex"),
         (
             'framing = "length_prefixed"\nmagic_hex = "AA"\nheader_bytes = 1\n'
             'length_offset = 0\nlength_bytes = 2\nlength_endian = "little"\nmax_frame_bytes = 8\n'
@@ -69,7 +70,7 @@ endian = "little"
             'framing = "delimiter"\nmagic_hex = "AA"\nheader_bytes = 1\n'
             'delimiter_hex = "0D0A"\nescape_hex = "0D0A"\nmax_frame_bytes = 8\n'
             'sample_type = "u16"\nendian = "little"',
-            "must differ",
+            "escape_hex is unsupported",
         ),
     ],
 )
