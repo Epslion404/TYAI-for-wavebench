@@ -5,7 +5,9 @@ import csv
 from hashlib import sha256
 import io
 import json
+import ntpath
 from pathlib import Path
+import posixpath
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -24,6 +26,7 @@ from wavebench.plugins.package_inspect import (
     inspect_plugin_package,
     inspect_plugin_wheel,
 )
+from wavebench.plugins import install_paths
 
 
 def test_subprocess_environment_preserves_required_windows_context(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,6 +176,28 @@ def test_inspect_wheel_reads_metadata_entry_points_and_hash(tmp_path):
     assert len(package.sha256) == 64
     assert package.size_bytes == path.stat().st_size
     assert package.source_kind == "wheel"
+
+
+@pytest.mark.parametrize("path_rules", [ntpath, posixpath], ids=["windows", "posix"])
+@pytest.mark.parametrize(
+    ("members", "message"),
+    [
+        ({"WAVEBENCH/__init__.py": b"override"}, "core package"),
+        ({"Plugin.PTH": b"import plugin"}, "pth"),
+        ({"plugin.DATA/purelib/file.py": b"relocate"}, "data relocation"),
+        ({"Plugin/data.txt": b"a", "plugin/DATA.txt": b"b"}, "duplicate members"),
+        ({"./Plugin/data.txt": b"a", "Plugin/data.txt": b"b"}, "duplicate members"),
+    ],
+)
+def test_wheel_target_path_aliases(tmp_path, monkeypatch, path_rules, members, message):
+    monkeypatch.setattr(install_paths, "_path", path_rules)
+    wheel = _wheel(tmp_path, extra_members=members)
+    if path_rules is ntpath or message == "duplicate members" and "./Plugin/data.txt" in members:
+        with pytest.raises(ConfigError, match=message):
+            inspect_plugin_wheel(wheel)
+    else:
+        # Case-distinct paths remain legal on case-sensitive POSIX targets.
+        assert set(members).issubset(inspect_plugin_wheel(wheel).member_paths)
 
 
 def test_inspect_wheel_verifies_source_conformance_binding(tmp_path):
