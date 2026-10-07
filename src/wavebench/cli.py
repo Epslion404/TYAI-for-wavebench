@@ -54,6 +54,8 @@ from .cli_output import (
     _print_scpi_doctor,
     _print_scpi_probe_result,
     _print_scpi_plugin_info,
+    _print_protocol_plugin_info,
+    _protocol_plugin_info_payload,
     _print_power_protection_status,
     _print_power_status,
     _print_run_plan_summary,
@@ -121,6 +123,11 @@ from .plugins.registry import (
     plugin_doctor_records,
 )
 from .plugins.scpi import has_scpi_doctor_errors, load_scpi_plugin, probe_scpi_plugin, scpi_plugin_doctor_records
+from .plugins.protocol import (
+    has_protocol_doctor_errors,
+    load_protocol_plugin,
+    protocol_plugin_doctor_records,
+)
 from .services.scope_service import ScopeService
 from .services.source_service import SourceService
 from .services.rf_source_service import RfSourceService
@@ -941,6 +948,24 @@ def _main(argv: list[str] | None = None) -> int:
         if args.domain == "advisor":
             return _run_advisor_ask(args)
         if args.domain == "plugin":
+            if args.command == "protocol":
+                if args.protocol_command == "check":
+                    records = protocol_plugin_doctor_records(args.path)
+                    failed = has_protocol_doctor_errors(records)
+                    if args.json:
+                        _emit_json_result(
+                            [dict(severity=s, subject=t, message=m) for s, t, m in records],
+                            status="failed" if failed else "ok", exit_code=2 if failed else 0,
+                        )
+                    else:
+                        _print_scpi_doctor(records)
+                    return 2 if failed else 0
+                declaration = load_protocol_plugin(args.path)
+                if args.json:
+                    _emit_json_result(_protocol_plugin_info_payload(declaration))
+                else:
+                    _print_protocol_plugin_info(declaration)
+                return 0
             if getattr(args, "category", "instrument") == "advisor" and args.command in (
                 "list",
                 "doctor",
