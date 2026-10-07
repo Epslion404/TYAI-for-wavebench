@@ -47,6 +47,47 @@ class FakeScope:
 
 
 class MultiChannelCaptureTests(unittest.TestCase):
+    def test_failure_evidence_error_preserves_capture_error_and_closed_session(self):
+        from wavebench.services import scope_service
+        real_write = scope_service.write_new_file
+
+        for multiple in (False, True):
+            for filename in ("error.txt", "metadata.partial.json"):
+                with self.subTest(multiple=multiple, filename=filename), tempfile.TemporaryDirectory() as tmp:
+                    original = DataError("capture failed")
+
+                    class FailingScope(FakeScope):
+                        def capture_waveform(self, **kwargs):
+                            raise original
+
+                        def capture_waveforms(self, **kwargs):
+                            kwargs["on_channel_start"](1)
+                            kwargs["on_waveform"](1, _waveform(1))
+                            raise original
+
+                    def fail_evidence(path, content):
+                        if path.name == filename:
+                            raise OSError("hard link unavailable")
+                        return real_write(path, content)
+
+                    scope = FailingScope()
+                    service = ScopeService(config=_config(tmp), logger=CommandLogger())
+                    with patch.object(service, "_open_scope", return_value=scope), patch(
+                        "wavebench.services.scope_service.write_new_file", side_effect=fail_evidence
+                    ):
+                        with self.assertRaises(DataError) as caught:
+                            if multiple:
+                                service.capture_waveforms(channels=[1, 2], label="evidence")
+                            else:
+                                service.capture_waveform(channel=1, label="evidence")
+                    self.assertIs(caught.exception, original)
+                    self.assertIn("hard link unavailable", original.__notes__[0])
+                    self.assertTrue(scope.closed)
+                    [failed] = Path(tmp).glob("*_evidence_failed")
+                    self.assertFalse((failed / filename).exists())
+                    if multiple:
+                        self.assertTrue((failed / "ch1.npy").exists())
+
     def test_metadata_publication_failure_preserves_failed_package(self):
         from wavebench.services import scope_service
         real_write = scope_service.write_new_file

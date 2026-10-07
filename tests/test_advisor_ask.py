@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 
 import pytest
 
@@ -393,7 +394,10 @@ def test_advisor_ask_accepts_external_state_and_writes_an_artifact(tmp_path, cap
     assert "artifact=" in output
     artifacts = sorted((run_dir / DECISIONS_DIRNAME).glob("*.json"))
     assert len(artifacts) == 1
-    assert artifacts[0].name.endswith("-builtin.rule_advisor.json")
+    assert re.fullmatch(
+        r"\d{8}T\d{6}Z-builtin\.rule_advisor-[0-9a-f]{32}\.json", artifacts[0].name
+    )
+    assert f"artifact={artifacts[0]}" in output
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert payload["schema"] == "wavebench.decision.v1"
     assert payload["advisory_only"] is True
