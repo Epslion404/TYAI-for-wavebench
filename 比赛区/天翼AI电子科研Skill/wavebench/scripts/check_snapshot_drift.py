@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Check whether the packaged snapshot under 比赛区/ still matches the root tree.
 
-Read-only: it compares blob hashes in a git ref and never writes anything.
+Read-only: it compares blob hashes in resolved git commits and never writes anything.
 
 The package carries a frozen copy of the Core tree (`比赛区/天翼AI电子科研Skill/wavebench/`),
 so it drifts the moment the root moves. This script makes that gap visible instead of
 relying on someone remembering; 手工同步 by whole-directory overwrite remains the rule.
 
-Exit codes: 0 = in sync (or no snapshot in the ref), 1 = drift found.
+Exit codes: 0 = in sync (or no snapshot in a same-ref check), 1 = drift found,
+2 = an explicitly requested snapshot is absent.
 """
 
 from __future__ import annotations
@@ -45,21 +46,29 @@ def tree_of(ref: str) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ref", default="HEAD", help="Git ref to inspect (default: HEAD)")
+    parser.add_argument("--root-ref", help="Root baseline ref (defaults to --ref)")
+    parser.add_argument("--snapshot-ref", help="Packaged snapshot ref (defaults to --ref)")
     parser.add_argument("--quiet", action="store_true", help="Only print the verdict")
     args = parser.parse_args()
 
-    tree = tree_of(args.ref)
+    root_ref = args.root_ref or args.ref
+    snapshot_ref = args.snapshot_ref or args.ref
+    root_sha = git("rev-parse", "--verify", f"{root_ref}^{{commit}}").strip()
+    snapshot_sha = git("rev-parse", "--verify", f"{snapshot_ref}^{{commit}}").strip()
+    tree = tree_of(snapshot_sha)
+    print(f"root: {root_ref} ({root_sha})")
+    print(f"snapshot ref: {snapshot_ref} ({snapshot_sha})")
     snapshot = {
         path[len(SNAPSHOT_PREFIX):]: sha
         for path, sha in tree.items()
         if path.startswith(SNAPSHOT_PREFIX)
     }
     if not snapshot:
-        print(f"no packaged snapshot in {args.ref} (比赛区/ lives on competition only)")
-        return 0
+        print(f"no packaged snapshot in {snapshot_ref} (比赛区/ lives on competition only)")
+        return 2 if args.root_ref or args.snapshot_ref else 0
     root = {
         path: sha
-        for path, sha in tree.items()
+        for path, sha in tree_of(root_sha).items()
         if not path.startswith(SNAPSHOT_PREFIX) and not path.startswith(ROOT_ONLY_BY_DESIGN)
     }
 
@@ -69,7 +78,7 @@ def main() -> int:
 
     if not args.quiet:
         print(f"snapshot: {SNAPSHOT_PREFIX}")
-        print(f"ref: {args.ref}  |  root {len(root)} files  |  snapshot {len(snapshot)} files")
+        print(f"root {len(root)} files  |  snapshot {len(snapshot)} files")
         for label, paths in (
             ("漏同步（根有快照无）", missing),
             ("内容落后", stale),
@@ -83,9 +92,12 @@ def main() -> int:
             if len(paths) > 40:
                 print(f"  ... 另有 {len(paths) - 40} 个")
 
-    drift = len(missing) + len(stale)
+    drift = len(missing) + len(stale) + len(extra)
     if drift:
-        print(f"\nDRIFT: {len(missing)} 个漏同步 + {len(stale)} 个内容落后；整目录覆盖后重跑包内测试")
+        print(
+            f"\nDRIFT: {len(missing)} 个漏同步 + {len(stale)} 个内容落后"
+            f" + {len(extra)} 个快照多余；整目录覆盖后重跑包内测试"
+        )
         return 1
     print("\nIN SYNC")
     return 0
