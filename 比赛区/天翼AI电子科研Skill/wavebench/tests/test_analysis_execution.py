@@ -241,21 +241,56 @@ def test_cli_execution_profile(tmp_path, analysis_input):
                  '--analysis-execution', str(profile)]) == 0
 
 
-def _allocation_probe():
-    bytearray(512 * 1024**2)
-    raise RuntimeError('allocation unexpectedly exceeded the hard limit')
-
-
 @pytest.mark.skipif(sys.platform != 'win32', reason='Windows native memory enforcement; PR workflow')
 def test_windows_job_rejects_allocation(tmp_path):
+    from analysis_worker_probes import allocation_probe
     output = tmp_path / 'limit'
     policy = AnalysisExecution(memory_bytes=384 * 1024**2)
     policy.preflight()
-    artifact = supervise(_allocation_probe, {}, policy=policy, run_dir=output,
+    artifact = supervise(allocation_probe, {'output': str(output)}, policy=policy, run_dir=output,
         processing_dir=output, fields=FIELDS, source={'status': 'ok'}, limits=AnalysisLimits())
     error = artifact['analysis_pipeline']['error']
     assert error['code'] == 'analysis_worker_failed'
-    assert error['cause']['type'] == 'MemoryError'
+    assert (output / 'probe_started').is_file()
+    assert not (output / 'allocation_succeeded').exists()
+    assert error.get('cause', {}).get('type') == 'MemoryError', error
+    execution = artifact['analysis_pipeline']['execution']
+    assert execution['memory_backend'] == 'windows_job_object'
+    assert execution['memory_bytes'] == 384 * 1024**2
+    assert execution['worker_stage'] == 'target_running'
+    assert execution['worker_report_available']
+
+
+@pytest.mark.parametrize('bootstrap', [False, True])
+def test_native_failure_preserves_worker_phase(tmp_path, bootstrap):
+    from analysis_worker_probes import CrashDuringBootstrap, native_crash
+    output = tmp_path / 'native'
+    artifact = supervise(CrashDuringBootstrap() if bootstrap else native_crash, {},
+        policy=AnalysisExecution(), run_dir=output, processing_dir=output,
+        fields=FIELDS, source={'status': 'ok'}, limits=AnalysisLimits())
+    pipeline = artifact['analysis_pipeline']
+    assert pipeline['error']['code'] == 'analysis_worker_failed'
+    assert pipeline['error'].get('cause') is None
+    assert pipeline['execution']['exitcode'] == 7
+    assert pipeline['execution']['worker_stage'] == ('bootstrap' if bootstrap else 'target_running')
+    assert pipeline['error']['details']['worker_stage'] == pipeline['execution']['worker_stage']
+    assert not pipeline['execution']['worker_report_available']
+    manifest = json.loads((output / 'manifest.json').read_text())
+    assert manifest['execution'] == pipeline['execution']
+    assert manifest['error'] == pipeline['error']
+
+
+def test_allocation_without_limit_is_not_memory_rejection(tmp_path):
+    from analysis_worker_probes import allocation_probe
+    output = tmp_path / 'unlimited'
+    artifact = supervise(allocation_probe, {'output': str(output)},
+        policy=AnalysisExecution(), run_dir=output, processing_dir=output,
+        fields=FIELDS, source={'status': 'ok'}, limits=AnalysisLimits())
+    error = artifact['analysis_pipeline']['error']
+    assert (output / 'probe_started').is_file()
+    assert (output / 'allocation_succeeded').is_file()
+    assert error.get('cause', {}).get('type') == 'RuntimeError'
+    assert artifact['analysis_pipeline']['execution']['worker_report_available']
 
 
 def test_r2_segment_cancellation_before_next_backend_call():
