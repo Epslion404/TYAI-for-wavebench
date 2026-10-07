@@ -54,7 +54,7 @@ python -m wavebench run report data/runs/<run-dir>
 
 先检查 `run.json` 的 `status`，再查看 `summary.csv`、step 记录和报告。`run report` 是离线命令；文件和字段含义见[运行产物 Reference](../reference/artifacts.md)。
 
-用 `--output` 或 `--pdf-output` 导出时，选择独立报告路径。命令会拒绝覆盖原始运行文件、步骤记录、采集包或处理结果，包括 run 引用的目录外处理清单、指标和导出文件，也检查符号链接、Windows junction 和硬链接别名。已有独立报告可刷新；自定义 HTML 名称通过 `report-assets/manifest.json` 识别，保留该文件即可继续更新报告。文件被引用为原始处理证据时，即使使用默认报告名称也会拒绝覆盖。
+用 `--output` 或 `--pdf-output` 导出时，选择独立报告路径。命令会拒绝覆盖原始运行文件、步骤记录、采集包或处理结果，包括 run 引用的目录外采集 metadata、截图、波形文件，以及处理清单、指标和导出文件，也检查符号链接、Windows junction 和硬链接别名。HTML、PDF、报告清单和实际使用的 Plotly 文件会在写入前统一检查路径与硬链接冲突。已有独立报告可刷新；自定义 HTML 和 PDF 名称通过 `report-assets/manifest.json` 识别，保留该文件即可继续更新报告。文件被引用为原始证据时，即使使用默认报告名称也会拒绝覆盖。
 
 ## Verification
 

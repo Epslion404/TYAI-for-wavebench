@@ -8,26 +8,47 @@ from wavebench.data.packages import RunPackage
 from wavebench.errors import ConfigError
 
 
+def report_manifest_paths(run: RunPackage, output_dir: Path) -> dict[str, Path]:
+    """Read refreshable report names only from a manifest for this run."""
+    manifest = output_dir / "report-assets" / "manifest.json"
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        source = urlsplit(payload.get("run_json", ""))
+        if (payload.get("schema") != "wavebench.report_manifest.v1"
+                or source.scheme or source.netloc
+                or (output_dir / unquote(source.path)).resolve() != run.run_json_path.resolve()):
+            return {}
+        result = {}
+        for field in ("report", "pdf"):
+            raw_path = payload.get(field)
+            if isinstance(raw_path, str):
+                path = urlsplit(raw_path)
+                if path.path and not path.scheme and not path.netloc:
+                    result[field] = (output_dir / unquote(path.path)).resolve()
+        return result
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def validate_report_output_pairs(targets: list[Path]) -> None:
+    # All files in one export must be distinct, including existing hard links.
+    for index, target in enumerate(targets):
+        for other in targets[:index]:
+            if target.resolve() == other.resolve() or (
+                target.exists() and other.exists() and target.samefile(other)
+            ):
+                raise ConfigError("report outputs conflict; choose separate paths for each output")
+
+
 def validate_run_report_paths(
     run: RunPackage, targets: list[Path], *, evidence_dirs=(), evidence_files=()
 ) -> None:
+    validate_report_output_pairs(targets)
     root = run.path.resolve()
     report_files = {root / "report.html", root / "report.pdf"}
     # Preserve repeat exports with custom names recorded by our report manifest.
     for target in targets:
-        manifest = target.parent / "report-assets" / "manifest.json"
-        if manifest.is_file():
-            try:
-                payload = json.loads(manifest.read_text(encoding="utf-8"))
-                report = urlsplit(payload.get("report", ""))
-                source = urlsplit(payload.get("run_json", ""))
-                if (payload.get("schema") == "wavebench.report_manifest.v1"
-                        and not report.scheme and not report.netloc
-                        and not source.scheme and not source.netloc
-                        and (target.parent / unquote(source.path)).resolve() == run.run_json_path.resolve()):
-                    report_files.add((target.parent / unquote(report.path)).resolve())
-            except (OSError, ValueError, TypeError, AttributeError):
-                pass
+        report_files.update(report_manifest_paths(run, target.parent).values())
 
     files = {run.run_json_path.resolve(), root / "plan.toml", root / "summary.csv",
              root / "frequency_responses.json"}
