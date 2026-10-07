@@ -413,6 +413,8 @@ print(json.dumps(payload, sort_keys=True))
         direction: str,
         dry_run: bool,
     ) -> LifecycleResult:
+        if dry_run:
+            self._assert_no_pending_journal()
         with self._inspected_input(path) as package:
             self._assert_package_identity(package)
             ledger = self._load_ledger(self.environment())
@@ -461,7 +463,6 @@ print(json.dumps(payload, sort_keys=True))
                 package.version,
             )
             if dry_run:
-                self._assert_no_pending_journal()
                 return result
             with self._locked():
                 environment = self.environment()
