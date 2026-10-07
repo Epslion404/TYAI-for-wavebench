@@ -484,6 +484,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List local CAN adapters; does not open a bus or send CAN frames",
     )
+    net_discover.add_argument(
+        "--mdns",
+        action="store_true",
+        help="Query _scpi._tcp.local advertisements; does not open TCP or send SCPI",
+    )
 
     run_sub = run_parser.add_subparsers(dest="command", required=True)
     run_check = run_sub.add_parser(

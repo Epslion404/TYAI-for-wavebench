@@ -1519,6 +1519,21 @@ max_source_vpp = 2.0
         self.assertTrue(args.serial)
         self.assertTrue(args.can)
 
+    def test_net_discover_accepts_mdns_without_a_tcp_subnet(self):
+        args = build_parser().parse_args(["net", "discover", "--mdns", "--no-visa"])
+
+        self.assertIsNone(args.subnet)
+        self.assertTrue(args.mdns)
+
+    def test_net_discover_forwards_mdns_flag(self):
+        stdout = io.StringIO()
+        with patch("wavebench.cli.discover_instruments", return_value=[]) as discover:
+            with redirect_stdout(stdout):
+                code = main(["net", "discover", "--mdns", "--no-visa"])
+
+        self.assertEqual(code, 0)
+        self.assertTrue(discover.call_args.kwargs["include_mdns"])
+
     def test_net_discover_prints_results(self):
         class StubResult:
             address = "192.0.2.161"

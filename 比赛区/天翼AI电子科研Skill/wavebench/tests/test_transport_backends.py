@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from wavebench.config import ConnectionConfig, DmmConfig, SerialConnectionConfig
+from wavebench.config import CanConnectionConfig, ConnectionConfig, DmmConfig, SerialConnectionConfig
 from wavebench.errors import ConfigError
 from wavebench.instruments.api import InstrumentDescriptor
 from wavebench.instruments.factory import TRANSPORT_FACTORIES, _open_transport, open_instrument_driver
@@ -77,6 +77,8 @@ class TransportBackendDispatchTests(unittest.TestCase):
         self.assertEqual(
             sorted(TRANSPORT_FACTORIES),
             [
+                "can",
+                "can-fd",
                 "pyvisa",
                 "rsinstrument",
                 "rsinstrument-pyvisa-py",
@@ -86,8 +88,8 @@ class TransportBackendDispatchTests(unittest.TestCase):
             ],
         )
 
-    def test_unknown_backend_fails_before_any_io(self):
-        with self.assertRaisesRegex(ConfigError, "unsupported instrument transport backend: can"):
+    def test_can_backend_without_declared_configuration_fails_before_any_io(self):
+        with self.assertRaisesRegex(ConfigError, "requires declared CAN configuration"):
             _open_transport(
                 backend="can",
                 resource="can://can0",
@@ -98,6 +100,61 @@ class TransportBackendDispatchTests(unittest.TestCase):
                 logger=CommandLogger(),
                 serial_config=None,
             )
+
+    def test_declared_can_scope_opens_through_core_factory(self):
+        captured = {}
+
+        class Driver:
+            def idn(self):
+                return "EXAMPLE,CAN"
+
+            def close(self):
+                pass
+
+        descriptor = InstrumentDescriptor(
+            driver_id="example.can.scope",
+            kind="scope",
+            display_name="Example CAN scope",
+            manufacturer="Example",
+            models=("CAN",),
+            aliases=(),
+            capabilities=("scope.idn",),
+            idn_patterns=("EXAMPLE,CAN",),
+            backends=("can",),
+            resource_schemes=("test",),
+            option_specs=(),
+            permissions=("instrument.io",),
+            factory=lambda context: (context.open_transport(), Driver())[1],
+        )
+        concrete = object()
+
+        def open_can(can_config, **kwargs):
+            captured["can_config"] = can_config
+            return concrete
+
+        with (
+            patch(
+                "wavebench.instruments.factory.resolve_instrument_descriptor",
+                return_value=descriptor,
+            ),
+            patch("wavebench.instruments.factory.CanTransport.open", side_effect=open_can),
+        ):
+            opened = open_instrument_driver(
+                driver_reference="example.can.scope",
+                expected_kind="scope",
+                resource="test-bus",
+                configured_backend="can",
+                timeout_ms=1000,
+                opc_timeout_ms=2000,
+                read_retry_attempts=1,
+                read_retry_delay_ms=0,
+                logger=CommandLogger(),
+                can_config=CanConnectionConfig(channel="test-bus", interface="virtual"),
+            )
+
+        self.assertEqual(opened.driver.idn(), "EXAMPLE,CAN")
+        self.assertIs(opened.transport.inner, concrete)
+        self.assertEqual(captured["can_config"].interface, "virtual")
 
     def test_serial_backend_requires_serial_configuration(self):
         with self.assertRaisesRegex(ConfigError, "requires serial configuration"):

@@ -6,7 +6,7 @@
 
 - Python 3.11 或更高版本。
 - 一个新的 WaveBench 工作副本。
-- 不需要 `wavebench.toml`，也不需要连接仪器。
+- 使用仓库自带的 `wavebench.example.toml` 做离线检查，不需要本地 `wavebench.toml` 或连接仪器。
 
 ## 1. 创建虚拟环境并安装
 
@@ -46,7 +46,7 @@ py -3.11 -m venv .venv
 ## 4. 离线检查现有示例
 
 ```bash
-.venv/bin/python -m wavebench run check --plan plans/closure_sine_1k.toml
+.venv/bin/python -m wavebench run check --plan plans/closure_sine_1k.toml --config wavebench.example.toml
 ```
 
 成功时，输出末尾为 `safety_limits=ok / 安全上限=通过`。`run check` 会解析 plan、检查 schema、离线安全上限和声明的 capability；它不会打开 transport 或访问仪器。

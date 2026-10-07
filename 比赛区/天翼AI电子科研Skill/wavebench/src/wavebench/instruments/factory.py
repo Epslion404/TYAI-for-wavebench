@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import re
 from typing import Mapping, cast
 
-from wavebench.config import ConnectionConfig, SerialConnectionConfig
+from wavebench.config import CanConnectionConfig, ConnectionConfig, SerialConnectionConfig
 from wavebench.errors import ConfigError
 from wavebench.logging import CommandLogger
 from wavebench.plugins.api import PluginKind
@@ -13,6 +13,7 @@ from wavebench.services.access_policy import AccessMode, normalize_access_mode
 from wavebench.services.resource_lease import ResourceLease, resource_fingerprint
 from wavebench.transport.base import InstrumentTransport
 from wavebench.transport.binary import visa_binary_contract_supported
+from wavebench.transport.can_transport import CanTransport
 from wavebench.transport.guarded import GuardedAuditedTransport
 from wavebench.transport.pyvisa_transport import PyVisaTransport
 from wavebench.transport.rsinstrument_transport import RsInstrumentTransport
@@ -57,6 +58,7 @@ def open_instrument_driver(
     settings: Mapping[str, object] | None = None,
     options: Mapping[str, object] | None = None,
     serial_config: SerialConnectionConfig | None = None,
+    can_config: CanConnectionConfig | None = None,
     access: AccessMode = "read_write",
     lease: ResourceLease | None = None,
 ) -> OpenedInstrument:
@@ -116,6 +118,7 @@ def open_instrument_driver(
                 read_retry_delay_ms=read_retry_delay_ms,
                 logger=logger,
                 serial_config=serial_config,
+                can_config=can_config,
             )
             session_state = InstrumentSessionState()
             transport = GuardedAuditedTransport(
@@ -261,6 +264,7 @@ class TransportRequest:
     read_retry_delay_ms: int
     logger: CommandLogger
     serial_config: SerialConnectionConfig | None = None
+    can_config: CanConnectionConfig | None = None
 
 
 TransportFactory = Callable[[TransportRequest], InstrumentTransport]
@@ -275,6 +279,12 @@ def _open_serial(request: TransportRequest) -> InstrumentTransport:
         read_retry_attempts=request.read_retry_attempts,
         read_retry_delay_ms=request.read_retry_delay_ms,
     )
+
+
+def _open_can(request: TransportRequest) -> InstrumentTransport:
+    if request.can_config is None:
+        raise ConfigError("CAN instrument driver requires declared CAN configuration")
+    return CanTransport.open(request.can_config, logger=request.logger)
 
 
 def _open_pyvisa(request: TransportRequest) -> InstrumentTransport:
@@ -304,6 +314,8 @@ _SELECT_VISA_BACKENDS = {
 # descriptor.backends 校验、资源 scheme 校验与「I/O 前失败」都复用现有路径。
 TRANSPORT_FACTORIES: dict[str, TransportFactory] = {
     "serial": _open_serial,
+    "can": _open_can,
+    "can-fd": _open_can,
     "pyvisa": _open_pyvisa,
     "rsinstrument": _open_rsinstrument,
     "rsinstrument-socket": _open_rsinstrument_visa,
@@ -322,6 +334,7 @@ def _open_transport(
     read_retry_delay_ms: int,
     logger: CommandLogger,
     serial_config: SerialConnectionConfig | None,
+    can_config: CanConnectionConfig | None = None,
 ) -> InstrumentTransport:
     factory = TRANSPORT_FACTORIES.get(backend)
     if factory is None:
@@ -345,6 +358,7 @@ def _open_transport(
         read_retry_delay_ms=read_retry_delay_ms,
         logger=logger,
         serial_config=serial_config,
+        can_config=can_config,
     )
     return factory(request)
 
