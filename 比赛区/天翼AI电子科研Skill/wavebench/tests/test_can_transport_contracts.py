@@ -25,6 +25,7 @@ def transport(*messages):
 
 def assert_poisoned_without_further_io(guarded):
     backend = guarded.inner
+    assert not backend._pending
     calls = list(backend.bus.mock_calls)
     assert guarded.session_state.health.value == "poisoned"
     for operation in (
@@ -114,6 +115,96 @@ def test_late_complete_response_is_not_success(monkeypatch, operation, timeout_m
 
 @pytest.mark.parametrize("operation", ["read_exact", "read_until"])
 @pytest.mark.parametrize("timeout_ms", [None, 100])
+@pytest.mark.parametrize("arrival", [0.100, 0.101])
+@pytest.mark.parametrize("late_stage", ["receive", "buffer"])
+def test_direct_late_response_cannot_satisfy_next_read(
+    monkeypatch, operation, timeout_ms, arrival, late_stage
+):
+    backend = transport()
+    backend.config = replace(backend.config, timeout_ms=100 if timeout_ms is None else 250)
+    now = [0.0]
+
+    class Reply:
+        @property
+        def data(self):
+            if late_stage == "buffer":
+                now[0] = arrival
+            return b"a\n"
+
+    def receive(*, timeout):
+        assert timeout == pytest.approx(0.1)
+        if late_stage == "receive":
+            now[0] = arrival
+        return Reply()
+
+    backend.bus.recv.side_effect = receive
+    monkeypatch.setattr("wavebench.transport.can_transport.time.monotonic", lambda: now[0])
+
+    def read():
+        if operation == "read_exact":
+            return backend.read_exact(2, timeout_ms=timeout_ms)
+        return backend.read_until(b"\n", max_bytes=4, timeout_ms=timeout_ms)
+
+    with pytest.raises(TransportIOError) as caught:
+        read()
+    assert caught.value.reason_code == "frame_read_timeout"
+    assert caught.value.consumed_bytes == 2
+    assert caught.value.response_progress.value == "partial"
+    assert caught.value.synchronization.value == "lost"
+    backend.bus.recv.side_effect = None
+    backend.bus.recv.return_value = None
+    with pytest.raises(TransportIOError) as fresh:
+        read()
+    assert fresh.value.reason_code == "frame_read_timeout"
+    assert fresh.value.consumed_bytes == 0
+    assert fresh.value.response_progress.value == "none"
+    assert fresh.value.synchronization.value == "unproven"
+    assert not backend._pending
+    assert backend.bus.recv.call_count == 2
+    backend.bus.send.assert_not_called()
+    backend.bus.shutdown.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+@pytest.mark.parametrize("prefix", [b"", b"a"])
+@pytest.mark.parametrize("failure", ["deadline", "empty", "bus_error"])
+def test_direct_read_failure_clears_pending(monkeypatch, operation, prefix, failure):
+    backend = transport(None if failure != "bus_error" else RuntimeError("private-payload"))
+    backend._pending.extend(prefix)
+    ticks = iter([0.0, 0.1] if failure == "deadline" else [0.0, 0.0])
+    monkeypatch.setattr("wavebench.transport.can_transport.time.monotonic", lambda: next(ticks))
+    with pytest.raises(TransportIOError) as caught:
+        if operation == "read_exact":
+            backend.read_exact(2, timeout_ms=100)
+        else:
+            backend.read_until(b"\n", max_bytes=4, timeout_ms=100)
+    error = caught.value
+    assert error.reason_code == (
+        "frame_read_failed" if failure == "bus_error" else "frame_read_timeout"
+    )
+    assert error.consumed_bytes == len(prefix)
+    assert error.response_progress.value == ("partial" if prefix else "none")
+    assert error.synchronization.value == ("lost" if prefix else "unproven")
+    assert error.attempts == 1
+    assert not backend._pending
+    assert backend.bus.recv.call_count == (0 if failure == "deadline" else 1)
+    backend.bus.send.assert_not_called()
+    backend.bus.shutdown.assert_not_called()
+
+
+@pytest.mark.parametrize("payload", [b"123456\n", b"1234567"])
+def test_direct_overflow_clears_pending(payload):
+    backend = transport(payload)
+    with pytest.raises(TransportIOError) as caught:
+        backend.read_until(b"\n", max_bytes=4)
+    assert caught.value.reason_code == "frame_too_large"
+    assert caught.value.consumed_bytes == len(payload)
+    assert not backend._pending
+    backend.bus.recv.assert_called_once()
+
+
+@pytest.mark.parametrize("operation", ["read_exact", "read_until"])
+@pytest.mark.parametrize("timeout_ms", [None, 100])
 def test_split_response_uses_remaining_total_budget(monkeypatch, operation, timeout_ms):
     backend = transport(b"a", b"\n")
     backend.config = replace(backend.config, timeout_ms=100 if timeout_ms is None else 250)
@@ -141,6 +232,7 @@ def test_split_response_uses_remaining_total_budget(monkeypatch, operation, time
 @pytest.mark.parametrize("timeout", [0, -1, True, 1.5])
 def test_invalid_timeout_fails_before_receive(timeout):
     backend = transport()
+    backend._pending.extend(b"pending")
     guarded = GuardedAuditedTransport(backend)
     for operation in (
         lambda: guarded.read_exact(1, timeout_ms=timeout),
@@ -156,9 +248,35 @@ def test_invalid_timeout_fails_before_receive(timeout):
         assert error.synchronization.value == "proven"
         assert error.attempts == error.consumed_bytes == error.discarded_bytes == 0
         assert guarded.session_state.health.value == "healthy"
+        assert backend._pending == b"pending"
     backend.bus.recv.assert_not_called()
     backend.bus.send.assert_not_called()
     backend.bus.shutdown.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "operation, arguments, reason",
+    [
+        ("read_exact", {"size": 0}, "frame_size_invalid"),
+        ("read_exact", {"size": True}, "frame_size_invalid"),
+        ("read_until", {"delimiter": b"", "max_bytes": 4}, "frame_delimiter_invalid"),
+        ("read_until", {"delimiter": b"\n", "max_bytes": 0}, "frame_limit_invalid"),
+    ],
+)
+def test_direct_invalid_read_preserves_pending_without_io(operation, arguments, reason):
+    backend = transport()
+    backend._pending.extend(b"pending")
+    with pytest.raises(TransportIOError) as caught:
+        getattr(backend, operation)(**arguments)
+    error = caught.value
+    assert error.reason_code == reason
+    assert error.phase.value == "before_send"
+    assert error.command_transmission.value == "not_sent"
+    assert error.response_progress.value == "none"
+    assert error.synchronization.value == "proven"
+    assert error.attempts == error.consumed_bytes == error.discarded_bytes == 0
+    assert backend._pending == b"pending"
+    assert backend.bus.mock_calls == []
 
 
 @pytest.mark.parametrize("operation", ["read_exact", "read_until"])
@@ -194,6 +312,7 @@ def test_raw_read_continuation_failure_preserves_policy_and_poisons(operation):
 @pytest.mark.parametrize("operation", ["read_exact", "read_until"])
 def test_raw_read_rejects_command_replay_before_io(operation):
     backend = transport()
+    backend._pending.extend(b"pending")
     with pytest.raises(TransportIOError) as caught:
         if operation == "read_exact":
             backend.read_exact(1, replay=ReplayPolicy.SAFE_TO_REPLAY)
@@ -203,6 +322,7 @@ def test_raw_read_rejects_command_replay_before_io(operation):
     assert caught.value.attempts == 0
     assert caught.value.replay_policy is ReplayPolicy.SAFE_TO_REPLAY
     assert backend.bus.mock_calls == []
+    assert backend._pending == b"pending"
 
 
 def test_failed_send_is_not_replayed_and_does_not_expose_payload(monkeypatch):
