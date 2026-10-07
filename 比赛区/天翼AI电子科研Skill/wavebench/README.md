@@ -78,7 +78,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m wavebench run template --list
 .venv/bin/python -m wavebench run template source-scope-sine --print
-.venv/bin/python -m wavebench run check --plan plans/closure_sine_1k.toml
+.venv/bin/python -m wavebench run check --plan plans/closure_sine_1k.toml --config wavebench.example.toml
 ```
 
 最后一条命令以 `safety_limits=ok / 安全上限=通过` 结束时，表示示例 plan 已通过离线检查。完整的预期结果、Windows 命令和下一步见[无硬件快速开始](docs/getting-started/quickstart.md)。

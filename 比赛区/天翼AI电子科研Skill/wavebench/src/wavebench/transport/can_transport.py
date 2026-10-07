@@ -40,6 +40,7 @@ class CanTransport:
     logger: CommandLogger
     config: CanConnectionConfig
     _pending: bytearray = field(default_factory=bytearray)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def open(cls, config: CanConnectionConfig, logger: CommandLogger | None = None) -> "CanTransport":
@@ -159,6 +160,8 @@ class CanTransport:
         if message is None:
             raise self._frame_read_error(operation, replay, len(self._pending), "frame_read_timeout")
         self._pending.extend(bytes(message.data))
+        if time.monotonic() >= deadline:
+            raise self._frame_read_error(operation, replay, len(self._pending), "frame_read_timeout")
 
     def write(self, command: str) -> None:
         try:
@@ -186,10 +189,15 @@ class CanTransport:
         raise ConfigError("CAN transport has no SCPI OPC query")
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
             self.bus.shutdown()
         except Exception as exc:
             raise SessionCloseError([("can_bus", exc)]) from None
+        finally:
+            self._pending.clear()
 
     @staticmethod
     def _frame_preflight_error(
