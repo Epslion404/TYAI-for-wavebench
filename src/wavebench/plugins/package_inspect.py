@@ -105,6 +105,7 @@ class PluginPackage:
     source_conformance_manifests: tuple[SourceConformanceManifest, ...] = ()
     source_conformance_wheel_sha256: str | None = None
     build_backend: str | None = None
+    generated_scripts: tuple[str, ...] = ()
 
     @property
     def driver_ids(self) -> tuple[str, ...]:
@@ -368,6 +369,7 @@ def inspect_plugin_wheel(path: str | Path) -> PluginPackage:
         metadata_sha256=sha256(metadata_text.encode()).hexdigest(),
         record_sha256=sha256(record_text.encode()).hexdigest(),
         member_paths=member_paths,
+        generated_scripts=_parse_generated_scripts(entry_text),
         source_conformance_manifests=source_conformance_manifests,
         source_conformance_wheel_sha256=source_conformance_wheel_sha256,
     )
@@ -391,6 +393,40 @@ def _parse_entry_points(text: str) -> tuple[WheelEntryPoint, ...]:
     if not parser.has_section(ENTRY_POINT_GROUP):
         raise ConfigError(f"wheel does not provide {ENTRY_POINT_GROUP} / wheel 未提供可执行仪器 entry point")
     return _validated_entry_points(parser.items(ENTRY_POINT_GROUP))
+
+
+def _parse_generated_scripts(text: str) -> tuple[str, ...]:
+    parser = ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read_string(text)  # Instrument entry points already validated this document.
+    scripts: dict[str, str] = {}
+    for group in ("console_scripts", "gui_scripts"):
+        if not parser.has_section(group):
+            continue
+        for name, value in parser.items(group):
+            if (not name or name.strip() != name or name in {".", ".."}
+                    or any(char in name for char in '/\\:<>"|?*')
+                    or any(char.isspace() or ord(char) < 32 for char in name)
+                    or name.endswith(".")):
+                raise ConfigError("invalid plugin script name / 插件启动器名称无效")
+            target = name
+            if os.name == "nt":
+                base, extension = os.path.splitext(target)
+                # distlib strips a lowercase .py* suffix before adding .exe.
+                target = (base if extension.startswith(".py") else target) + ".exe"
+            key = installation_path_key(target)
+            if key in scripts:
+                raise ConfigError("plugin scripts have conflicting targets / 插件启动器目标重叠")
+            if key == installation_path_key("wavebench.exe" if os.name == "nt" else "wavebench") or name.casefold() in {"wavebench", "wavebench.exe"}:
+                raise ConfigError("plugin must not overwrite the WaveBench launcher / 插件不能覆盖 WaveBench 启动器")
+            if name.casefold() in {"pip", "easy_install"}:
+                # pip gives these names special versioned aliases beyond the
+                # declared entry point; instrument plugins must not own them.
+                raise ConfigError("plugin must not declare installer launchers / 插件不能声明安装器启动器")
+            if ":" not in value or not value.strip():
+                raise ConfigError("invalid plugin script target / 插件启动器入口无效")
+            scripts[key] = target
+    return tuple(sorted(scripts.values()))
 
 
 def _validated_entry_points(items: Iterable[tuple[str, object]]) -> tuple[WheelEntryPoint, ...]:
@@ -426,6 +462,8 @@ def _validate_wheel_members(infos: Iterable[object]) -> None:
         path = PurePosixPath(name)
         if path.is_absolute() or ".." in path.parts or "\\" in name:
             raise ConfigError(f"unsafe wheel member path / 不安全的 wheel 成员路径: {name}")
+        if os.name == "nt" and any(part.endswith((".", " ")) for part in path.parts):
+            raise ConfigError(f"unsafe Windows wheel member path: {name}")
         target_path = PurePosixPath(installation_path_key(name).replace("\\", "/"))
         if target_path.parts and target_path.parts[0] == "wavebench":
             raise ConfigError(

@@ -1739,9 +1739,7 @@ value_vpp = 5.0
             html_path = Path(tmp) / "report.html"
             pdf_path = Path(tmp) / "report.pdf"
             stdout = io.StringIO()
-            with patch("wavebench.cli.write_run_report_html", return_value=html_path) as write_html, patch(
-                "wavebench.cli.write_run_report_pdf", return_value=pdf_path
-            ) as write_pdf, redirect_stdout(stdout):
+            with patch("wavebench.report.html._write_run_report_pdf", return_value=pdf_path) as write_pdf, redirect_stdout(stdout):
                 code = main(
                     [
                         "run",
@@ -1756,7 +1754,7 @@ value_vpp = 5.0
                 )
 
             self.assertEqual(code, 0)
-            write_html.assert_called_once()
+            self.assertIn("<!doctype html>", html_path.read_text(encoding="utf-8").lower())
             write_pdf.assert_called_once()
             self.assertIn(f"report={html_path}", stdout.getvalue())
             self.assertIn(f"pdf={pdf_path}", stdout.getvalue())
@@ -1821,15 +1819,12 @@ value_vpp = 5.0
 
             for options, message in cases:
                 stderr = io.StringIO()
-                with patch("wavebench.cli.write_run_report_html") as write_html, patch(
-                    "wavebench.cli.write_run_report_pdf"
-                ) as write_pdf, redirect_stderr(stderr):
+                with patch("wavebench.cli.write_run_report") as write_report, redirect_stderr(stderr):
                     code = main(["run", "report", str(run_dir), *options])
 
                 self.assertEqual(code, 2)
                 self.assertIn(message, stderr.getvalue())
-                write_html.assert_not_called()
-                write_pdf.assert_not_called()
+                write_report.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from .config import load_advisor_config, load_config, vertical_scale_from_vpp
 from .data.packages import load_capture_package, load_run_package
 from .discovery import discover_instruments
 from .doctor import doctor_records, has_doctor_errors as has_config_doctor_errors
-from .report.html import write_run_report_html, write_run_report_pdf
+from .report.html import write_run_report
 from .report.index import write_report_index
 from .errors import ConfigError, WaveBenchError, error_envelope
 from .cli_parser import build_parser
@@ -54,6 +54,8 @@ from .cli_output import (
     _print_scpi_doctor,
     _print_scpi_probe_result,
     _print_scpi_plugin_info,
+    _print_protocol_plugin_info,
+    _protocol_plugin_info_payload,
     _print_power_protection_status,
     _print_power_status,
     _print_run_plan_summary,
@@ -121,6 +123,11 @@ from .plugins.registry import (
     plugin_doctor_records,
 )
 from .plugins.scpi import has_scpi_doctor_errors, load_scpi_plugin, probe_scpi_plugin, scpi_plugin_doctor_records
+from .plugins.protocol import (
+    has_protocol_doctor_errors,
+    load_protocol_plugin,
+    protocol_plugin_doctor_records,
+)
 from .services.scope_service import ScopeService
 from .services.source_service import SourceService
 from .services.rf_source_service import RfSourceService
@@ -941,6 +948,24 @@ def _main(argv: list[str] | None = None) -> int:
         if args.domain == "advisor":
             return _run_advisor_ask(args)
         if args.domain == "plugin":
+            if args.command == "protocol":
+                if args.protocol_command == "check":
+                    records = protocol_plugin_doctor_records(args.path)
+                    failed = has_protocol_doctor_errors(records)
+                    if args.json:
+                        _emit_json_result(
+                            [dict(severity=s, subject=t, message=m) for s, t, m in records],
+                            status="failed" if failed else "ok", exit_code=2 if failed else 0,
+                        )
+                    else:
+                        _print_scpi_doctor(records)
+                    return 2 if failed else 0
+                declaration = load_protocol_plugin(args.path)
+                if args.json:
+                    _emit_json_result(_protocol_plugin_info_payload(declaration))
+                else:
+                    _print_protocol_plugin_info(declaration)
+                return 0
             if getattr(args, "category", "instrument") == "advisor" and args.command in (
                 "list",
                 "doctor",
@@ -1392,17 +1417,18 @@ def _main(argv: list[str] | None = None) -> int:
                     raise ConfigError(
                         "run report --pdf-output is a PDF path and must not use an HTML suffix"
                     )
+                analysis_limits = None
                 if args.analysis_resources:
                     from .data.analysis_resources import load_resource_limits
 
-                    output = write_run_report_html(package, output_path=output,
-                                                   analysis_limits=load_resource_limits(args.analysis_resources))
-                else:
-                    output = write_run_report_html(package, output_path=output)
-                print(f"report={output}")
-                if args.pdf:
-                    pdf = write_run_report_pdf(package, output_path=pdf_output)
-                    print(f"pdf={pdf}")
+                    analysis_limits = load_resource_limits(args.analysis_resources)
+                outputs = write_run_report(
+                    package, output_path=output, pdf_output_path=pdf_output if args.pdf else None,
+                    analysis_limits=analysis_limits,
+                )
+                print(f"report={outputs.html}")
+                if outputs.pdf is not None:
+                    print(f"pdf={outputs.pdf}")
                 return 0
             if args.command == "report-index":
                 result = write_report_index(args.paths, args.output)
