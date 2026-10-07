@@ -103,6 +103,28 @@ python -m wavebench plugin doctor --category advisor --include-entry-points
 
 Decision artifact 的 `reason`、requested model 与 reported model 在构造时统一采用同意门的敏感文本脱敏规则，CLI 诊断与 JSON 落盘读取同一份结果。未知选项和答案类型的错误只保存固定诊断，不回显响应原文。
 
+### 敏感文本与编码 JSON 的边界
+
+Python mapping 中的敏感键（忽略大小写，`-` 归一为 `_`，包含 `api_key`、`apikey`、`authorization`、`credential`、`password`、`secret` 或 `token`）对应的**整个值**替换为 `[REDACTED]`，不解析该值。普通文本继续识别 `token=...` 等标签、带引号的 Bearer 值和转义引号；未闭合的值只遮蔽本行，无引号的值以空白为界，逗号或花括号不会结束凭据。
+
+完整 JSON 文本（去掉前导 JSON 空白后以 `"`、`{` 或 `[` 开始）在预算内通过标准 JSON 解码、敏感键脱敏再编码；例如 key 的 `\u0061uthorization` 会按 `authorization` 处理。每一层 JSON string 的类型与编码层数保持不变，输入 `str` 不会变成 Python dict。预算内没有脱敏变化的合法 JSON 保留原始字节；发生变化的 JSON 用标准 `json.dumps(..., ensure_ascii=True)` 重编码，所以空白和 Unicode 转义形式可能改变，非敏感字段的内容保留。
+
+开头的完整 JSON string token 后还可以追加普通诊断，例如 `json.dumps(json.dumps({"token": "dummy"})) + " diagnosis=keep"`：先按转义引号边界识别 token，解码并脱敏后重编码，再独立脱敏并保留后缀。token 与后缀共享原字符串的预算，候选输入的字节统计包含后缀；任一部分超限仍省略整个字符串。
+
+每个待处理字符串单独拥有以下解释预算，包含其解码出的嵌套字符串，共享而不在子节点重置：
+
+| 限制 | 上限 |
+| --- | --- |
+| 每次 JSON 解码的输入 | 65,536 UTF-8 字节（孤立 surrogate 按 `surrogatepass` 计数） |
+| 累计待解码文本工作量 | 262,144 字节 |
+| JSON 解码尝试次数（包括失败尝试） | 8；小对象最多支持 7 层外部 JSON string 包装加一次对象解码 |
+| 结构深度 | 32；同时限制解码树遍历与当前路径上的容器/编码字符串 |
+| 累计词法 token 数 | 4,096；容器开头、key/value 字符串和原子值均计数，字符串内的标点不计数 |
+
+字节、次数、容器深度和 token 检查发生在 `json.loads` **之前**，不先分配无限制 JSON 树再统计。任一预算耗尽，整个原始字符串替换为 `[REDACTED_JSON_LIMIT]`，不会回退到旧文本正则或保留已处理前缀/未处理后缀；此时该字符串中的诊断也会丢失。超过预算的 JSON 候选即使没有凭据也会被省略。普通非 JSON 长诊断没有该长度截断，继续进行与输入长度成比例的文本匹配。
+
+除上述开头 token 加后缀外，自由文本中嵌入的转义 JSON 片段不提供通用还原保证。无法解析的完整 JSON string 候选、或回退文本按普通标签规则脱敏后仍出现「反斜杠转义引号 + 空白 + 冒号」/`\uXXXX` 标记时，整个字符串保守替换为 `[REDACTED_ENCODED_TEXT]`，同样会丢失其中的普通诊断。没有这些编码标记的普通文本、单引号字段和非完整普通 JSON 继续使用上述按行/引号规则。插件应优先用结构化 mapping 表达凭据，不能将这些有限规则解释为任意编码、自由文本或任意 payload 的安全保证。
+
 ## 实现流程
 
 1. 选定 `advisor_id` 与 capability（必须在词表内），并写清 egress 事实。
