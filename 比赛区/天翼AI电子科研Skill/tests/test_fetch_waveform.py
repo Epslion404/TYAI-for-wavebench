@@ -21,7 +21,10 @@ COUNT = 500
 def _waveform_responses(*, style: str = "real", count: int = COUNT, rate: float = SAMPLE_RATE) -> dict[str, object]:
     samples = [0.5 * math.sin(2 * math.pi * 1_000 * index / rate) for index in range(count)]
     header = f"0,{(count - 1) / rate:.9f},{1 / rate:.9f}"
-    responses: dict[str, object] = {"CHAN1:DATA:HEAD?": header}
+    responses: dict[str, object] = {
+        "*IDN?": "Rohde&Schwarz,RTM2032,TEST-FETCH,06.010",
+        "CHAN1:DATA:HEAD?": header,
+    }
     if style == "real":
         responses["FORM REAL"] = ""
         responses["FORM:BORD LSBF"] = ""

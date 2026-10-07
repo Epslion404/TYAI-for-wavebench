@@ -122,6 +122,44 @@ can_arbitration_id = "291"
             with self.assertRaisesRegex(ConfigError, "can_arbitration_id must be an integer"):
                 load_config(path)
 
+    def test_validates_can_timing_before_any_bus_is_opened(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wavebench.toml"
+            path.write_text(
+                '''\
+[connection]
+backend = "can-fd"
+resource = "virtual-test"
+can_interface = "virtual"
+can_bitrate = 500000
+can_sample_point = 0.875
+can_data_bitrate = 2000000
+can_data_sample_point = 0.8
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+            connection = load_config(path).connection.can_connection()
+            self.assertEqual(connection.bitrate, 500000)
+            self.assertEqual(connection.data_bitrate, 2000000)
+            self.assertEqual(connection.sample_point, 0.875)
+            self.assertEqual(connection.data_sample_point, 0.8)
+
+            path.write_text(
+                '''\
+[connection]
+backend = "can"
+resource = "can0"
+can_data_bitrate = 2000000
+
+[scope]
+''',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "can_data_bitrate requires the can-fd backend"):
+                load_config(path)
+
     def test_rejects_invalid_generic_serial_connection_before_opening_io(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wavebench.toml"

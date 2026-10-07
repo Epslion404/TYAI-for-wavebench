@@ -9,13 +9,15 @@ from __future__ import annotations
 import ipaddress
 import math
 import socket
+import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 
 from .analysis import analyze_samples, demo_waveform
 from .dialects import AUTOSCALE_CANDIDATES, MEASUREMENT_ITEMS, detect_vendor, measure_candidates
-from .scpi import ConfigurationError, ScpiSession, classify_exception, parse_first_float
+from .scpi import ConfigurationError, ScpiSession, classify_exception, parse_first_float, validate_channel
 from .waveform import (
     load_waveform,
     read_waveform,
@@ -110,7 +112,7 @@ def discover_devices(
     except ValueError as exc:
         raise ConfigurationError(f"无效网段: {subnet!r}") from exc
     host_count = _host_count(network)
-    if host_count > max_targets and not force:
+    if host_count > max_targets and (isinstance(network, ipaddress.IPv6Network) or not force):
         raise ConfigurationError(f"目标数 {host_count} 超过上限 {max_targets}；确认扫描范围后使用 --force")
     try:
         normalized_ports = tuple(dict.fromkeys(int(port) for port in ports))
@@ -255,6 +257,7 @@ def measure_scope(
 
     全部指标都不支持时（例如固件没有远程测量命令），默认降级为"取波形 → 离线分析"。
     """
+    channel = validate_channel(channel)
     result: dict = {
         "address": f"{host}:{port}",
         "channel": channel,
@@ -278,6 +281,15 @@ def measure_scope(
                 if metric in result["measurements"]:
                     continue
                 try:
+                    stale_errors = session.drain_errors()
+                except (OSError, ConnectionError, TimeoutError, ValueError) as exc:
+                    category = "error_queue_unavailable"
+                    attempts[metric].append(f"{style}: {category}: {exc}")
+                    result["failures"].append({"category": category, "command": "SYST:ERR?", "metric": metric, "message": str(exc)})
+                    continue
+                if stale_errors:
+                    result["device_errors"].extend(stale_errors)
+                try:
                     raw = session.query(command)
                 except (OSError, ConnectionError, TimeoutError) as exc:
                     category = classify_exception(exc)
@@ -289,7 +301,13 @@ def measure_scope(
                         "message": str(exc),
                     })
                     continue
-                errors = session.drain_errors()
+                try:
+                    errors = session.drain_errors()
+                except (OSError, ConnectionError, TimeoutError, ValueError) as exc:
+                    category = "error_queue_unavailable"
+                    attempts[metric].append(f"{style}: {category}: {exc}")
+                    result["failures"].append({"category": category, "command": "SYST:ERR?", "metric": metric, "message": str(exc)})
+                    continue
                 result["device_errors"].extend(errors)
                 value = parse_first_float(raw)
                 if errors:
@@ -325,6 +343,21 @@ def measure_scope(
     return result
 
 
+@contextmanager
+def _autoscale_session(session: ScpiSession, result: dict) -> Iterator[ScpiSession]:
+    """Record close failures independently of the operation being completed."""
+    session.__enter__()
+    try:
+        yield session
+    finally:
+        try:
+            session.__exit__(*sys.exc_info())
+        except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
+            category = classify_exception(exc)
+            result["errors"].append(f"{category}: {exc}")
+            result["failures"].append({"category": category, "command": "close", "message": str(exc)})
+
+
 def autoscale_scope(
     host: str,
     port: int = 5025,
@@ -337,6 +370,7 @@ def autoscale_scope(
 
     `apply=False` 只返回建议，不改变仪器；真实写入必须显式 `apply=True`。
     """
+    channel = validate_channel(channel)
     result = {
         "address": f"{host}:{port}",
         "channel": channel,
@@ -353,17 +387,30 @@ def autoscale_scope(
         "errors": [],
         "failures": [],
     }
+    planned_write_count = 0
+    active_command = "configure_session"
     try:
-        with ScpiSession(host, port, timeout) as session:
-            result["idn"] = session.query("*IDN?")
+        session = ScpiSession(host, port, timeout)
+        active_command = "connect"
+        with _autoscale_session(session, result):
+            active_command = "*IDN?"
+            result["idn"] = session.query(active_command)
             result["vendor"] = detect_vendor(result["idn"] or "")
             if apply:
                 for command in AUTOSCALE_CANDIDATES:
+                    planned_write_count = 1
+                    active_command = command
                     session.write(command)
+                    active_command = "SYST:ERR?"
                     errors = session.drain_errors()
                     result["device_errors"].extend(errors)
                     if errors:
                         result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
+                        result["failures"].append({
+                            "category": "unsupported",
+                            "command": command,
+                            "message": "; ".join(errors),
+                        })
                         result["write_results"].append({"command": command, "ok": False, "device_errors": errors})
                         continue
                     result["commands"].append(command)
@@ -373,22 +420,30 @@ def autoscale_scope(
                         "verification": "device_error_queue_clean",
                     })
                     result["warnings"].append("通用 autoset 无可移植状态回读；成功仅表示设备错误队列为空")
-                    result["applied"] = True
                     result["mode"] = "vendor_autoset"
                     return result
+            active_command = "read_waveform_in_session"
             waveform = read_waveform_in_session(session, channel, sample_rate=None)
+            active_command = "derive_suggestions"
             metrics = waveform.get("metrics") or {}
             frequency = metrics.get("frequency_hz")
             vpp = metrics.get("peak_to_peak_v")
-            if frequency and frequency > 0:
-                result["suggestions"]["timebase_range_s"] = 5.0 / frequency
+            if isinstance(frequency, (int, float)) and math.isfinite(frequency) and frequency > 0:
+                result["suggestions"]["timebase_range_s"] = _clamp_setting(5.0 / frequency, 1e-9, 1e4, "timebase_range_s", result)
             if metrics.get("minimum_v") is not None and metrics.get("maximum_v") is not None:
-                result["suggestions"]["channel_offset_v"] = -(metrics["minimum_v"] + metrics["maximum_v"]) / 2.0
-            if vpp:
-                result["suggestions"]["vertical_range_v"] = max(vpp * 1.25, 1e-6)
+                offset = -(metrics["minimum_v"] + metrics["maximum_v"]) / 2.0
+                if math.isfinite(offset):
+                    result["suggestions"]["channel_offset_v"] = _clamp_setting(offset, -1e6, 1e6, "channel_offset_v", result)
+            if isinstance(vpp, (int, float)) and math.isfinite(vpp) and vpp > 0:
+                result["suggestions"]["vertical_range_v"] = _clamp_setting(vpp * 1.25, 1e-6, 1e6, "vertical_range_v", result)
             result["waveform"] = {"sample_count": waveform.get("sample_count", 0), "metrics": metrics,
                                   "warnings": waveform.get("warnings", []), "errors": waveform.get("errors", []),
                                   "failures": waveform.get("failures", [])}
+            # A dry run is successful only if it could actually inspect the
+            # waveform.  Preserve the acquisition failure at the top level so
+            # callers do not have to special-case the nested waveform object.
+            result["errors"].extend(waveform.get("errors", []))
+            result["failures"].extend(waveform.get("failures", []))
             if waveform.get("device_errors"):
                 result["device_errors"].extend(waveform["device_errors"])
             if not result["suggestions"]:
@@ -399,25 +454,105 @@ def autoscale_scope(
                     writes.append(f"TIMebase:RANGe {result['suggestions']['timebase_range_s']:.12g}")
                 if "channel_offset_v" in result["suggestions"]:
                     writes.append(f":{channel}:OFFS {result['suggestions']['channel_offset_v']:.12g}")
+                planned_write_count = len(writes)
+                result["mode"] = "derived_settings"
                 for command in writes:
+                    active_command = command
                     session.write(command)
+                    active_command = "SYST:ERR?"
                     errors = session.drain_errors()
                     result["device_errors"].extend(errors)
-                    ok = not errors
-                    result["write_results"].append({"command": command, "ok": ok, "device_errors": errors})
-                    if ok:
-                        result["commands"].append(command)
-                    else:
+                    item = {
+                        "command": command,
+                        "write_accepted": not errors,
+                        "ok": False,
+                        "device_errors": errors,
+                    }
+                    result["write_results"].append(item)
+                    if errors:
                         result["unsupported"].append({"command": command, "reason": "; ".join(errors)})
-                successful = sum(1 for item in result["write_results"] if item["ok"])
-                result["applied"] = successful == len(writes) and bool(writes)
-                result["partially_applied"] = 0 < successful < len(writes)
-                result["mode"] = "derived_settings"
+                        result["failures"].append({
+                            "category": "unsupported",
+                            "command": command,
+                            "message": "; ".join(errors),
+                        })
+                        continue
+                    # ``commands`` records what was sent.  ``ok`` and
+                    # ``applied`` are stricter: the setting must also survive
+                    # a readback verification.
+                    result["commands"].append(command)
+                    query = "TIMebase:RANGe?" if command.startswith("TIMebase:RANGe") else f":{channel}:OFFS?"
+                    requested = float(command.rsplit(" ", 1)[1])
+                    try:
+                        active_command = query
+                        raw_readback = session.query(query)
+                    except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
+                        item["readback"] = None
+                        item["verified"] = False
+                        category = classify_exception(exc)
+                        item["verification_error"] = f"{category}: {exc}"
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": category,
+                            "command": query,
+                            "message": str(exc),
+                        })
+                        continue
+                    if not raw_readback.strip():
+                        readback = None
+                        item["readback"] = None
+                        item["verified"] = False
+                        item["verification_error"] = "no_response: 设置后的回读响应为空"
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": "no_response",
+                            "command": query,
+                            "message": "设置后的回读响应为空",
+                        })
+                        continue
+                    readback = parse_first_float(raw_readback)
+                    if readback is None:
+                        item["readback"] = None
+                        item["verified"] = False
+                        item["verification_error"] = "parse_error: 设置后的回读响应无法解析为数值"
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": "parse_error",
+                            "command": query,
+                            "message": f"设置后的回读响应无法解析为数值: {raw_readback!r}",
+                        })
+                        continue
+                    verified = readback is not None and math.isclose(readback, requested, rel_tol=0.02, abs_tol=1e-12)
+                    item["readback"] = readback
+                    item["verified"] = verified
+                    item["ok"] = verified
+                    if not verified:
+                        result["unsupported"].append({"command": command, "reason": "readback verification failed"})
+                        result["failures"].append({
+                            "category": "verification_failed",
+                            "command": query,
+                            "message": f"设置后的回读值 {readback:g} 与请求值 {requested:g} 不匹配",
+                        })
+            active_command = "close"
     except (OSError, ValueError, ConnectionError, TimeoutError) as exc:
         category = classify_exception(exc)
         result["errors"].append(f"{category}: {exc}")
-        result["failures"].append({"category": category, "command": "autoscale", "message": str(exc)})
+        result["failures"].append({"category": category, "command": active_command, "message": str(exc)})
+    finally:
+        if apply:
+            # Failed vendor probes do not count; derived entries become ok
+            # only after readback.  Closing cannot undo verified settings.
+            successful = sum(1 for item in result["write_results"] if item["ok"])
+            result["applied"] = planned_write_count > 0 and successful == planned_write_count
+            result["partially_applied"] = 0 < successful < planned_write_count
     return result
+
+
+def _clamp_setting(value: float, minimum: float, maximum: float, name: str, result: dict) -> float:
+    clamped = min(max(value, minimum), maximum)
+    if clamped != value:
+        result["warnings"].append(f"{name} was clamped to the safe range [{minimum:g}, {maximum:g}]")
+    return clamped
 
 
 __all__ = [

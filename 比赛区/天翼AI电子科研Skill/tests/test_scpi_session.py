@@ -14,6 +14,39 @@ from tianyi_electronics_skill.scpi import (
 )
 
 
+class _ScriptedSocket:
+    """Minimal socket double for deterministic session-buffer tests."""
+
+    def __init__(self, responses: list[bytes | BaseException], timeout: float = 1.0) -> None:
+        self.responses = list(responses)
+        self.timeout = timeout
+        self.sent: list[bytes] = []
+        self.set_timeouts: list[float | None] = []
+        self.closed = False
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, _size: int) -> bytes:
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    def gettimeout(self) -> float:
+        return self.timeout
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeout = value  # type: ignore[assignment]
+        self.set_timeouts.append(value)
+
+    def shutdown(self, _how: int) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_parse_block_header_basic():
     assert parse_block_header(b"#15hello") == (5, 3)
     assert parse_block_header(b"#3100abc") == (100, 5)
@@ -41,16 +74,22 @@ def test_read_block_rejects_oversized_declared_length():
     with FakeScpiServer({"CHAN1:DATA?": encode_block(b"\x00" * 64)}) as server:
         host, port = server.address
         with ScpiSession(host, port, timeout=2.0) as session:
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError) as raised:
                 session.query_block("CHAN1:DATA?", max_bytes=16)
+            assert raised.value.scpi_command == "CHAN1:DATA?"
+            assert session._socket is None
 
 
 def test_read_block_times_out_when_payload_incomplete():
     with FakeScpiServer({"CHAN1:DATA?": b"#3100"}) as server:
         host, port = server.address
         with ScpiSession(host, port, timeout=0.3) as session:
-            with pytest.raises(TimeoutError):
+            with pytest.raises(TimeoutError) as raised:
                 session.query_block("CHAN1:DATA?")
+            assert raised.value.scpi_command == "CHAN1:DATA?"
+            assert session._socket is None
+            with pytest.raises(ConnectionError):
+                session.query("NEXT?")
 
 
 def test_read_block_rejects_text_answer():
@@ -97,3 +136,27 @@ def test_session_write_only_command_reads_nothing():
             session.write("FORM REAL")
         assert server.wait_for_commands(1)
         assert server.received == ["FORM REAL"]
+
+
+def test_session_consumes_lf_arriving_after_cr_before_next_response():
+    session = ScpiSession("example.test")
+    socket = _ScriptedSocket([b"first\r", b"\nsecond\r\n"])
+    session._socket = socket  # type: ignore[assignment]
+
+    assert session.query("FIRST?") == "first"
+    assert session.query("SECOND?") == "second"
+    assert socket.sent == [b"FIRST?\n", b"SECOND?\n"]
+
+
+def test_error_queue_timeout_is_not_treated_as_empty_and_closes_session():
+    session = ScpiSession("example.test", timeout=1.0)
+    socket = _ScriptedSocket([TimeoutError("slow error queue")])
+    session._socket = socket  # type: ignore[assignment]
+
+    with pytest.raises(TimeoutError, match="slow error queue") as raised:
+        session.drain_errors()
+
+    assert raised.value.scpi_command == "SYST:ERR?"
+    assert 0.25 not in socket.set_timeouts
+    assert socket.closed is True
+    assert session._socket is None

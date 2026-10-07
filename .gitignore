@@ -21,6 +21,8 @@ __pycache__/
 *.py[cod]
 .venv*/
 .pytest_cache/
+pytest-of-*/
+.test-leases-*/
 .ruff_cache/
 dist/
 build/

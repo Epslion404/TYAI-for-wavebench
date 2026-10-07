@@ -31,6 +31,10 @@ backend = "lan"
 # can_interface = "socketcan"
 # can_arbitration_id = 256
 # can_extended_id = false
+# can_bitrate = 500000
+# can_sample_point = 0.875
+# can_data_bitrate = 2000000       # CAN-FD only
+# can_data_sample_point = 0.8      # CAN-FD only
 
 # VISA resource string for the oscilloscope.
 # Replace the IP address with your oscilloscope LAN address. For the external

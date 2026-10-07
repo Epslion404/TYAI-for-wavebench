@@ -211,7 +211,7 @@ def run_expose(
                     retry_after_session = False
                 finally:
                     _close(device)
-        except OSError:
+        except (OSError, UnicodeError, ValueError):
             pass
         finally:
             # REGISTER/READY 的握手失败同样需要退避；否则服务端拒绝时会形成重连风暴。

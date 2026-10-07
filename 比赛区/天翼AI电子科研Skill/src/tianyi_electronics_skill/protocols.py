@@ -22,6 +22,8 @@ class ProtocolDecodeError(ValueError):
 
 def protocol_failure(error: BaseException, *, category: str = "parse_error") -> dict[str, Any]:
     """Stable, machine-readable failure shape for malformed protocol input."""
+    if category not in {"parse_error", "configuration_error"}:
+        category = "parse_error"
     return {
         "ok": False,
         "frame": None,
@@ -285,7 +287,12 @@ class ProtocolRegistry:
         """Decode a protocol frame without making callers parse exception text."""
         try:
             frame = self.decode(payload, source, metadata).as_dict()
-            return {"ok": True, "frame": frame, "failures": [], "device_errors": list(frame["device_errors"])}
+            return {
+                "ok": True,
+                "frame": frame,
+                "failures": [],
+                "device_errors": list(frame["device_errors"]),
+            }
         except (TypeError, ValueError, OverflowError, UnicodeError, json.JSONDecodeError) as exc:
             return protocol_failure(exc)
 
@@ -297,7 +304,7 @@ def read_payload(path: str | Path, max_bytes: int = MAX_PROTOCOL_PAYLOAD_BYTES) 
         raise ValueError(f"输入文件 {size} 字节超过上限 {max_bytes}")
     raw = file_path.read_bytes()
     if file_path.suffix.lower() == ".json":
-        return json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8-sig"))
     return raw
 
 

@@ -24,7 +24,17 @@ metadata:
 - `advise`：默认使用内置离线规则基线，在固定的 `discover`、`inspect`、`analyze` 选项中推荐下一步；
   不联网、不读设备、不生成写入类命令。
 
-所有命令的输出都包含 `device_errors`（设备错误队列），失败条目同时写进 `failures`（含 `category` 与 `message`），不把"命令被拒绝"写成"解析失败"。`category` 取值：`unsupported`（设备拒绝该命令）／`no_response`（空响应）／`parse_error`（响应无法解析）／`configuration_error`（本地参数或配置非法）／`transport_error`（网络与传输层）／`timeout`（超时）／`error_queue_unavailable`（读取错误队列本身失败）／`internal_error`（未归类的内部错误）。
+所有命令的输出都包含 `device_errors`（设备错误队列），失败条目同时写进 `failures`（含 `category`、`command` 与 `message`），不把"命令被拒绝"写成"解析失败"。`category` 取值：`unsupported`（设备拒绝该命令）／`verification_failed`（写入被接受但回读值与请求值不匹配）／`no_response`（空响应）／`parse_error`（响应无法解析）／`configuration_error`（本地参数或配置非法）／`transport_error`（网络与传输层）／`timeout`（超时）／`error_queue_unavailable`（读取错误队列本身失败）／`internal_error`（未归类的内部错误）。
+
+## `autoscale` 退出码
+
+- `0`：`autoscale` 仅查看建议且读取完成，或 `autoscale --apply` 已完整验证应用。
+- `2`：执行失败，或 `autoscale --apply` 未能验证应用任一设置。JSON 中保留 `failures`、`unsupported` 与 `write_results`。
+- `3`：`autoscale --apply` 只验证应用了部分设置；应根据 `write_results` 与 `failures` 决定是否人工恢复或重试。
+
+`applied` 与 `partially_applied` 按已验证的设置统计，连接关闭等清理错误另记 `failures`。全部设置已验证但关闭失败时，保留 `applied=true`、`partially_applied=false`，退出码为 `2`；只有部分设置已验证且后续失败时退出码为 `3`。失败条目的 `command` 为实际执行的 SCPI 命令，连接或清理阶段则明确记录 `connect`、`configure_session` 或 `close`。
+
+SCPI 查询使用一次查询的总截止时间。文本与二进制块共享接收缓冲，消费可分段到达的 CRLF 及块尾终止符。超时或不完整响应使会话失效并关闭；再次通信需要新会话，不能把迟到响应当成下一条命令的结果，也不自动重放写入或查询。
 
 ## 推荐工作流
 

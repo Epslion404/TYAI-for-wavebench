@@ -5,12 +5,16 @@ import csv
 from hashlib import sha256
 import io
 import json
+import ntpath
+import os
+import posixpath
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
 from wavebench.errors import ConfigError
+from wavebench.plugins import install_paths
 from wavebench.instruments.source_conformance import (
     SOURCE_CONFORMANCE_DIRECTORY,
     SOURCE_CONFORMANCE_SCHEMA,
@@ -298,6 +302,61 @@ def test_inspect_wheel_rejects_core_overrides_and_pth_files(
         inspect_plugin_wheel(path)
 
 
+@pytest.mark.parametrize("member", ["WaveBench/cli.py", "WAVEBENCH/__init__.py", "plugin-bootstrap.PTH"])
+def test_inspect_wheel_case_variant_core_and_pth_paths_follow_platform(tmp_path, member):
+    path = _wheel(tmp_path, extra_members={member: b"override"})
+
+    if os.name == "nt":
+        with pytest.raises(ConfigError):
+            inspect_plugin_wheel(path)
+    else:
+        assert member in inspect_plugin_wheel(path).member_paths
+
+
+def test_inspect_wheel_ignores_default_entry_point_values(tmp_path):
+    path = _wheel(
+        tmp_path,
+        entry_points=(
+            "[DEFAULT]\n"
+            "ghost.scope = example:descriptor\n"
+            "[wavebench.instruments]\n"
+            "example.scope = example:descriptor\n"
+        ),
+    )
+
+    assert inspect_plugin_wheel(path).driver_ids == ("example.scope",)
+
+
+def test_inspect_wheel_rejects_core_console_launcher(tmp_path):
+    path = _wheel(
+        tmp_path,
+        entry_points=(
+            "[wavebench.instruments]\nexample.scope = example:descriptor\n"
+            "[console_scripts]\nwavebench = example:main\n"
+        ),
+    )
+
+    with pytest.raises(ConfigError, match="WaveBench launcher"):
+        inspect_plugin_wheel(path)
+
+
+@pytest.mark.parametrize("group", ["console_scripts", "gui_scripts"])
+def test_inspect_wheel_preserves_safe_independent_launcher(tmp_path, group):
+    path = _wheel(
+        tmp_path,
+        entry_points=(
+            "[wavebench.instruments]\nexample.scope = example:descriptor\n"
+            f"[{group}]\nindependent-tool = example:main\n"
+        ),
+    )
+
+    package = inspect_plugin_wheel(path)
+    assert package.driver_ids == ("example.scope",)
+    assert package.generated_scripts == (
+        "independent-tool.exe" if os.name == "nt" else "independent-tool",
+    )
+
+
 def test_inspect_wheel_requires_and_verifies_record(tmp_path):
     missing = _wheel(tmp_path, version="0.1.0", include_record=False)
 
@@ -394,3 +453,83 @@ def test_source_inspection_requires_explicit_build_directory(tmp_path):
 
     with pytest.raises(ConfigError, match="temporary build directory"):
         inspect_plugin_package(source)
+
+
+@pytest.mark.parametrize("directory", [
+    "foreign-0.1.0.dist-info", "wavebench_example_scope-9.0.dist-info",
+    "wavebench_example_scope-bogus.dist-info", "nested/wavebench_example_scope-0.1.0.dist-info",
+])
+def test_dist_info_directory_is_bound_to_wheel_identity(tmp_path, directory):
+    path = _wheel(tmp_path)
+    with ZipFile(path) as archive:
+        members = {name.replace("wavebench_example_scope-0.1.0.dist-info", directory):
+                   archive.read(name) for name in archive.namelist()}
+    with ZipFile(path, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    with pytest.raises(ConfigError, match="dist-info"):
+        inspect_plugin_wheel(path)
+
+
+@pytest.mark.parametrize("name", ["../scope", "a/b", "a\\b", ".", ".."])
+def test_instrument_id_cannot_be_a_path(tmp_path, name):
+    wheel = _wheel(tmp_path, entry_points=f"[wavebench.instruments]\n{name} = example:descriptor\n")
+    with pytest.raises(ConfigError, match="entry point name"):
+        inspect_plugin_wheel(wheel)
+
+
+def test_default_only_instrument_entry_is_not_installable(tmp_path):
+    wheel = _wheel(tmp_path, entry_points=(
+        "[DEFAULT]\nghost.scope = example:descriptor\n[wavebench.instruments]\n"
+    ))
+    with pytest.raises(ConfigError, match="no instrument entry points"):
+        inspect_plugin_wheel(wheel)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows filesystem aliases")
+@pytest.mark.parametrize("member", ["CON/data.txt", "NUL.py", "foreign/file.txt:stream", "COM1.txt"])
+def test_reserved_device_and_ads_wheel_paths_are_rejected(tmp_path, member):
+    wheel = _wheel(tmp_path, extra_members={member: b"payload"})
+    with pytest.raises(ConfigError, match="Windows wheel member"):
+        inspect_plugin_wheel(wheel)
+
+
+def test_archive_read_failure_is_reported_as_config_error(tmp_path, monkeypatch):
+    wheel = _wheel(tmp_path)
+    def failed_read(*args, **kwargs):
+        raise RuntimeError("encrypted archive")
+    monkeypatch.setattr(ZipFile, "read", failed_read)
+    with pytest.raises(ConfigError, match="valid ZIP"):
+        inspect_plugin_wheel(wheel)
+
+
+@pytest.mark.parametrize("member", ["wavebench./__init__.py", "foreign /data.txt", "file.py."])
+def test_windows_trailing_dot_or_space_member_is_rejected(tmp_path, member):
+    wheel = _wheel(tmp_path, extra_members={member: b"alias"})
+    if os.name == "nt":
+        with pytest.raises(ConfigError, match="unsafe Windows"):
+            inspect_plugin_wheel(wheel)
+    else:
+        assert member in inspect_plugin_wheel(wheel).member_paths
+
+
+@pytest.mark.parametrize("path_rules", [ntpath, posixpath], ids=["windows", "posix"])
+@pytest.mark.parametrize(
+    ("members", "message"),
+    [
+        ({"WAVEBENCH/__init__.py": b"override"}, "core package"),
+        ({"Plugin.PTH": b"import plugin"}, "pth"),
+        ({"plugin.DATA/purelib/file.py": b"relocate"}, "data relocation"),
+        ({"Plugin/data.txt": b"a", "plugin/DATA.txt": b"b"}, "duplicate members"),
+        ({"./Plugin/data.txt": b"a", "Plugin/data.txt": b"b"}, "duplicate members"),
+    ],
+)
+def test_wheel_target_path_aliases(tmp_path, monkeypatch, path_rules, members, message):
+    monkeypatch.setattr(install_paths, "_path", path_rules)
+    wheel = _wheel(tmp_path, extra_members=members)
+    if path_rules is ntpath or message == "duplicate members" and "./Plugin/data.txt" in members:
+        with pytest.raises(ConfigError, match=message):
+            inspect_plugin_wheel(wheel)
+    else:
+        # Case-distinct paths remain legal on case-sensitive POSIX targets.
+        assert set(members).issubset(inspect_plugin_wheel(wheel).member_paths)

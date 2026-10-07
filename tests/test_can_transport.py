@@ -12,6 +12,11 @@ def test_can_transport_rejects_undeclared_channel_before_import_or_io():
         CanTransport.open(CanConnectionConfig(channel=None))
 
 
+def test_can_transport_rejects_invalid_fd_timing_before_import_or_io():
+    with pytest.raises(ConfigError, match="data_bitrate requires fd=True"):
+        CanTransport.open(CanConnectionConfig(channel="can0", data_bitrate=2_000_000))
+
+
 def test_can_transport_virtual_bus_round_trip():
     can = pytest.importorskip("can")
     channel = f"wavebench-{uuid.uuid4()}"

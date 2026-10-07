@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ from .plugins.api import AdvisorPlugin, InstrumentPlugin, PluginDoctorRecord
 from .plugins.market import MarketPlugin
 from .plugins.lifecycle import InstalledPlugin, LifecycleResult
 from .plugins.package_inspect import PluginPackage
+from .plugins.protocol import DeclarativeProtocolPlugin
 from .plugins.scpi import DeclarativeScpiPlugin, ScpiProbeResult
 from .services.run_plan import RunPlan, RunStep
 from .services.scope_service import ScopeStatusSummary
@@ -324,6 +326,21 @@ def _print_market_plugin_info(plugin: MarketPlugin) -> None:
 def _print_scpi_plugin_info(scpi_plugin: DeclarativeScpiPlugin) -> None:
     _print_plugin_info(scpi_plugin.plugin)
     print(f"scpi_idn_query={scpi_plugin.idn_query}")
+
+
+def _protocol_plugin_info_payload(declaration: DeclarativeProtocolPlugin) -> dict[str, Any]:
+    frame = asdict(declaration.frame)
+    for field in ("magic", "delimiter", "escape"):
+        value = frame.pop(field)
+        frame[f"{field}_hex"] = value.hex().upper() if value is not None else None
+    return {"plugin": asdict(declaration.plugin), "protocol": frame}
+
+
+def _print_protocol_plugin_info(declaration: DeclarativeProtocolPlugin) -> None:
+    _print_plugin_info(declaration.plugin)
+    for key, value in _protocol_plugin_info_payload(declaration)["protocol"].items():
+        if value is not None:
+            print(f"protocol_{key}={value}")
 
 
 def _print_scpi_doctor(records: list[tuple[str, str, str]]) -> None:

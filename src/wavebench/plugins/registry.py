@@ -115,14 +115,10 @@ def plugin_doctor_records(
     load_errors: tuple[PluginLoadError, ...] = (),
 ) -> list[PluginDoctorRecord]:
     records: list[PluginDoctorRecord] = []
-    seen: set[str] = set()
     for error in load_errors:
         records.append(PluginDoctorRecord("error", error.source, error.message))
     for plugin in registry.plugins:
         plugin_errors = _validate_plugin(plugin)
-        if plugin.driver_id in seen:
-            plugin_errors.append(f"duplicate plugin driver_id: {plugin.driver_id}")
-        seen.add(plugin.driver_id)
         if plugin_errors:
             for message in plugin_errors:
                 records.append(PluginDoctorRecord("error", plugin.driver_id, message))

@@ -8,7 +8,7 @@ from email.parser import Parser
 from hashlib import sha256
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 import subprocess
 import sys
@@ -24,6 +24,7 @@ from packaging.version import InvalidVersion, Version
 
 from wavebench import __version__
 from wavebench.errors import ConfigError
+from wavebench.plugins.install_paths import installation_path_key
 from wavebench.instruments.source_conformance import (
     MAX_SOURCE_CONFORMANCE_BYTES,
     SOURCE_CONFORMANCE_DIRECTORY,
@@ -104,6 +105,7 @@ class PluginPackage:
     source_conformance_manifests: tuple[SourceConformanceManifest, ...] = ()
     source_conformance_wheel_sha256: str | None = None
     build_backend: str | None = None
+    generated_scripts: tuple[str, ...] = ()
 
     @property
     def driver_ids(self) -> tuple[str, ...]:
@@ -300,6 +302,7 @@ def inspect_plugin_wheel(path: str | Path) -> PluginPackage:
             }
             if any(expected != actual for expected, actual in expected_names.items()):
                 raise ConfigError("wheel metadata files must share one dist-info directory / wheel 元数据必须位于同一 dist-info 目录")
+            _validate_dist_info_name(dist_info, filename_name, filename_version)
             metadata_text = _read_small_text(archive, metadata_names[0])
             wheel_text = _read_small_text(archive, wheel_names[0])
             record_text = _read_small_text(archive, record_names[0])
@@ -325,11 +328,13 @@ def inspect_plugin_wheel(path: str | Path) -> PluginPackage:
                 dist_info=dist_info,
                 wheel_sha256=source_conformance_wheel_sha256,
             )
-    except BadZipFile as exc:
+    except ConfigError:
+        raise
+    except (BadZipFile, NotImplementedError, RuntimeError, OSError) as exc:
         raise ConfigError("plugin wheel is not a valid ZIP archive / 插件 wheel 不是有效 ZIP") from exc
     message = Parser().parsestr(metadata_text)
-    name = message.get("Name")
-    version = message.get("Version")
+    name = (message.get("Name") or "").strip()
+    version = (message.get("Version") or "").strip()
     if not name or not version:
         raise ConfigError("wheel METADATA is missing Name or Version / wheel METADATA 缺少 Name 或 Version")
     try:
@@ -367,6 +372,7 @@ def inspect_plugin_wheel(path: str | Path) -> PluginPackage:
         metadata_sha256=sha256(metadata_text.encode()).hexdigest(),
         record_sha256=sha256(record_text.encode()).hexdigest(),
         member_paths=member_paths,
+        generated_scripts=_parse_generated_scripts(entry_text),
         source_conformance_manifests=source_conformance_manifests,
         source_conformance_wheel_sha256=source_conformance_wheel_sha256,
     )
@@ -389,7 +395,44 @@ def _parse_entry_points(text: str) -> tuple[WheelEntryPoint, ...]:
         raise ConfigError(f"invalid wheel entry_points.txt / wheel entry_points.txt 无效: {exc}") from exc
     if not parser.has_section(ENTRY_POINT_GROUP):
         raise ConfigError(f"wheel does not provide {ENTRY_POINT_GROUP} / wheel 未提供可执行仪器 entry point")
-    return _validated_entry_points(parser.items(ENTRY_POINT_GROUP))
+    # importlib.metadata reads explicit section entries, without DEFAULT values.
+    return _validated_entry_points(parser._sections[ENTRY_POINT_GROUP].items())
+
+
+def _parse_generated_scripts(text: str) -> tuple[str, ...]:
+    parser = ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read_string(text)  # Instrument entry points already validated this document.
+    scripts: dict[str, str] = {}
+    for group in ("console_scripts", "gui_scripts"):
+        if not parser.has_section(group):
+            continue
+        for name, value in parser._sections[group].items():
+            if (not name or name.strip() != name or name in {".", ".."}
+                    or any(char in name for char in '/\\:<>"|?*')
+                    or any(char.isspace() or ord(char) < 32 for char in name)
+                    or name.endswith(".")):
+                raise ConfigError("invalid plugin script name / 插件启动器名称无效")
+            target = name
+            if os.name == "nt":
+                base, extension = os.path.splitext(target)
+                # distlib strips a lowercase .py* suffix before adding .exe.
+                target = (base if extension.startswith(".py") else target) + ".exe"
+            key = installation_path_key(target)
+            if os.name == "nt" and PureWindowsPath(target).is_reserved():
+                raise ConfigError("invalid reserved Windows plugin script name")
+            if key in scripts:
+                raise ConfigError("plugin scripts have conflicting targets / 插件启动器目标重叠")
+            if key == installation_path_key("wavebench.exe" if os.name == "nt" else "wavebench") or name.casefold() in {"wavebench", "wavebench.exe"}:
+                raise ConfigError("plugin must not overwrite the WaveBench launcher / 插件不能覆盖 WaveBench 启动器")
+            if name.casefold() in {"pip", "easy_install"}:
+                # pip gives these names special versioned aliases beyond the
+                # declared entry point; instrument plugins must not own them.
+                raise ConfigError("plugin must not declare installer launchers / 插件不能声明安装器启动器")
+            if ":" not in value or not value.strip():
+                raise ConfigError("invalid plugin script target / 插件启动器入口无效")
+            scripts[key] = target
+    return tuple(sorted(scripts.values()))
 
 
 def _validated_entry_points(items: Iterable[tuple[str, object]]) -> tuple[WheelEntryPoint, ...]:
@@ -398,7 +441,8 @@ def _validated_entry_points(items: Iterable[tuple[str, object]]) -> tuple[WheelE
     for raw_name, raw_value in items:
         name = str(raw_name)
         value = str(raw_value)
-        if not name or name.strip() != name or any(char.isspace() for char in name):
+        if (not name or name.strip() != name or any(char.isspace() for char in name)
+                or "/" in name or "\\" in name or name in {".", ".."}):
             raise ConfigError(f"invalid instrument entry point name / 仪器 entry point 名称无效: {name!r}")
         if name in seen:
             raise ConfigError(f"duplicate instrument entry point / 重复的仪器 entry point: {name}")
@@ -415,7 +459,7 @@ def _validate_wheel_members(infos: Iterable[object]) -> None:
     items = tuple(infos)
     if len(items) > MAX_WHEEL_MEMBERS:
         raise ConfigError("plugin wheel contains too many members / 插件 wheel 成员过多")
-    names = [info.filename for info in items]
+    names = [installation_path_key(info.filename) for info in items]
     if len(names) != len(set(names)):
         raise ConfigError("plugin wheel contains duplicate members / 插件 wheel 包含重复成员")
     if sum(info.file_size for info in items) > MAX_WHEEL_UNCOMPRESSED_BYTES:
@@ -425,14 +469,20 @@ def _validate_wheel_members(infos: Iterable[object]) -> None:
         path = PurePosixPath(name)
         if path.is_absolute() or ".." in path.parts or "\\" in name:
             raise ConfigError(f"unsafe wheel member path / 不安全的 wheel 成员路径: {name}")
-        if path.parts and path.parts[0] == "wavebench":
+        if os.name == "nt" and any(
+            part.endswith((".", " ")) or ":" in part or PureWindowsPath(part).is_reserved()
+            for part in path.parts
+        ):
+            raise ConfigError(f"unsafe Windows wheel member path: {name}")
+        target_path = PurePosixPath(installation_path_key(name).replace("\\", "/"))
+        if target_path.parts and target_path.parts[0] == "wavebench":
             raise ConfigError(
                 f"plugin wheel must not overwrite the WaveBench core package / "
                 f"插件 wheel 不能覆盖 WaveBench 核心包: {name}"
             )
-        if path.suffix == ".pth":
+        if target_path.suffix == ".pth":
             raise ConfigError(f"plugin wheel pth files are not supported / 不支持插件 wheel 的 pth 文件: {name}")
-        if any(part.endswith(".data") for part in path.parts):
+        if any(part.endswith(".data") for part in target_path.parts):
             raise ConfigError(f"plugin wheel data relocation is not supported / 不支持 wheel data 重定位: {name}")
         mode = (info.external_attr >> 16) & 0o170000
         if mode == stat.S_IFLNK:
@@ -487,7 +537,12 @@ def _read_source_conformance_manifests(
                 "Source conformance manifest must be valid UTF-8 JSON / "
                 "Source conformance manifest 必须是有效的 UTF-8 JSON"
             ) from exc
-        manifest = parse_source_conformance_manifest(document)
+        try:
+            manifest = parse_source_conformance_manifest(document)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ConfigError(
+                "Source conformance manifest has invalid values / Source conformance manifest 包含无效数值"
+            ) from exc
         if relative != f"{manifest.manifest_id}.json":
             raise ConfigError(
                 "Source conformance filename does not match manifest_id / "
@@ -503,6 +558,24 @@ def _read_source_conformance_manifests(
         manifest_ids.add(manifest.manifest_id)
         manifests.append(manifest)
     return tuple(sorted(manifests, key=lambda item: item.manifest_id))
+
+
+def _validate_dist_info_name(
+    dist_info: str, filename_name: str, filename_version: Version,
+) -> None:
+    """Bind the archive's dist-info directory to its wheel filename."""
+    path = PurePosixPath(dist_info)
+    if len(path.parts) != 1 or not path.name.endswith(".dist-info"):
+        raise ConfigError("wheel dist-info directory is invalid / wheel dist-info 目录无效")
+    distribution, separator, version = path.name[:-len(".dist-info")].rpartition("-")
+    if not separator or not distribution or not version:
+        raise ConfigError("wheel dist-info directory is invalid / wheel dist-info 目录无效")
+    try:
+        directory_version = Version(version)
+    except InvalidVersion as exc:
+        raise ConfigError("wheel dist-info version is invalid / wheel dist-info 版本无效") from exc
+    if canonicalize_name(distribution) != canonicalize_name(filename_name) or directory_version != filename_version:
+        raise ConfigError("wheel filename and dist-info directory do not match / wheel 文件名与 dist-info 目录不一致")
 
 
 def _validate_wheel_metadata(text: str) -> frozenset[object]:

@@ -1,12 +1,13 @@
 # 插件 Reference
 
-WaveBench 支持三条彼此独立的插件路径。它们的共同边界是：Core 拥有 resource、transport、Service、安全、run plan、artifact 和 session/recovery；插件实现厂商协议、命令、解析、descriptor 和私有测试。
+WaveBench 支持下列彼此独立的插件路径。它们的共同边界是：Core 拥有 resource、transport、Service、安全、run plan、artifact 和 session/recovery；插件实现厂商协议、命令、解析、descriptor 和私有测试。
 
 | 路径 | 入口 | 是否进入真实执行 |
 | --- | --- | --- |
 | V1 metadata | `wavebench.drivers` / `wavebench.instrument.v1` | 否。用于展示 metadata。 |
 | V2 executable plugin | `wavebench.instruments` / `wavebench.instrument.v2` | 仅在配置选中 driver 后。 |
 | 声明式 SCPI TOML | 本地 TOML | 否；只允许显式只读 IDN probe。 |
+| 声明式二进制帧 TOML | `plugin protocol check/info` | 否；离线校验描述和单帧。 |
 | advisor 类别 | `wavebench.advisor` / `wavebench.advisor.v1` | 否；只产出建议，不连接仪器。 |
 
 ## 加载与信任边界
@@ -22,6 +23,21 @@ V2 entry point 名必须与 canonical `driver_id` 一致。可执行插件不能
 `plugin market` 读取本地 JSON 索引，用于搜索和查看条目。它不下载、安装、导入或执行索引中声明的包。
 
 字段、默认值和 JSON／TOML 校验规则由 parser 与 validator 定义。不要把本页的概览当作完整 schema。
+
+## 声明式二进制帧
+
+本节描述开发线的离线校验切片，尚未随正式版本发布。完整协议接入合同见
+[自定义设备与协议 RFC](../../project/rfcs/WaveBench_自定义设备与协议支持RFC.md)。
+
+`plugin protocol check` 和 `plugin protocol info` 通过
+位置参数 `path` 读取本地 TOML，不打开 transport。字段与默认值由
+`src/wavebench/plugins/protocol.py` 定义；manifest 上限为 1 MiB，帧与 header 上限为 64 MiB。
+插件 metadata 和必填帧字段必须完整，非法描述统一返回配置错误。
+
+支持定长、长度字段和分隔符三种 framing，以及可选 CRC16/Modbus。单帧校验要求完整
+header 和精确长度；分隔符 framing 以首次分隔符结束，拒绝内部提前分隔符和拼接帧。
+`escape_hex` 当前没有约定字节填充编码，声明后会报错。帧校验返回原始字节；请求映射、
+采样解码、流拆帧与真实驱动执行由后续协议合同定义。
 
 ## advisor 类别
 

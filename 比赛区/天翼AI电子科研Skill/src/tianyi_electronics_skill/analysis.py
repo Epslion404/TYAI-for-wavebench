@@ -99,23 +99,29 @@ def compute_dft_metrics(values: list[float], sample_rate_hz: float | None, funda
             "thd_available": False,
             "thd_percent": None,
         }
-    mean = statistics.fmean(values)
-    centered = [value - mean for value in values]
-    count = len(centered)
-
-    def amplitude(harmonic: int) -> float:
-        angle = 2.0 * math.pi * fundamental_hz * harmonic / sample_rate_hz
-        real = sum(value * math.cos(angle * index) for index, value in enumerate(centered))
-        imag = sum(value * math.sin(angle * index) for index, value in enumerate(centered))
-        return 2.0 * math.hypot(real, imag) / count
-
-    fundamental = amplitude(1)
     harmonic_numbers = [
         index
         for index in range(2, MAX_DFT_HARMONIC + 1)
         if fundamental_hz * index < nyquist_hz
     ]
-    harmonics = {str(index): amplitude(index) for index in harmonic_numbers}
+    # Fit DC, fundamental, and all usable harmonics together.  Independent DFT
+    # projections leak a non-integer-period fundamental into its harmonics; the
+    # small least-squares system removes that deterministic false THD.
+    fitted_harmonics = [1, *harmonic_numbers]
+    columns = [lambda _: 1.0]
+    for harmonic in fitted_harmonics:
+        angular = 2.0 * math.pi * fundamental_hz * harmonic / sample_rate_hz
+        columns.extend((
+            lambda index, angular=angular: math.cos(angular * index),
+            lambda index, angular=angular: math.sin(angular * index),
+        ))
+    coefficients = _least_squares(columns, values)
+    amplitudes = {
+        harmonic: math.hypot(coefficients[1 + 2 * index], coefficients[2 + 2 * index])
+        for index, harmonic in enumerate(fitted_harmonics)
+    }
+    fundamental = amplitudes[1]
+    harmonics = {str(index): amplitudes[index] for index in harmonic_numbers}
     thd = (
         math.sqrt(sum(value * value for value in harmonics.values())) / fundamental * 100
         if fundamental and harmonics
@@ -123,7 +129,37 @@ def compute_dft_metrics(values: list[float], sample_rate_hz: float | None, funda
     )
     return {"available": True, "fundamental_hz": fundamental_hz, "fundamental_amplitude": fundamental,
             "nyquist_hz": nyquist_hz, "harmonics": harmonics,
-            "thd_available": bool(harmonics), "thd_percent": thd}
+        "thd_available": bool(harmonics), "thd_percent": thd}
+
+
+def _least_squares(columns, values: list[float]) -> list[float]:
+    """Solve the tiny normal-equation system used for harmonic fitting."""
+    size = len(columns)
+    matrix = [[0.0] * (size + 1) for _ in range(size)]
+    for index, value in enumerate(values):
+        row = [column(index) for column in columns]
+        for left in range(size):
+            matrix[left][-1] += row[left] * value
+            for right in range(left, size):
+                matrix[left][right] += row[left] * row[right]
+    for left in range(size):
+        for right in range(left):
+            matrix[left][right] = matrix[right][left]
+    for pivot in range(size):
+        best = max(range(pivot, size), key=lambda row: abs(matrix[row][pivot]))
+        if abs(matrix[best][pivot]) < 1e-12:
+            raise ValueError("insufficiently independent samples for harmonic analysis")
+        matrix[pivot], matrix[best] = matrix[best], matrix[pivot]
+        divisor = matrix[pivot][pivot]
+        for column in range(pivot, size + 1):
+            matrix[pivot][column] /= divisor
+        for row in range(size):
+            if row == pivot:
+                continue
+            factor = matrix[row][pivot]
+            for column in range(pivot, size + 1):
+                matrix[row][column] -= factor * matrix[pivot][column]
+    return [row[-1] for row in matrix]
 
 
 def analyze_samples(samples: Iterable[float], sample_rate_hz: float | None, *, hysteresis: float = 0.05) -> dict:
@@ -153,7 +189,8 @@ def analyze_samples(samples: Iterable[float], sample_rate_hz: float | None, *, h
         "samples": len(values), "sample_rate_hz": sample_rate_hz,
         "peak_v": peak, "peak_to_peak_v": max(values) - min(values),
         "minimum_v": min(values), "maximum_v": max(values), "mean_v": mean,
-        "rms_v": math.sqrt(statistics.fmean(value * value for value in centered)),
+        "rms_v": math.sqrt(statistics.fmean(value * value for value in values)),
+        "ac_rms_v": math.sqrt(statistics.fmean(value * value for value in centered)),
         "frequency_hz": frequency,
         "duty_cycle_percent": sum(value >= decision_level for value in values) / len(values) * 100,
         "hysteresis_fraction": hysteresis, "rising_crossings": len(crossings),
