@@ -26,11 +26,75 @@ from .package_inspect import (
     WheelEntryPoint,
     build_subprocess_environment,
     inspect_plugin_package,
+    inspect_plugin_wheel,
 )
+from .install_paths import installation_path_key
 
 
 LEDGER_SCHEMA_VERSION = 2
 JOURNAL_SCHEMA_VERSION = 2
+
+
+def _verify_generated_launchers(
+    wheel: Path, scripts: str, purelib: str, recorded_paths: set[str],
+) -> None:
+    """Recreate pip launchers in memory; permit only their ZIP timestamp to vary."""
+    import calendar
+    from configparser import ConfigParser
+    import io
+    from types import SimpleNamespace
+    from zipfile import ZipFile
+
+    from pip._internal.operations.install.wheel import PipScriptMaker
+
+    parser = ConfigParser(interpolation=None)
+    parser.optionxform = str
+    with ZipFile(wheel) as archive:
+        entry_file = next(name for name in archive.namelist()
+                          if name.endswith(".dist-info/entry_points.txt"))
+        parser.read_string(archive.read(entry_file).decode("utf-8"))
+    recorded = {installation_path_key(path) for path in recorded_paths}
+    maker = PipScriptMaker(None, scripts)
+    maker.clobber = True
+    maker.variants = {""}
+    captured: dict[str, bytes] = {}
+    maker._fileop = SimpleNamespace(
+        write_binary_file=lambda path, data: captured.__setitem__(path, data),
+        set_executable_mode=lambda paths: None,
+    )
+    for group in ("console_scripts", "gui_scripts"):
+        if not parser.has_section(group):
+            continue
+        for name, value in parser._sections[group].items():
+            specification = f"{name} = {value}"
+            options = {"gui": group == "gui_scripts"}
+            captured.clear()
+            maker.make(specification, options)
+            if not captured:
+                raise ConfigError(f"installer did not generate a launcher: {name}")
+            for target, expected in tuple(captured.items()):
+                relative = os.path.relpath(target, purelib)
+                if installation_path_key(relative) not in recorded:
+                    raise ConfigError(f"generated launcher missing from installed RECORD: {target}")
+                path = Path(target)
+                if path.is_symlink() or not path.is_file():
+                    raise ConfigError(f"generated launcher is missing or a symlink: {target}")
+                actual = path.read_bytes()
+                if os.name == "nt":
+                    with ZipFile(io.BytesIO(actual)) as archive:
+                        timestamp = archive.getinfo("__main__.py").date_time
+                    previous_epoch = os.environ.get("SOURCE_DATE_EPOCH")
+                    try:
+                        os.environ["SOURCE_DATE_EPOCH"] = str(calendar.timegm(timestamp + (0, 0, 0)))
+                        maker.make(specification, options)
+                        expected = captured[target]
+                    finally:
+                        if previous_epoch is None:
+                            os.environ.pop("SOURCE_DATE_EPOCH", None)
+                        else:
+                            os.environ["SOURCE_DATE_EPOCH"] = previous_epoch
+                if actual != expected:
+                    raise ConfigError(f"generated launcher does not match cached wheel: {target}")
 
 
 @dataclass(frozen=True)
@@ -42,6 +106,7 @@ class EnvironmentInfo:
     platlib: str
     version: str
     fingerprint: str
+    scripts: str = ""
 
     def to_json(self) -> dict[str, str]:
         return asdict(self)
@@ -113,6 +178,7 @@ payload = {
     "base_prefix": os.path.realpath(sys.base_prefix),
     "purelib": os.path.realpath(paths["purelib"]),
     "platlib": os.path.realpath(paths["platlib"]),
+    "scripts": os.path.realpath(paths["scripts"]),
     "version": ".".join(str(item) for item in sys.version_info[:3]),
     "in_venv": sys.prefix != sys.base_prefix or hasattr(sys, "real_prefix"),
 }
@@ -125,7 +191,7 @@ print(json.dumps(payload, sort_keys=True))
                 "插件生命周期操作必须在虚拟环境中执行"
             )
         prefix = Path(str(payload["prefix"]))
-        for field in ("python", "purelib", "platlib"):
+        for field in ("python", "purelib", "platlib", "scripts"):
             candidate = Path(str(payload[field]))
             try:
                 candidate.relative_to(prefix)
@@ -146,6 +212,7 @@ print(json.dumps(payload, sort_keys=True))
             platlib=str(payload["platlib"]),
             version=str(payload["version"]),
             fingerprint=sha256(fingerprint_text.encode()).hexdigest(),
+            scripts=str(payload["scripts"]),
         )
         return self._environment
 
@@ -491,9 +558,10 @@ print(json.dumps(payload, sort_keys=True))
         original: Exception,
     ) -> None:
         try:
+            self._assert_distribution_file_ownership(
+                str(record["distribution"]), allow_missing=True
+            )
             self._update_journal(journal, "rollback_started")
-            if self._distribution_inventory(str(record["distribution"])):
-                self._assert_distribution_file_ownership(str(record["distribution"]))
             self._pip_uninstall(record["distribution"], allow_missing=True)
             if self._distribution_inventory(record["distribution"]):
                 raise ConfigError("rollback uninstall did not remove distribution")
@@ -515,12 +583,27 @@ print(json.dumps(payload, sort_keys=True))
         original: Exception,
     ) -> None:
         try:
+            package = inspect_plugin_wheel(wheel)
+            self._assert_no_file_ownership_conflicts(
+                package,
+                self._file_owners(strict=True),
+                ignored_distribution=str(record["distribution"]),
+            )
+            if package.sha256 != record["wheel_sha256"]:
+                raise ConfigError("managed rollback wheel is missing or changed / 受管回滚 wheel 缺失或已变化")
+            # Force-reinstall also removes the failed current version's files,
+            # which may not be present in the old wheel being restored.
+            self._assert_distribution_file_ownership(
+                str(record["distribution"]), allow_missing=True
+            )
             self._update_journal(journal, "rollback_started")
-            if self._distribution_inventory(str(record["distribution"])):
-                self._assert_distribution_file_ownership(str(record["distribution"]))
             self._pip_install(wheel)
-            self._postflight(record)
-            self._write_json(self.ledger_path, ledger)
+            restored = self._verified_rollback_ledger(record, ledger)
+            # Persist the verified rollback snapshot before committing its new
+            # launcher digests, so recover can finish an interrupted ledger write.
+            journal["before_ledger"] = restored
+            self._update_journal(journal, "rollback_started")
+            self._write_json(self.ledger_path, restored)
             self._remove_journal()
         except Exception as rollback_error:
             raise ConfigError(
@@ -528,6 +611,21 @@ print(json.dumps(payload, sort_keys=True))
                 "需要恢复：插件操作与回滚均失败"
             ) from rollback_error
         raise ConfigError(f"plugin postflight failed / 插件操作后检查失败: {original}") from original
+
+    def _verified_rollback_ledger(
+        self,
+        record: dict[str, object],
+        ledger: dict[str, object],
+    ) -> dict[str, object]:
+        # Reinstalling the same wheel can change pip-generated Windows launcher
+        # ZIP timestamps. Only rollback may replace the installed RECORD digest;
+        # wheel, metadata, descriptors and RECORD file hashes remain mandatory.
+        postflight = self._postflight(record, rollback_reinstall=True)
+        self._assert_distribution_file_ownership(str(record["distribution"]))
+        restored_record = dict(record)
+        restored_record["installed_files_sha256"] = postflight["files_sha256"]
+        restored_record["installed_record_sha256"] = postflight["record_sha256"]
+        return self._with_record(ledger, restored_record)
 
     @contextmanager
     def _inspected_input(self, path: str | Path) -> Iterator[PluginPackage]:
@@ -553,15 +651,13 @@ print(json.dumps(payload, sort_keys=True))
         driver_id = self._record_entry_points(record)[0].driver_id
         record_key = record["normalized_distribution"]
         self._validate_ledger_document(before, environment)
-        before_plugins = self._ledger_plugins(before)
-        before_raw = before_plugins.get(record_key)
+        before_raw = self._ledger_plugins(before).get(record_key)
         if operation == "install" and before_raw is not None:
             raise ConfigError("invalid plugin transaction journal / install journal already has the package")
         if operation in {"remove", "upgrade", "downgrade"}:
             if before_raw is None:
                 raise ConfigError("invalid plugin transaction journal / replacement journal lacks previous package")
-            before_record = self._record(before_raw)
-            if before_record["normalized_distribution"] != record_key:
+            if self._record(before_raw)["normalized_distribution"] != record_key:
                 raise ConfigError("invalid plugin transaction journal / package distribution is inconsistent")
         current_ledger = self._load_ledger(environment)
         before_record_raw = before_raw
@@ -611,7 +707,16 @@ print(json.dumps(payload, sort_keys=True))
                 self._remove_journal()
                 return LifecycleResult("recovered-to-before", driver_id, record["distribution"], record["version"])
 
-        if stage == "rollback_started" and before_matches:
+        if stage == "rollback_started":
+            if not before_matches:
+                if before_record is None:
+                    return self._recovery_required()
+                try:
+                    before = self._verified_rollback_ledger(before_record, before)
+                except ConfigError:
+                    return self._recovery_required()
+                journal["before_ledger"] = before
+                self._update_journal(journal, "rollback_started")
             self._write_json(self.ledger_path, before)
             self._remove_journal()
             return LifecycleResult("recovered-after-rollback", driver_id, record["distribution"], record["version"])
@@ -718,15 +823,40 @@ print(json.dumps(payload, sort_keys=True))
             self._file_owners(strict=True),
         )
 
-    @staticmethod
     def _assert_no_file_ownership_conflicts(
+        self,
         package: PluginPackage,
         file_owners: dict[str, tuple[str, ...]],
         *,
         ignored_distribution: str | None = None,
     ) -> None:
+        paths = list(package.member_paths)
+        if package.generated_scripts:
+            environment = self.environment()
+            if not environment.scripts:
+                raise ConfigError("plugin target scripts directory cannot be proven / 无法确定启动器安装目录")
+            scripts = list(package.generated_scripts)
+            if os.name == "nt":
+                # distlib's locked-executable fallback can remove/replace this
+                # side file before retrying a launcher write.
+                scripts.extend(script + ".deleteme" for script in package.generated_scripts)
+            for script in scripts:
+                target = Path(environment.scripts) / script
+                relative = os.path.relpath(target, environment.purelib).replace("\\", "/")
+                paths.append(relative)
+                owners = {
+                    canonicalize_name(owner)
+                    for path, names in file_owners.items()
+                    if installation_path_key(path) == installation_path_key(relative)
+                    for owner in names
+                }
+                ignored = canonicalize_name(ignored_distribution) if ignored_distribution else None
+                if target.is_symlink() or (
+                    target.exists() and (not owners or any(owner != ignored for owner in owners))
+                ):
+                    raise ConfigError("plugin script would overwrite an existing launcher / 插件启动器将覆盖已有文件")
         overlap = PluginLifecycle._shared_file_path(
-            package.member_paths,
+            paths,
             file_owners,
             ignored_distribution=ignored_distribution,
         )
@@ -744,16 +874,27 @@ print(json.dumps(payload, sort_keys=True))
         ignored_distribution: str | None = None,
     ) -> str | None:
         ignored = canonicalize_name(ignored_distribution) if ignored_distribution else None
+        normalized_owners: dict[str, set[str]] = {}
+        for owned_path, owners in file_owners.items():
+            normalized_owners.setdefault(installation_path_key(owned_path), set()).update(
+                canonicalize_name(owner) for owner in owners
+            )
         for path in sorted(set(paths)):
-            key = str(path).replace("\\", "/").casefold()
-            if any(owner != ignored for owner in file_owners.get(key, ())):
+            if any(
+                owner != ignored
+                for owner in normalized_owners.get(installation_path_key(path), ())
+            ):
                 return path
         return None
 
-    def _assert_distribution_file_ownership(self, distribution: str) -> None:
+    def _assert_distribution_file_ownership(
+        self, distribution: str, *, allow_missing: bool = False
+    ) -> None:
         normalized = canonicalize_name(distribution)
         inventory = self._inventory(target_distribution=distribution)
         matches = inventory.get(normalized, ())
+        if not matches and allow_missing:
+            return
         if len(matches) != 1:
             raise ConfigError(
                 "managed distribution ownership is ambiguous / 受管分发的文件归属不唯一"
@@ -778,9 +919,7 @@ print(json.dumps(payload, sort_keys=True))
             )
 
     def _cache_wheel(self, package: PluginPackage) -> Path:
-        # Keep the original filename: pip validates wheel filenames.  Shorten
-        # the hash directory instead, which removes enough path depth to stay
-        # below Windows MAX_PATH without weakening the content-hash check.
+        # Preserve pip's wheel filename, shorten paths, and still verify the full hash.
         target_dir = self.wheel_cache / package.sha256[:16]
         target = target_dir / package.wheel_path.name
         if target.is_file() and self._sha256_file(target) == package.sha256:
@@ -828,7 +967,12 @@ print(json.dumps(payload, sort_keys=True))
             "installed_record_sha256": "",
         }
 
-    def _postflight(self, record: dict[str, object]) -> dict[str, object]:
+    def _postflight(
+        self,
+        record: dict[str, object],
+        *,
+        rollback_reinstall: bool = False,
+    ) -> dict[str, object]:
         script = r'''
 import base64
 import csv
@@ -944,18 +1088,39 @@ with zipfile.ZipFile(wheel_path) as archive:
         if encoded != expected_digest or (size_field and size != int(size_field)):
             raise SystemExit(f"installed file does not match cached wheel: {path}")
 file_rows = []
-for item in dist.files or ():
-    target = dist.locate_file(item)
-    if item.hash is None or item.hash.mode != "sha256" or not os.path.isfile(target):
+record_paths = [item for item in dist_files if str(item).endswith(".dist-info/RECORD")]
+with open(dist.locate_file(record_paths[0]), "r", encoding="utf-8", newline="") as handle:
+    installed_rows = list(csv.reader(handle))
+seen_paths = set()
+for row in installed_rows:
+    if len(row) != 3 or not row[0] or row[0] in seen_paths:
+        raise SystemExit("installed RECORD row is invalid or duplicated")
+    path, hash_field, size_field = row
+    seen_paths.add(path)
+    target = dist.locate_file(path)
+    if not hash_field:
+        if path != str(record_paths[0]) and not path.endswith(".pyc"):
+            raise SystemExit(f"installed RECORD file lacks a hash: {path}")
         continue
+    algorithm, separator, expected_digest = hash_field.partition("=")
+    if algorithm != "sha256" or separator != "=" or not os.path.isfile(target):
+        raise SystemExit(f"installed RECORD file is missing or has unsupported hash: {path}")
     digest = hashlib.sha256()
+    size = 0
     with open(target, "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
+            size += len(chunk)
     encoded = __import__("base64").urlsafe_b64encode(digest.digest()).rstrip(b"=").decode()
-    if encoded != item.hash.value:
-        raise SystemExit(f"installed file hash mismatch: {item}")
-    file_rows.append((str(item), encoded))
+    if encoded != expected_digest or (size_field and size != int(size_field)):
+        raise SystemExit(f"installed file hash mismatch: {path}")
+    file_rows.append((path, encoded))
+if ROLLBACK_REINSTALL:
+    from wavebench.plugins.lifecycle import _verify_generated_launchers
+    _verify_generated_launchers(
+        __import__("pathlib").Path(wheel_path), sysconfig.get_path("scripts"),
+        sysconfig.get_path("purelib"), seen_paths,
+    )
 files_digest = hashlib.sha256(json.dumps(sorted(file_rows)).encode()).hexdigest()
 print(json.dumps({
     "driver_ids": [driver_id for driver_id, _value in expected_entries],
@@ -969,7 +1134,7 @@ print(json.dumps({
                     self.environment().python,
                     "-I",
                     "-c",
-                    script,
+                    script.replace("ROLLBACK_REINSTALL", repr(rollback_reinstall)),
                     canonicalize_name(record["distribution"]),
                     record["version"],
                     json.dumps(
@@ -980,7 +1145,7 @@ print(json.dumps({
                         sort_keys=True,
                     ),
                     record["metadata_sha256"],
-                    record["installed_record_sha256"],
+                    "" if rollback_reinstall else record["installed_record_sha256"],
                     str(self._record_wheel(record)),
                 ]
             )
@@ -1098,7 +1263,7 @@ for dist in distributions(path=paths):
         unreadable.append(normalized or "<unknown>")
         dist_files = ()
     for item in dist_files:
-        owners.setdefault(str(item).replace("\\", "/").casefold(), []).append(normalized)
+        owners.setdefault(str(item), []).append(normalized)
 print(json.dumps({
     "owners": {path: sorted(set(names)) for path, names in owners.items()},
     "unreadable": sorted(set(unreadable)),
