@@ -11,7 +11,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m wavebench run template --list
 .venv/bin/python -m wavebench run template source-scope-sine --print
-.venv/bin/python -m wavebench run check --plan plans/closure_sine_1k.toml
+.venv/bin/python -m wavebench run check --plan plans/closure_sine_1k.toml --config wavebench.example.toml
 ```
 
 The last command succeeds with `safety_limits=ok / 安全上限=通过`. It performs no instrument I/O. See the [Chinese Quickstart](getting-started/quickstart.md) for expected output, Windows commands, and the next steps.
