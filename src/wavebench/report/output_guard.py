@@ -1,18 +1,27 @@
 """Keep derived report writes separate from the run's original evidence."""
 
-import json
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from wavebench.data.packages import RunPackage
 from wavebench.errors import ConfigError
+from wavebench.report.html_budget import retained_size
 
 
-def report_manifest_paths(run: RunPackage, output_dir: Path) -> dict[str, Path]:
+def report_manifest_paths(
+    run: RunPackage, output_dir: Path, *, analysis_limits=None, retained_bytes: int = 0,
+) -> dict[str, Path]:
     """Read refreshable report names only from a manifest for this run."""
     manifest = output_dir / "report-assets" / "manifest.json"
+    if not manifest.is_file():
+        return {}
+    from wavebench.data.analysis_io import read_json_bounded
+    from wavebench.data.analysis_resources import AnalysisLimits
+
     try:
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload = read_json_bounded(
+            manifest, analysis_limits or AnalysisLimits(), retained_bytes=retained_bytes,
+        )
         source = urlsplit(payload.get("run_json", ""))
         if (payload.get("schema") != "wavebench.report_manifest.v1"
                 or source.scheme or source.netloc
@@ -41,14 +50,17 @@ def validate_report_output_pairs(targets: list[Path]) -> None:
 
 
 def validate_run_report_paths(
-    run: RunPackage, targets: list[Path], *, evidence_dirs=(), evidence_files=()
+    run: RunPackage, targets: list[Path], *, evidence_dirs=(), evidence_files=(), analysis_limits=None,
 ) -> None:
     validate_report_output_pairs(targets)
     root = run.path.resolve()
     report_files = {root / "report.html", root / "report.pdf"}
     # Preserve repeat exports with custom names recorded by our report manifest.
     for target in targets:
-        report_files.update(report_manifest_paths(run, target.parent).values())
+        report_files.update(report_manifest_paths(
+            run, target.parent, analysis_limits=analysis_limits,
+            retained_bytes=retained_size([targets, evidence_dirs, evidence_files, report_files]),
+        ).values())
 
     files = {run.run_json_path.resolve(), root / "plan.toml", root / "summary.csv",
              root / "frequency_responses.json"}

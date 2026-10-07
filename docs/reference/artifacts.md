@@ -57,6 +57,8 @@ NPY 来源先检查有界 header、实数 dtype、二维形状和文件长度，
 
 报告写入前会保护显式引用及实际回落路径上的采集 metadata、截图和 `files` 文件，并成对检查 HTML、PDF、`report-assets/manifest.json` 和实际使用的 Plotly 文件，拒绝同路径和硬链接冲突。组合导出时，报告清单的可选 `pdf` 字段保存 PDF 相对路径，供自定义报告刷新使用；显式原始证据引用优先于刷新许可。预检不是文件系统事务，不隔离外部并发替换，也不保证渲染失败时回滚已生成的派生文件。
 
+分析证据清单包含 run artifact 及实际分析 manifest 的 `exports[].path`、`peaks[].json`，也覆盖双通道分析导出。renderer 将 manifest 及其文件引用限制在 run 根内，引用以 run 根为基准，没有 manifest 所在目录回落规则；显式缺失路径也受保护。写前读取 JSON 使用所选资源 profile，并计入已保留清单的内存估算；已有 manifest 或 capture metadata 读取、解析或预算检查失败时拒绝导出，避免用不完整清单继续写入。
+
 ## `run.json`
 
 以下字段始终由 writer 写入：

@@ -32,17 +32,25 @@ from wavebench.report.output_guard import (
 
 
 def validate_run_report_outputs(run: RunPackage, paths: list[Path], *, analysis_limits=None) -> None:
+    from wavebench.data.analysis_io import read_json_bounded
+    from wavebench.data.analysis_resources import AnalysisLimits
+    from wavebench.data.analysis_control import checkpoint
+    from .analysis import artifact_path
+
+    checkpoint()
+    limits = analysis_limits or AnalysisLimits()
     capture_dirs = []
     evidence_files = []
     # Rendering reads step metadata independently, even when steps share a package.
     for reference in _capture_references(run, unique_packages=False):
+        checkpoint()
         package_dir = _resolve_artifact_path(run.path, reference.package)
         capture_dirs.append(package_dir)
         explicit, actual = _capture_metadata_paths(package_dir, reference.metadata)
         evidence_files.extend((explicit, actual))
         metadata = {}
         metadata = _read_capture_metadata(
-            package_dir, reference.metadata, limits=analysis_limits,
+            package_dir, reference.metadata, limits=limits,
             retained_bytes=retained_size([capture_dirs, evidence_files]), strict_resources=True,
         )
         for file_text in _capture_file_references(metadata.get("files")):
@@ -53,7 +61,11 @@ def validate_run_report_outputs(run: RunPackage, paths: list[Path], *, analysis_
         screenshot_text = _metadata_screenshot_path(metadata)
         if screenshot_text:
             evidence_files.append(_resolve_capture_screenshot_path(run.path, package_dir, screenshot_text))
+        limits.check("max_working_bytes", retained_size([capture_dirs, evidence_files, metadata]),
+                     "report evidence inventory")
+    metadata = {}
     for step in run.steps:
+        checkpoint()
         artifact = step.get("artifact", {})
         if not isinstance(artifact, dict):
             continue
@@ -64,16 +76,72 @@ def validate_run_report_outputs(run: RunPackage, paths: list[Path], *, analysis_
             path = _optional_run_artifact_path(run.path, pipeline.get(field))
             if path is not None:
                 evidence_files.append(path)
-        exports = pipeline.get("exports", [])
-        if isinstance(exports, list):
-            for export in exports:
-                if isinstance(export, dict):
-                    path = _optional_run_artifact_path(run.path, export.get("path"))
-                    if path is not None:
-                        evidence_files.append(path)
+        evidence_files.extend(_analysis_evidence_paths(run.path, pipeline))
+        limits.check("max_working_bytes", retained_size([capture_dirs, evidence_files]),
+                     "report evidence inventory")
+        # The curve renderer reads manifest maps, independently of the run's
+        # copied exports/peaks. Both pipelines and pairs resolve them at run root;
+        # there is no manifest-parent fallback and no recursive manifest chain.
+        raw_manifest = pipeline.get("manifest")
+        if isinstance(raw_manifest, str) and raw_manifest:
+            try:
+                actual_manifest = artifact_path(run.path, raw_manifest)
+            except ValueError:
+                # The confined renderer cannot consume this manifest. Its
+                # explicit reference remains protected by the inventory above.
+                continue
+            evidence_files.append(actual_manifest)
+            if actual_manifest.exists():
+                try:
+                    checkpoint()
+                    manifest = read_json_bounded(
+                        actual_manifest, limits,
+                        retained_bytes=retained_size([capture_dirs, evidence_files]),
+                    )
+                    if not isinstance(manifest, dict):
+                        raise ValueError("analysis manifest must be an object")
+                    evidence_files.extend(_analysis_evidence_paths(run.path, manifest))
+                    limits.check("max_working_bytes", retained_size([
+                        capture_dirs, evidence_files, manifest,
+                    ]), "report evidence inventory")
+                except (OSError, ValueError, TypeError) as exc:
+                    raise ConfigError(f"cannot inventory original run evidence: {actual_manifest}: {exc}") from exc
+                finally:
+                    manifest = None
+        limits.check("max_working_bytes", retained_size([capture_dirs, evidence_files]),
+                     "report evidence inventory")
     validate_run_report_paths(
-        run, paths, evidence_dirs=capture_dirs, evidence_files=evidence_files
+        run, paths, evidence_dirs=capture_dirs, evidence_files=evidence_files, analysis_limits=limits,
     )
+
+
+def _analysis_evidence_paths(run_path: Path, payload: dict[str, Any]) -> list[Path]:
+    """Enumerate only renderer/link fields, including explicit missing references."""
+    from .analysis import artifact_path
+    from wavebench.data.analysis_control import checkpoint
+
+    paths = []
+    for field in ("manifest", "metrics"):
+        path = _optional_run_artifact_path(run_path, payload.get(field))
+        if path is not None:
+            paths.append(path)
+    for field, key in (("exports", "path"), ("peaks", "json")):
+        items = payload.get(field, [])
+        if not isinstance(items, list):
+            raise ConfigError(f"cannot inventory original run evidence: {field} must be a list")
+        for item in items:
+            checkpoint()
+            if not isinstance(item, dict):
+                raise ConfigError(f"cannot inventory original run evidence: invalid {field} entry")
+            raw = item.get(key)
+            path = _optional_run_artifact_path(run_path, raw)
+            if path is not None:
+                paths.append(path)
+                try:
+                    paths.append(artifact_path(run_path, raw))
+                except ValueError:
+                    pass  # Explicit reference protected; renderer cannot read it.
+    return paths
 
 
 @dataclass(frozen=True)
@@ -160,7 +228,7 @@ def write_run_report_pdf(
     if output_dir == output_dir.parent / "report-assets":
         output_dir = output_dir.parent
     # A standalone PDF must also leave the associated HTML and sidecars intact.
-    html_path = report_manifest_paths(run, output_dir).get("report", output_dir / "report.html")
+    html_path = report_manifest_paths(run, output_dir, analysis_limits=analysis_limits).get("report", output_dir / "report.html")
     outputs = _run_report_output_paths(run, html_path)
     related = [path, outputs.html, outputs.manifest]
     if outputs.plotly is not None:
@@ -3038,11 +3106,16 @@ def _read_capture_metadata(
     except Exception as exc:  # noqa: BLE001 - reports retain unavailable evidence as warnings
         # Output validation needs a complete inventory to protect external
         # evidence. A budget rejection must never turn it into an empty one.
-        if strict_resources and isinstance(exc, DataError):
-            raise
+        if strict_resources:
+            if isinstance(exc, DataError):
+                raise
+            if not isinstance(exc, FileNotFoundError):
+                raise ConfigError(f"cannot inventory original run evidence: {metadata_path}: {exc}") from exc
         if warnings is not None:
             warnings.append(f"capture metadata unavailable: {metadata_path}: {type(exc).__name__}: {exc}")
         return {}
+    if strict_resources and not isinstance(data, dict):
+        raise ConfigError(f"cannot inventory original run evidence: {metadata_path}: metadata must be an object")
     return data if isinstance(data, dict) else {}
 
 
