@@ -16,7 +16,7 @@ python -m wavebench --json <domain> <command> ...
 
 | 类别 | 命令族 | 行为 |
 | --- | --- | --- |
-| 离线、只读本地文件 | `run schema`、`run check`、`run intent`、`run compare`、`run resume`、`capture inspect`、`capability explain`、`lock status` | 不连接仪器。 |
+| 离线、只读本地文件 | `run schema`、`run check`、`run intent`、`run compare`、`run resume`、`capture inspect`、`capability explain`、`lock status`、`plugin protocol check/info` | 不连接仪器。 |
 | 离线且可能写本地文件 | `run template --output`、`run report`、`run report-index` | 不连接仪器，但会创建模板、报告或索引文件。 |
 | 连接读取或预检 | `doctor`、状态／身份查询、`run verify` | 会访问配置的仪器，不应改变实验设置。 |
 | 可能改变状态或触发采集 | 输出和 setter、`scope auto`／`scope capture`、非 fake TUI、`run plan` | 可能写入仪器、触发采集或切换输出。 |
