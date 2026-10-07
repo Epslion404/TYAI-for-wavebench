@@ -125,6 +125,72 @@ else:
     return completed.stdout.strip()
 
 
+def _child_status(directory: Path, resource: str, lock_id: str = "") -> dict:
+    script = """
+import json
+from pathlib import Path
+import sys
+from wavebench.services.resource_lease import ResourceLease
+directory, resource, lock_id = json.loads(sys.argv[1])
+lease = ResourceLease(resource, directory=Path(directory), lock_id=lock_id)
+status = lease.status()
+status['cleanup_removed'] = lease.clear_stale_metadata()
+print(json.dumps(status))
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    completed = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", script,
+         json.dumps([str(directory), resource, lock_id])],
+        env=environment, capture_output=True, text=True, check=True, timeout=20,
+    )
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize(("resource", "observer_resource"), [
+    ("TCPIP::bench::INSTR", "TCPIP0::bench::inst0::INSTR"),
+    ("ASRL1", "ASRL1::INSTR"),
+    ("TCPIP00::bench::05025::SOCKET", "TCPIP::bench::5025::SOCKET"),
+])
+@pytest.mark.parametrize("mode", ["exclusive", "shared"])
+def test_normal_holder_metadata_with_compatibility_locks(
+    tmp_path: Path, resource: str, observer_resource: str, mode: str,
+) -> None:
+    lease = ResourceLease(
+        resource, directory=tmp_path, mode=mode, lock_id="fixture", operation="probe",
+    )
+    assert len(lease._lock_paths) > 1
+    observer = ResourceLease(observer_resource, directory=tmp_path, lock_id="fixture")
+    with lease:
+        record = json.loads(lease.metadata_path.read_text(encoding="utf-8"))
+        assert record["pid"] == os.getpid()
+        assert record["resource_fingerprint"] == observer.fingerprint
+        assert record["lock_id"] == "fixture"
+        assert record["mode"] == mode
+        assert record["operation"] == "probe"
+        for status in (observer.status(), _child_status(tmp_path, observer_resource, "fixture")):
+            assert status["held"] is True
+            assert status["stale_metadata"] is False
+            assert status["metadata"] == record
+            assert status["metadata_ambiguous"] is False
+            if "cleanup_removed" in status:
+                assert status["cleanup_removed"] is False
+        # A valid, busy canonical record alone must not hide an unknown holder
+        # on another busy lock, even when every compatibility lock is busy.
+        alias_metadata = next(
+            path.with_suffix(".json") for path in observer._lock_paths if path != lease.lock_path
+        )
+        alias_metadata.unlink()
+        status = _child_status(tmp_path, observer_resource, "fixture")
+        assert status["held"] is True
+        assert status["metadata"] is None
+        assert status["metadata_ambiguous"] is True
+        assert status["cleanup_removed"] is False
+    assert all(path.exists() for path in lease._lock_paths)
+    assert not any(path.with_suffix(".json").exists() for path in lease._lock_paths)
+    assert _child_status(tmp_path, observer_resource, "fixture")["held"] is False
+
+
 @pytest.mark.parametrize(("first", "second"), _EQUIVALENT_RESOURCES)
 @pytest.mark.parametrize("reverse", [False, True])
 def test_equivalent_resources_contend_across_processes(
@@ -183,7 +249,10 @@ def test_v1_lock_migration_contends_in_both_acquisition_orders(
         with file_lock.FileLock(old_path):
             old_metadata = old_path.with_suffix(".json")
             old_metadata.write_text(json.dumps({"lease_id": "old-holder"}), encoding="utf-8")
-            assert lease.status()["held"] is True
+            status = lease.status()
+            assert status["held"] is True
+            assert status["metadata"] == {"lease_id": "old-holder"}
+            assert status["metadata_ambiguous"] is False
             assert lease.holder_metadata()["lease_id"] == "old-holder"
             assert lease.clear_stale_metadata() is False
             assert _child_attempt(tmp_path, resource) == "busy"
@@ -256,18 +325,6 @@ def test_status_checks_every_busy_sidecar_across_processes(
     if reverse:
         paths.reverse()
     record = {"lease_id": "active", "pid": os.getpid()}
-    script = """
-import json
-from pathlib import Path
-import sys
-from wavebench.services.resource_lease import ResourceLease
-lease = ResourceLease('TCPIP::bench::INSTR', directory=Path(sys.argv[1]))
-status = lease.status()
-status['cleanup_removed'] = lease.clear_stale_metadata()
-print(json.dumps(status))
-"""
-    environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
     with ExitStack() as stack:
         for path in paths:
             stack.enter_context(file_lock.FileLock(path))
@@ -282,11 +339,7 @@ print(json.dumps(status))
                 "conflict": json.dumps({"lease_id": "other"}),
             }[other_record]
             paths[1].with_suffix(".json").write_text(text, encoding="utf-8")
-        completed = subprocess.run(
-            [sys.executable, "-X", "utf8", "-c", script, str(tmp_path)],
-            env=environment, capture_output=True, text=True, check=True, timeout=20,
-        )
-        status = json.loads(completed.stdout)
+        status = _child_status(tmp_path, "TCPIP::bench::INSTR")
         assert status["held"] is True
         assert status["stale_metadata"] is False
         assert status["metadata_ambiguous"] is (other_record != "same")
@@ -390,15 +443,38 @@ def test_metadata_failure_releases_all_alias_locks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lease = ResourceLease("ASRL1", directory=tmp_path)
+    last_metadata = lease._lock_paths[-1].with_suffix(".json")
+    other_record = {"lease_id": "stale-other"}
+    last_metadata.write_text(json.dumps(other_record), encoding="utf-8")
+    write_json = lease_module.atomic_write_json
 
-    def fail_write() -> None:
-        raise OSError("metadata failure")
+    def fail_write(path, metadata) -> None:
+        if path == last_metadata:
+            raise OSError("metadata failure")
+        write_json(path, metadata)
 
-    monkeypatch.setattr(lease, "_write_metadata", fail_write)
+    monkeypatch.setattr(lease_module, "atomic_write_json", fail_write)
     with pytest.raises(OSError, match="metadata failure"):
         lease.acquire()
     assert not lease.acquired
+    assert json.loads(last_metadata.read_text(encoding="utf-8")) == other_record
+    assert not any(path.with_suffix(".json").exists() for path in lease._lock_paths[:-1])
     assert _child_attempt(tmp_path, "ASRL1::INSTR") == "acquired"
+
+
+def test_shared_release_preserves_newer_holder_sidecars(tmp_path: Path) -> None:
+    first = ResourceLease("TCPIP::bench::INSTR", directory=tmp_path, mode="shared")
+    second = ResourceLease("TCPIP0::bench::inst0::INSTR", directory=tmp_path, mode="shared")
+    with first:
+        with second:
+            record = second.holder_metadata()
+            first.release()
+            status = _child_status(tmp_path, second.resource)
+            assert status["held"] is True
+            assert status["metadata"] == record
+            assert status["metadata_ambiguous"] is False
+            assert status["cleanup_removed"] is False
+    assert not any(path.with_suffix(".json").exists() for path in second._lock_paths)
 
 
 def test_lock_id_remains_a_separate_namespace(tmp_path: Path) -> None:
@@ -423,7 +499,11 @@ def test_acquire_many_keeps_legacy_locks_for_every_supplied_port_spelling(tmp_pa
         "TCPIP::bench::005025::SOCKET",
     ]) as leases:
         assert len(leases) == 1
+        record = leases[0].holder_metadata()
         for port in ("5025", "05025", "005025"):
+            status = _child_status(tmp_path, f"TCPIP::bench::{port}::SOCKET")
+            assert status["metadata"] == record
+            assert status["metadata_ambiguous"] is False
             assert _child_attempt(
                 tmp_path, "unused", legacy_identity=f"tcpip::bench::{port}::socket",
             ) == "busy"

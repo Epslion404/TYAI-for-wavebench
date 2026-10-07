@@ -456,20 +456,28 @@ class ResourceLease:
         return payload
 
     def _write_metadata(self) -> None:
-        if self._lock is None:
-            return
-        atomic_write_json(self.metadata_path, self._metadata())
+        # status checks every busy compatibility lock. Publish one identical
+        # record on every lock actually acquired, including caller spellings
+        # merged by acquire_many, rather than weakening its ambiguity checks.
+        metadata = self._metadata()
+        for lock in self._locks:
+            atomic_write_json(lock.path.with_suffix(".json"), metadata)
 
     def _remove_own_metadata(self) -> None:
         if self._lease_id is None:
             return
-        metadata = self.holder_metadata()
-        if metadata is None or metadata.get("lease_id") != self._lease_id:
-            return
-        try:
-            self.metadata_path.unlink()
-        except FileNotFoundError:
-            pass
+        # Inspect each sidecar independently, also after a partial write failure.
+        # Keep the kernel locks until cleanup ends so an exclusive successor
+        # cannot publish between the lease_id check and unlink.
+        for lock in self._locks:
+            path = lock.path.with_suffix(".json")
+            metadata = self._read_holder_metadata([path])
+            if metadata is None or metadata.get("lease_id") != self._lease_id:
+                continue
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 @dataclass(frozen=True)
