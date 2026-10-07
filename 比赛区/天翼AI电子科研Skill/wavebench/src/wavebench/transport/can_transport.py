@@ -235,14 +235,16 @@ class CanTransport:
             discarded_bytes=0,
         )
 
-    @staticmethod
     def _frame_read_error(
+        self,
         operation: str,
         replay: ReplayPolicy,
         consumed_bytes: int,
         reason_code: str,
     ) -> TransportIOError:
         partial = consumed_bytes > 0
+        # Keep failure progress, but never let failed response bytes satisfy a later read.
+        self._pending.clear()
         return TransportIOError(
             "raw CAN frame read did not complete",
             operation=operation,
