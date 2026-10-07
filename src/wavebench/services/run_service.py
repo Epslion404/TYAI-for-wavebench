@@ -150,6 +150,9 @@ class RunResult:
     run_json_path: Path
     summary_csv_path: Path
     steps: list[RunStepRecord]
+    # Shared with RunInstrumentServices: close happens after construction,
+    # so this list is populated when session close fails (session_close_failed).
+    close_errors: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -916,6 +919,9 @@ class RunService:
                     }
                     trigger_status = record.status
                     if gate_triggered:
+                        # OFF 写入结果不明确或门内中断时，恢复也必须保留已触发的门。
+                        safety_gate_step = step
+                        safety_gate_config = safety_gate
                         try:
                             gate_result = self._apply_safety_gate(step, safety_gate, services=services)
                         except Exception as exc:  # noqa: BLE001 - retain gate failure in run artifact
@@ -932,10 +938,6 @@ class RunService:
                             status="failed",
                             artifact={**record.artifact, "safety_gate": gate_result},
                         )
-                        # 先记录安全门状态，保证后续步骤记录写入等异常路径仍能知道
-                        # 安全门已执行 OFF，恢复时必须保持 OFF。
-                        safety_gate_step = step
-                        safety_gate_config = safety_gate
                     if step.kind == "source.arb_load" and coverage is not None:
                         record = replace(record, artifact={**record.artifact, "restore_coverage": coverage})
                     records.append(record)
@@ -1142,6 +1144,7 @@ class RunService:
                 run_json_path=run_json_path,
                 summary_csv_path=summary_csv_path,
                 steps=records,
+                close_errors=services.close_errors,
             )
 
         if not analysis_steps or run_failure is not None or services.close_errors:
@@ -1254,6 +1257,7 @@ class RunService:
             run_json_path=run_json_path,
             summary_csv_path=summary_csv_path,
             steps=records,
+            close_errors=services.close_errors,
         )
 
     @contextmanager
@@ -3005,6 +3009,16 @@ class RunService:
                 "attempts": attempts,
                 "consistency": consistency,
             }
+            if quality_gate:
+                final_warnings = list(artifact["quality"]["warnings"])
+                trusted = artifact["quality"].get("trusted_by_consistency") is True
+                artifact["quality_gate"] = {
+                    "status": "failed" if final_warnings and not trusted else "ok",
+                    "warnings": final_warnings,
+                    "consistency_status": consistency["status"],
+                }
+                if trusted:
+                    artifact["quality_gate"]["trusted_by_consistency"] = True
         elif quality_gate:
             artifact["quality_gate"] = {
                 "status": "warning" if warnings else "ok",

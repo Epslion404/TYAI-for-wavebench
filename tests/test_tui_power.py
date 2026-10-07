@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 
 from wavebench.cli import build_parser
 from wavebench.config import (
@@ -580,8 +582,52 @@ class TuiPowerTests(unittest.TestCase):
         self.assertTrue(hasattr(app, "action_auto_refresh"))
 
 
+class GatedPowerReadAdapter(FakePowerPanelAdapter):
+    """Hold measurement reads until the test has inspected the busy state."""
+
+    def __init__(self):
+        super().__init__()
+        self.measurement_refresh_calls = 0
+        self.measurement_started = asyncio.Event()
+        self.release_measurements = Event()
+        self.loop = asyncio.get_running_loop()
+
+    def refresh_measurements(self):  # type: ignore[override]
+        self.measurement_refresh_calls += 1
+        self.loop.call_soon_threadsafe(self.measurement_started.set)
+        self.release_measurements.wait()
+        return super().refresh_measurements()
+
+
 @unittest.skipIf(tui_app._TEXTUAL_IMPORT_ERROR is not None, "Textual extra is not installed")
 class TuiPowerBusyBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    def _make_gated_read_app(self):
+        power = GatedPowerReadAdapter()
+
+        class ObservedApp(tui_app.WaveBenchTuiApp):
+            def __init__(self):
+                super().__init__(
+                    power_adapter=power,
+                    dmm_adapter=FakeDmmPanelAdapter(),
+                    source_adapter=FakeSourcePanelAdapter(),
+                    refresh_interval_s=60.0,
+                )
+                self.pending_reads_done = asyncio.Event()
+
+            def _run_pending_power_read_if_needed(self):
+                super()._run_pending_power_read_if_needed()
+                # Observe completion after the UI has handled the worker result,
+                # including starting any queued read, rather than thread return.
+                if not self._power_read_in_flight and self._pending_power_read_kind is None:
+                    self.pending_reads_done.set()
+
+        return power, ObservedApp()
+
+    async def _wait_for_read_event(self, event):
+        # This bounds a broken synchronization protocol; it does not select the
+        # instant at which busy/completion assertions run.
+        await asyncio.wait_for(event.wait(), timeout=5.0)
+
     async def test_tui_persists_debug_log(self):
         from tempfile import TemporaryDirectory
 
@@ -631,52 +677,48 @@ class TuiPowerBusyBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.query_one(selector), Button)
 
     async def test_measurement_refresh_does_not_disable_write_controls(self):
-        class SlowReadAdapter(FakePowerPanelAdapter):
-            def refresh_measurements(self):  # type: ignore[override]
-                time.sleep(0.2)
-                return super().refresh_measurements()
-
-        app = tui_app.WaveBenchTuiApp(
-            power_adapter=SlowReadAdapter(),
-            dmm_adapter=FakeDmmPanelAdapter(),
-            source_adapter=FakeSourcePanelAdapter(),
-            refresh_interval_s=60.0,
-        )
-        async with app.run_test() as pilot:
-            await pilot.pause(0.25)
-            app.action_auto_refresh()
-            await pilot.pause(0.02)
-            self.assertTrue(app.query_one("#refresh", Button).disabled)
-            self.assertTrue(app.query_one("#protection-refresh", Button).disabled)
-            self.assertFalse(app.query_one("#toggle-1", Button).disabled)
-            self.assertFalse(app.query_one("#set-limits", Button).disabled)
-            self.assertFalse(app.query_one("#set-protection", Button).disabled)
+        power, app = self._make_gated_read_app()
+        async with app.run_test():
+            await self._wait_for_read_event(app.pending_reads_done)
+            app.pending_reads_done.clear()
+            try:
+                app.action_auto_refresh()
+                await self._wait_for_read_event(power.measurement_started)
+                self.assertTrue(app._power_read_in_flight)
+                self.assertFalse(power.release_measurements.is_set())
+                self.assertTrue(app.query_one("#refresh", Button).disabled)
+                self.assertTrue(app.query_one("#protection-refresh", Button).disabled)
+                self.assertFalse(app.query_one("#toggle-1", Button).disabled)
+                self.assertFalse(app.query_one("#set-limits", Button).disabled)
+                self.assertFalse(app.query_one("#set-protection", Button).disabled)
+            finally:
+                power.release_measurements.set()
+            await self._wait_for_read_event(app.pending_reads_done)
+            self.assertFalse(app._power_read_in_flight)
+            self.assertFalse(app.query_one("#refresh", Button).disabled)
+            self.assertFalse(app.query_one("#protection-refresh", Button).disabled)
 
     async def test_measurement_refresh_coalesces_pending_reads(self):
-        class SlowReadAdapter(FakePowerPanelAdapter):
-            def __init__(self):
-                super().__init__()
-                self.measurement_refresh_calls = 0
-
-            def refresh_measurements(self):  # type: ignore[override]
-                self.measurement_refresh_calls += 1
-                time.sleep(0.2)
-                return super().refresh_measurements()
-
-        power = SlowReadAdapter()
-        app = tui_app.WaveBenchTuiApp(
-            power_adapter=power,
-            dmm_adapter=FakeDmmPanelAdapter(),
-            source_adapter=FakeSourcePanelAdapter(),
-            refresh_interval_s=60.0,
-        )
-        async with app.run_test() as pilot:
-            await pilot.pause(0.25)
-            app.action_auto_refresh()
-            app.action_auto_refresh()
-            app.action_auto_refresh()
-            await pilot.pause(0.6)
+        power, app = self._make_gated_read_app()
+        async with app.run_test():
+            await self._wait_for_read_event(app.pending_reads_done)
+            app.pending_reads_done.clear()
+            try:
+                app.action_auto_refresh()
+                await self._wait_for_read_event(power.measurement_started)
+                self.assertTrue(app._power_read_in_flight)
+                self.assertFalse(power.release_measurements.is_set())
+                self.assertEqual(power.measurement_refresh_calls, 1)
+                app.action_auto_refresh()
+                app.action_auto_refresh()
+                self.assertEqual(app._pending_power_read_kind, "measurement-refresh")
+                self.assertEqual(power.measurement_refresh_calls, 1)
+            finally:
+                power.release_measurements.set()
+            await self._wait_for_read_event(app.pending_reads_done)
             self.assertEqual(power.measurement_refresh_calls, 2)
+            self.assertFalse(app._power_read_in_flight)
+            self.assertIsNone(app._pending_power_read_kind)
 
     async def test_toggle_write_reentry_is_blocked_for_same_channel(self):
         class SlowWriteAdapter(FakePowerPanelAdapter):
