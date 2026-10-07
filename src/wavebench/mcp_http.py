@@ -238,7 +238,8 @@ def _capture_inspect_tool(arguments: dict[str, Any], config_path: Path) -> dict[
         allowed_subdir=_MCP_CAPTURE_DIR,
         label="path",
     )
-    package = load_capture_package(package_path)
+    allowed_root = _project_root_from_config_path(config_path) / _MCP_CAPTURE_DIR
+    package = load_capture_package(package_path, allowed_root=allowed_root.resolve(strict=False))
     return {
         "path": str(package.path),
         "metadata": str(package.metadata_path),

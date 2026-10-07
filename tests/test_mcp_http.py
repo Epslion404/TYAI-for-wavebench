@@ -314,6 +314,66 @@ value_vpp = 1.0
             self.assertEqual(payload["result"]["channels"][0]["summary"]["samples"], 1000)
 
 
+    def _assert_linked_capture_denied(self, *, sibling):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._write_config(root)
+            capture = self._write_capture(root)
+            target_dir = capture.parent / "sibling" if sibling else root / "outside"
+            target_dir.mkdir()
+            target = target_dir / "metadata.json"
+            marker = "SYNTHETIC_OUTSIDE_METADATA_MARKER"
+            target.write_text(
+                json.dumps({
+                    "operation": {"command": marker},
+                    "waveform": {"summary": {"channel": 1, "marker": marker}},
+                }),
+                encoding="utf-8",
+            )
+            metadata = capture / "metadata.json"
+            metadata.unlink()
+            try:
+                metadata.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"real symlink creation unavailable: {exc}")
+            server = self._start_server(config)
+
+            with self.subTest(endpoint="/call"):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self._request(
+                        server, "POST", "/call", token="test-token",
+                        body={"tool": "capture.inspect", "arguments": {"path": str(capture)}},
+                    )
+                with caught.exception as response:
+                    self.assertEqual(response.code, 400)
+                    raw = response.read().decode("utf-8")
+                self.assertEqual(json.loads(raw)["error"]["type"], "ConfigError")
+                self.assertNotIn(marker, raw)
+                self.assertNotIn(json.dumps(str(target))[1:-1], raw)
+
+            with self.subTest(endpoint="/mcp"):
+                status, payload = self._request(
+                    server, "POST", "/mcp", token="test-token",
+                    body={
+                        "jsonrpc": "2.0", "id": 39, "method": "tools/call",
+                        "params": {"name": "capture.inspect", "arguments": {"path": str(capture)}},
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["id"], 39)
+                self.assertEqual(payload["error"]["code"], -32602)
+                self.assertEqual(payload["error"]["data"]["type"], "ConfigError")
+                self.assertNotIn("result", payload)
+                raw = json.dumps(payload)
+                self.assertNotIn(marker, raw)
+                self.assertNotIn(json.dumps(str(target))[1:-1], raw)
+
+    def test_capture_inspect_rejects_metadata_symlink_outside_raw_on_both_endpoints(self):
+        self._assert_linked_capture_denied(sibling=False)
+
+    def test_capture_inspect_rejects_metadata_symlink_to_sibling_on_both_endpoints(self):
+        self._assert_linked_capture_denied(sibling=True)
+
     def test_call_capture_inspect_rejects_path_outside_data_raw(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

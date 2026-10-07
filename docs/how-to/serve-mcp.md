@@ -22,6 +22,8 @@ python -m wavebench mcp serve \
 
 请求体上限为 1 MiB。当前工具仅包含 `run.schema`、`run.check` 和 `capture.inspect`；它们不会连接仪器。`run.check` 只接受项目内的 `plans/*.toml`，`capture.inspect` 只读取项目内的离线采集包。
 
+`capture.inspect` 的采集目录解析后必须位于项目 `data/raw/` 解析后的允许根下，包内 `metadata.json` 必须是普通文件，不接受符号链接或 Windows 重解析点，即使链接目标位于另一个合法采集包内。读取前会验证实际打开的文件，防止检查后替换链接导致越界读取；不支持这些检查的平台会拒绝读取。此边界不隔离硬链接或已允许文件的并发内容修改；项目目录和采集目录仍应由可信本地进程管理。
+
 ## Verification
 
 访问 `GET /health` 确认服务已启动。需要调用受保护端点时，使用 Bearer token；认证失败或路径不在允许范围内时，先检查调用方配置，不要放宽监听地址或删除认证。
