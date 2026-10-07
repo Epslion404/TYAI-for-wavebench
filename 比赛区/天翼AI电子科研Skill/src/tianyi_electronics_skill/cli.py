@@ -198,9 +198,11 @@ def main(argv: list[str] | None = None) -> int:
                         result = registry.decode_result(payload, args.file)
                         if result["ok"] and args.sample_rate is not None:
                             try:
-                                result["frame"]["sample_rate_hz"] = _sample_rate(args.sample_rate)
+                                rate = _sample_rate(args.sample_rate)
                             except ValueError as exc:
                                 result = protocol_failure(exc, category="configuration_error")
+                            else:
+                                result["frame"]["sample_rate_hz"] = rate
                 except (OSError, TypeError, ValueError, UnicodeError, KeyError) as exc:
                     result = protocol_failure(exc)
         elif args.command == "bridge":
