@@ -20,12 +20,12 @@ class ProtocolDecodeError(ValueError):
     """A payload or manifest cannot be safely interpreted as a declared protocol."""
 
 
-def protocol_failure(error: BaseException) -> dict[str, Any]:
+def protocol_failure(error: BaseException, *, category: str = "parse_error") -> dict[str, Any]:
     """Stable, machine-readable failure shape for malformed protocol input."""
     return {
         "ok": False,
         "frame": None,
-        "failures": [{"category": "parse_error", "message": str(error)}],
+        "failures": [{"category": category, "message": str(error)}],
         "device_errors": [],
     }
 
@@ -284,7 +284,8 @@ class ProtocolRegistry:
     def decode_result(self, payload, source="unknown", metadata=None) -> dict[str, Any]:
         """Decode a protocol frame without making callers parse exception text."""
         try:
-            return {"ok": True, "frame": self.decode(payload, source, metadata).as_dict(), "failures": []}
+            frame = self.decode(payload, source, metadata).as_dict()
+            return {"ok": True, "frame": frame, "failures": [], "device_errors": list(frame["device_errors"])}
         except (TypeError, ValueError, OverflowError, UnicodeError, json.JSONDecodeError) as exc:
             return protocol_failure(exc)
 
