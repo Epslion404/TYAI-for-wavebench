@@ -926,27 +926,32 @@ import json
 import os
 import sys
 import sysconfig
-from wavebench.plugins.install_inventory import pip_uninstall_paths
+from wavebench.plugins.install_inventory import pip_uninstall_inventory
 paths = list(dict.fromkeys((sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))))
-print(json.dumps([
-    os.path.relpath(path, sysconfig.get_path("purelib")).replace("\\", "/")
-    for path in pip_uninstall_paths(sys.argv[1], paths)
-]))
+inventory = pip_uninstall_inventory(sys.argv[1], paths)
+print(json.dumps({
+    kind: [os.path.relpath(path, sysconfig.get_path("purelib")).replace("\\", "/")
+           for path in inventory[kind]]
+    for kind in ("files", "directories")
+}))
 '''
-        removal_paths = self._run_json([
+        removal_scope = self._run_json([
             self.environment().python, "-I", "-c", script, normalized,
         ])
-        if not isinstance(removal_paths, list) or any(
-            not isinstance(path, str) or not path for path in removal_paths
+        if not isinstance(removal_scope, dict) or any(
+            not isinstance(removal_scope.get(kind), list)
+            or any(not isinstance(path, str) or not path for path in removal_scope[kind])
+            for kind in ("files", "directories")
         ):
             raise ConfigError("pip uninstall inventory returned invalid data")
         overlap = self._shared_file_path(
-            removal_paths, owners, ignored_distribution=normalized,
+            (*removal_scope["files"], *removal_scope["directories"]),
+            owners, ignored_distribution=normalized,
         )
         if overlap:
             raise ConfigError(f"pip uninstall would remove files owned by another distribution: {overlap}")
         recorded_keys = {installation_path_key(path) for path in recorded}
-        for path in removal_paths:
+        for path in removal_scope["files"]:
             if installation_path_key(path) not in recorded_keys:
                 raise ConfigError(f"pip uninstall would remove an unmanaged file absent from RECORD: {path}")
 
@@ -1313,8 +1318,12 @@ for dist in distributions(path=paths):
         unreadable.append(normalized or "<unknown>")
         dist_files = ()
     for item in dist_files:
-        path = os.path.relpath(dist.locate_file(item), sysconfig.get_path("purelib")).replace("\\", "/")
-        owners.setdefault(path, []).append(normalized)
+        target = str(dist.locate_file(item))
+        # Include filesystem aliases as well as lexical RECORD paths. A foreign
+        # directory owner reached through a parent junction must still count.
+        for owned_target in (target, os.path.realpath(target)):
+            path = os.path.relpath(owned_target, sysconfig.get_path("purelib")).replace("\\", "/")
+            owners.setdefault(path, []).append(normalized)
 print(json.dumps({
     "owners": {path: sorted(set(names)) for path, names in owners.items()},
     "unreadable": sorted(set(unreadable)),
