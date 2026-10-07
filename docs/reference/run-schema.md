@@ -117,6 +117,8 @@ Windows 硬限额使用 Job Object 的 job committed memory；Linux 使用 cgrou
 
 资源预算是保守准入估算，不是操作系统 RSS 硬限制或不可信代码沙箱。不同 SciPy／NumPy 版本的内部工作集可能不同；未知规模应先做受控基准。常规 `run report` 的资源选项约束信号处理曲线、原始波形预览和采集 metadata 读取，不覆盖截图、PDF 或频响报告的全部资源。原始预览按块扫描，累计检查工作量及曲线数；后续曲线的工作集准入计入已保留的预览 SVG。
 
+采集 metadata 解析和原始预览扫描也计入已保留的报告内容。预览 HTML 及最终 HTML 在拼接前检查输入字符串、Unicode 副本和 UTF-8 编码空间；曲线超限时显示警告，完整 HTML 无法准入时返回 `resource_limit_exceeded`，需要减少报告内容或显式选择更大的资源配置，不会自动放宽限额。这仍是阶段工作集估算，不覆盖读取 RunPackage、截图解码、PDF 排版或频响区域生成的全部资源。
+
 ```bash
 wavebench analysis check --capture data/capture --channel 1 --recipe plans/example_analysis_recipe.toml
 wavebench analysis run --capture data/capture --channel 1 --recipe plans/example_analysis_recipe.toml --output data/analysis_trial_1

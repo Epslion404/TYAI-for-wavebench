@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from wavebench.data.analysis_resources import AnalysisLimits
+from wavebench.data.analysis_resources import AnalysisLimits, AnalysisResourceError
 from wavebench.data.analysis_io import read_json_bounded
 from wavebench.data.fft import analyze_fft
 from wavebench.data.packages import RunPackage
@@ -151,11 +151,21 @@ def test_full_report_threads_limits_and_explains_unavailable_preview(tmp_path, v
     with patch("numpy.load", side_effect=AssertionError("unbounded load")) as load, patch(
         "wavebench.report.html._waveform_svg", side_effect=AssertionError("preview ran")
     ) as svg:
-        rendered = html.render_run_report_html(run, analysis_limits=AnalysisLimits(**values))
+        if dimension == "max_working_bytes":
+            # This profile cannot accommodate even the final diagnostic report
+            # plus its encoding. Refuse rather than silently bypassing the cap.
+            with pytest.raises(AnalysisResourceError) as refused:
+                html.render_run_report_html(run, analysis_limits=AnalysisLimits(**values))
+            assert refused.value.evidence["dimension"] == dimension
+            assert "HTML assembly/encoding" in refused.value.evidence["stage"]
+            rendered = ""
+        else:
+            rendered = html.render_run_report_html(run, analysis_limits=AnalysisLimits(**values))
     load.assert_not_called()
     svg.assert_not_called()
-    assert "waveform preview unavailable" in rendered
-    assert dimension in rendered
+    if rendered:
+        assert "waveform preview unavailable" in rendered
+        assert dimension in rendered
     assert 'aria-label="waveform preview"' not in rendered
 
 
@@ -215,7 +225,7 @@ def test_preview_memory_admission_includes_retained_svgs(tmp_path):
     run.run["steps"] = [{**run.run["steps"][0], "index": index} for index in range(1, 33)]
     with patch("wavebench.report.html.np.asarray", wraps=np.asarray) as scan:
         previews = html._collect_waveform_previews(
-            run, analysis_limits=AnalysisLimits(max_working_bytes=220_000)
+            run, analysis_limits=AnalysisLimits(max_working_bytes=224_000)
         )
     assert previews[0].svg
     assert previews[0].warning == ""
@@ -349,7 +359,7 @@ duration_s = 0.01
         scope.return_value.capture_waveform.return_value = capture
         result = service.run(plan)
     fft.assert_not_called()
-    assert result.status == "failed"
+    assert json.loads(result.run_json_path.read_text(encoding="utf-8"))["status"] == "failed"
     assert len(result.steps) == 1
     assert result.steps[0].artifact["fft"]["resource_error"]["dimension"] == "max_fft_length"
     assert result.steps[0].artifact["expect_fft"]["status"] == "failed"
