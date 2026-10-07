@@ -465,6 +465,16 @@ def _validate_wheel_members(infos: Iterable[object]) -> None:
         if os.name == "nt" and any(part.endswith((".", " ")) for part in path.parts):
             raise ConfigError(f"unsafe Windows wheel member path: {name}")
         target_path = PurePosixPath(installation_path_key(name).replace("\\", "/"))
+        if target_path.parts and target_path.parts[0].endswith(".data"):
+            if not path.parts[0].endswith(".data"):
+                raise ConfigError(f"plugin wheel data relocation is not supported / 不支持 wheel data 重定位: {name}")
+            if info.is_dir() and len(path.parts) == 1:
+                target_path = PurePosixPath()
+            elif (len(path.parts) >= 2 and path.parts[1] in ("purelib", "platlib")
+                  and (len(path.parts) >= 3 or info.is_dir())):
+                target_path = PurePosixPath(*target_path.parts[2:])
+            else:
+                raise ConfigError(f"plugin wheel data relocation is not supported / 不支持 wheel data 重定位: {name}")
         if target_path.parts and target_path.parts[0] == "wavebench":
             raise ConfigError(
                 f"plugin wheel must not overwrite the WaveBench core package / "

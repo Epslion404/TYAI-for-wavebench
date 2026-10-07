@@ -275,6 +275,7 @@ def _plugin_wheel(
     wavebench_min_version: str = "0.8.0",
     wavebench_max_version: str = "0.9.0",
     script_entries: str = "",
+    extra_members: dict[str, bytes] | None = None,
 ) -> Path:
     if source_v2 and legacy_source_v1:
         raise ValueError("a fixture wheel cannot be both Source V1-only and Source V2")
@@ -370,6 +371,7 @@ def descriptor():
             + "".join(f"{name} = {target}\n" for name, target in entries)
             + script_entries
         ).encode()
+    members.update(extra_members or {})
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
     for member, payload in members.items():
