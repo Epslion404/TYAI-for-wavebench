@@ -20,6 +20,8 @@ python -m wavebench plugin install <plugin-path>
 
 安装前检查同时覆盖 wheel 文件与安装器生成的 `console_scripts`／`gui_scripts` 启动器。插件不能覆盖 WaveBench 启动器或声明 `pip`、`easy_install` 安装器入口；与其他分发拥有的文件或未受管启动器冲突时，安装和 dry-run 都会拒绝。Windows 按最终生成名称检查大小写与 `.py*` 别名，wheel 内部重复路径和跨分发归属采用同一平台规则。合法独立启动器仍可随插件安装、升级和卸载。
 
+wheel 的 `.data/purelib` 和 `.data/platlib` 普通文件按目标环境的安装目录检查，其他 `.data` 重定位仍会拒绝。安装后的 RECORD 必须包含缓存 wheel 的全部普通文件、dist-info 文件及生成的启动器；缺少普通模块条目时，即使模块仍可导入，也不会接受安装或回滚结果。
+
 ## 查看已安装插件
 
 ```bash
@@ -42,6 +44,8 @@ python -m wavebench plugin recover
 在安装、替换或卸载中断后，先运行 `plugin recover`。如果工具无法证明环境处于已知旧态或目标态，应保留环境和诊断信息，进行人工检查；不要通过手工删除记录来掩盖未知状态。
 
 失败回滚重装同一 wheel 时，安装器生成的 Windows 启动器可能因时间戳而改变摘要。工具会重新验证缓存 wheel、metadata、descriptor 和安装文件的 RECORD 哈希，再将验证后的摘要写入事务记录和账本；普通外部重装或篡改仍会标记为 drifted。
+
+卸载、替换和失败回滚前，工具会从目标环境的 pip 获取当前版本的完整卸载路径，包括 RECORD 未列出的派生启动器路径。若这些路径上的现有文件属于其他分发或未受管文件，操作会在调用 pip 前拒绝；失败回滚会保留事务记录，并同时报告原始故障与回滚拒绝原因。
 
 ## 边界
 

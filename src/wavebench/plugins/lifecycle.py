@@ -425,6 +425,7 @@ print(json.dumps(payload, sort_keys=True))
             driver_id = self._record_entry_points(current_record)[0].driver_id
             current = self.info(driver_id)
             self._require_healthy(current)
+            self._assert_distribution_file_ownership(current.distribution)
             if canonicalize_name(current.distribution) != package.normalized_distribution:
                 raise ConfigError(
                     "replacement distribution does not match managed plugin / "
@@ -470,6 +471,7 @@ print(json.dumps(payload, sort_keys=True))
                 locked_current = self.info(driver_id)
                 if locked_current.status != "healthy":
                     raise ConfigError("managed plugin must be healthy before replacement / 替换前插件必须健康")
+                self._assert_distribution_file_ownership(locked_current.distribution)
                 if canonicalize_name(locked_current.distribution) != package.normalized_distribution:
                     raise ConfigError(
                         "replacement distribution does not match managed plugin / "
@@ -565,7 +567,8 @@ print(json.dumps(payload, sort_keys=True))
         except Exception as rollback_error:
             raise ConfigError(
                 "recovery required: plugin install and rollback both failed / "
-                "需要恢复：插件安装与回滚均失败"
+                f"需要恢复：插件安装与回滚均失败; original failure: {original}; "
+                f"rollback failure: {rollback_error}"
             ) from rollback_error
         raise ConfigError(f"plugin postflight failed / 插件安装后检查失败: {original}") from original
 
@@ -603,7 +606,8 @@ print(json.dumps(payload, sort_keys=True))
         except Exception as rollback_error:
             raise ConfigError(
                 "recovery required: plugin operation and rollback both failed / "
-                "需要恢复：插件操作与回滚均失败"
+                f"需要恢复：插件操作与回滚均失败; original failure: {original}; "
+                f"rollback failure: {rollback_error}"
             ) from rollback_error
         raise ConfigError(f"plugin postflight failed / 插件操作后检查失败: {original}") from original
 
@@ -817,6 +821,23 @@ print(json.dumps(payload, sort_keys=True))
         ignored_distribution: str | None = None,
     ) -> None:
         paths = list(package.member_paths)
+        if any(path.split("/", 1)[0].endswith(".data") for path in paths):
+            script = r'''
+import json
+import os
+from pathlib import Path
+import sys
+import sysconfig
+from wavebench.plugins.install_inventory import wheel_installation_paths
+print(json.dumps([
+    os.path.relpath(path, sysconfig.get_path("purelib")).replace("\\", "/")
+    for path in wheel_installation_paths(Path(sys.argv[1]), sys.argv[2]).values()
+]))
+'''
+            paths = self._run_json([
+                self.environment().python, "-I", "-c", script,
+                str(package.wheel_path), package.normalized_distribution,
+            ])
         if package.generated_scripts:
             environment = self.environment()
             if not environment.scripts:
@@ -885,9 +906,11 @@ print(json.dumps(payload, sort_keys=True))
             raise ConfigError(
                 "managed distribution ownership is ambiguous / 受管分发的文件归属不唯一"
             )
+        recorded = tuple(str(path) for path in matches[0].get("files", ()))
+        owners = self._file_owners(strict=True)
         overlap = self._shared_file_path(
-            (str(path) for path in matches[0].get("files", ())),
-            self._file_owners(strict=True),
+            recorded,
+            owners,
             ignored_distribution=normalized,
         )
         if overlap:
@@ -895,6 +918,37 @@ print(json.dumps(payload, sort_keys=True))
                 "managed plugin shares files with another distribution / "
                 f"受管插件与其他分发共享文件: {overlap}"
             )
+        # pip also removes paths derived from entry_points and .py files that
+        # need not appear in RECORD. Probe the current version, including files
+        # introduced by a failed upgrade, before changing the rollback journal.
+        script = r'''
+import json
+import os
+import sys
+import sysconfig
+from wavebench.plugins.install_inventory import pip_uninstall_paths
+paths = list(dict.fromkeys((sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))))
+print(json.dumps([
+    os.path.relpath(path, sysconfig.get_path("purelib")).replace("\\", "/")
+    for path in pip_uninstall_paths(sys.argv[1], paths)
+]))
+'''
+        removal_paths = self._run_json([
+            self.environment().python, "-I", "-c", script, normalized,
+        ])
+        if not isinstance(removal_paths, list) or any(
+            not isinstance(path, str) or not path for path in removal_paths
+        ):
+            raise ConfigError("pip uninstall inventory returned invalid data")
+        overlap = self._shared_file_path(
+            removal_paths, owners, ignored_distribution=normalized,
+        )
+        if overlap:
+            raise ConfigError(f"pip uninstall would remove files owned by another distribution: {overlap}")
+        recorded_keys = {installation_path_key(path) for path in recorded}
+        for path in removal_paths:
+            if installation_path_key(path) not in recorded_keys:
+                raise ConfigError(f"pip uninstall would remove an unmanaged file absent from RECORD: {path}")
 
     @staticmethod
     def _require_healthy(plugin: InstalledPlugin) -> None:
@@ -965,6 +1019,9 @@ import json
 import os
 import sysconfig
 import zipfile
+
+from wavebench.plugins.install_inventory import wheel_installation_paths
+from wavebench.plugins.install_paths import installation_path_key
 
 from wavebench.instruments.api import descriptor_from_entry_point
 from wavebench.instruments.registry import _validate_descriptor
@@ -1045,6 +1102,7 @@ for expected_driver, expected_value in expected_entries:
         descriptor,
         tuple(dist.metadata.get_all("Requires-Dist") or ()),
     )
+installation_paths = wheel_installation_paths(__import__("pathlib").Path(wheel_path), expected_name)
 with zipfile.ZipFile(wheel_path) as archive:
     record_names = [name for name in archive.namelist() if name.endswith(".dist-info/RECORD")]
     if len(record_names) != 1:
@@ -1057,7 +1115,7 @@ with zipfile.ZipFile(wheel_path) as archive:
         algorithm, separator, expected_digest = hash_field.partition("=")
         if algorithm != "sha256" or separator != "=":
             raise SystemExit(f"unsupported cached wheel hash: {path}")
-        target = dist.locate_file(path)
+        target = installation_paths[path]
         if not os.path.isfile(target):
             raise SystemExit(f"cached wheel member missing after install: {path}")
         digest = hashlib.sha256()
@@ -1074,12 +1132,17 @@ record_paths = [item for item in dist_files if str(item).endswith(".dist-info/RE
 with open(dist.locate_file(record_paths[0]), "r", encoding="utf-8", newline="") as handle:
     installed_rows = list(csv.reader(handle))
 seen_paths = set()
+seen_targets = set()
 for row in installed_rows:
     if len(row) != 3 or not row[0] or row[0] in seen_paths:
         raise SystemExit("installed RECORD row is invalid or duplicated")
     path, hash_field, size_field = row
     seen_paths.add(path)
     target = dist.locate_file(path)
+    target_key = installation_path_key(os.path.abspath(target))
+    if target_key in seen_targets:
+        raise SystemExit("installed RECORD contains installation path aliases")
+    seen_targets.add(target_key)
     if not hash_field:
         if path != str(record_paths[0]) and not path.endswith(".pyc"):
             raise SystemExit(f"installed RECORD file lacks a hash: {path}")
@@ -1097,6 +1160,9 @@ for row in installed_rows:
     if encoded != expected_digest or (size_field and size != int(size_field)):
         raise SystemExit(f"installed file hash mismatch: {path}")
     file_rows.append((path, encoded))
+for member, target in installation_paths.items():
+    if installation_path_key(target) not in seen_targets:
+        raise SystemExit(f"installed RECORD is incomplete; cached wheel file is unrecorded: {member}")
 if ROLLBACK_REINSTALL:
     from wavebench.plugins.lifecycle import _verify_generated_launchers
     _verify_generated_launchers(
@@ -1203,7 +1269,8 @@ for dist in distributions(path=paths):
         "metadata_sha256": metadata_hash(".dist-info/METADATA"),
         "record_sha256": metadata_hash(".dist-info/RECORD"),
         "files_sha256": hashlib.sha256(json.dumps(sorted(rows)).encode()).hexdigest(),
-        "files": sorted(str(item) for item in dist_files),
+        "files": sorted(os.path.relpath(dist.locate_file(item), sysconfig.get_path("purelib"))
+                        .replace("\\", "/") for item in dist_files),
     })
 print(json.dumps(result))
 '''
@@ -1225,6 +1292,7 @@ print(json.dumps(result))
         script = r'''
 from importlib.metadata import distributions
 import json
+import os
 import re
 import sysconfig
 
@@ -1245,7 +1313,8 @@ for dist in distributions(path=paths):
         unreadable.append(normalized or "<unknown>")
         dist_files = ()
     for item in dist_files:
-        owners.setdefault(str(item), []).append(normalized)
+        path = os.path.relpath(dist.locate_file(item), sysconfig.get_path("purelib")).replace("\\", "/")
+        owners.setdefault(path, []).append(normalized)
 print(json.dumps({
     "owners": {path: sorted(set(names)) for path, names in owners.items()},
     "unreadable": sorted(set(unreadable)),
