@@ -14,6 +14,7 @@ from wavebench.errors import ConfigError
 from wavebench.report.plot3d import (
     _finite_float,
     build_surface_payload,
+    plotly_asset_available,
     plotly_head_tag,
     plotly_initializer,
     render_surface_card,
@@ -23,30 +24,152 @@ from wavebench.report.path_utils import artifact_url
 from wavebench.report.html_budget import (
     bounded_format, check_text_assembly, escaped_length, retained_size,
 )
+from wavebench.report.output_guard import (
+    report_manifest_paths,
+    validate_report_output_pairs,
+    validate_run_report_paths,
+)
 
 
-def write_run_report_html(run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None) -> Path:
+def validate_run_report_outputs(run: RunPackage, paths: list[Path], *, analysis_limits=None) -> None:
+    capture_dirs = []
+    evidence_files = []
+    # Rendering reads step metadata independently, even when steps share a package.
+    for reference in _capture_references(run, unique_packages=False):
+        package_dir = _resolve_artifact_path(run.path, reference.package)
+        capture_dirs.append(package_dir)
+        explicit, actual = _capture_metadata_paths(package_dir, reference.metadata)
+        evidence_files.extend((explicit, actual))
+        metadata = {}
+        metadata = _read_capture_metadata(
+            package_dir, reference.metadata, limits=analysis_limits,
+            retained_bytes=retained_size([capture_dirs, evidence_files]), strict_resources=True,
+        )
+        for file_text in _capture_file_references(metadata.get("files")):
+            # Protect the explicit reference as well as the consumer's fallback:
+            # creating a missing explicit file would change subsequent resolution.
+            evidence_files.append(_resolve_artifact_path(run.path, file_text))
+            evidence_files.append(_resolve_capture_file_path(run.path, package_dir, file_text))
+        screenshot_text = _metadata_screenshot_path(metadata)
+        if screenshot_text:
+            evidence_files.append(_resolve_capture_screenshot_path(run.path, package_dir, screenshot_text))
+    for step in run.steps:
+        artifact = step.get("artifact", {})
+        if not isinstance(artifact, dict):
+            continue
+        pipeline = artifact.get("analysis_pipeline", {})
+        if not isinstance(pipeline, dict):
+            continue
+        for field in ("manifest", "metrics"):
+            path = _optional_run_artifact_path(run.path, pipeline.get(field))
+            if path is not None:
+                evidence_files.append(path)
+        exports = pipeline.get("exports", [])
+        if isinstance(exports, list):
+            for export in exports:
+                if isinstance(export, dict):
+                    path = _optional_run_artifact_path(run.path, export.get("path"))
+                    if path is not None:
+                        evidence_files.append(path)
+    validate_run_report_paths(
+        run, paths, evidence_dirs=capture_dirs, evidence_files=evidence_files
+    )
+
+
+@dataclass(frozen=True)
+class RunReportOutputs:
+    html: Path
+    manifest: Path
+    plotly: Path | None
+    pdf: Path | None
+
+
+def plan_run_report_outputs(
+    run: RunPackage, output_path: str | Path | None = None, *,
+    pdf_output_path: str | Path | None = None, analysis_limits=None,
+) -> RunReportOutputs:
+    """Validate the complete export before creating directories or writing any output."""
+    outputs = _run_report_output_paths(run, output_path, pdf_output_path=pdf_output_path)
+    targets = [outputs.html, outputs.manifest]
+    if outputs.plotly is not None:
+        targets.append(outputs.plotly)
+    if outputs.pdf is not None:
+        targets.append(outputs.pdf)
+    validate_run_report_outputs(run, targets, analysis_limits=analysis_limits)
+    return outputs
+
+
+def _run_report_output_paths(
+    run: RunPackage, output_path: str | Path | None = None, *, pdf_output_path: str | Path | None = None
+) -> RunReportOutputs:
     path = Path(output_path) if output_path is not None else run.path / "report.html"
-    path.parent.mkdir(parents=True, exist_ok=True)
     has_surface = any(
         build_surface_payload(response.rows, plot_id="probe", response_label=response.label)
         for response in run.frequency_responses
     )
-    plotly_asset = write_plotly_asset(path.parent) if has_surface else None
+    manifest_path = path.parent / "report-assets" / "manifest.json"
+    asset_path = (
+        path.parent / "report-assets" / "plotly.min.js"
+        if has_surface and plotly_asset_available() else None
+    )
+    pdf_path = Path(pdf_output_path) if pdf_output_path is not None else None
+    return RunReportOutputs(path, manifest_path, asset_path, pdf_path)
+
+
+def write_run_report(
+    run: RunPackage, output_path: str | Path | None = None, *,
+    pdf_output_path: str | Path | None = None, analysis_limits=None,
+) -> RunReportOutputs:
+    """Export HTML and optional PDF using one validated output plan."""
+    outputs = plan_run_report_outputs(
+        run, output_path, pdf_output_path=pdf_output_path, analysis_limits=analysis_limits,
+    )
+    _write_run_report_html(run, outputs, analysis_limits=analysis_limits)
+    if outputs.pdf is not None:
+        _write_run_report_pdf(run, outputs.pdf, analysis_limits=analysis_limits)
+    return outputs
+
+
+def write_run_report_html(run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None) -> Path:
+    outputs = plan_run_report_outputs(run, output_path, analysis_limits=analysis_limits)
+    return _write_run_report_html(run, outputs, analysis_limits=analysis_limits)
+
+
+def _write_run_report_html(run: RunPackage, outputs: RunReportOutputs, *, analysis_limits=None) -> Path:
+    path = outputs.html
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plotly_asset = write_plotly_asset(path.parent) if outputs.plotly is not None else None
     plotly_url = artifact_url(plotly_asset, path.parent) if plotly_asset is not None else None
     path.write_text(
         render_run_report_html(run, output_dir=path.parent, plotly_url=plotly_url, analysis_limits=analysis_limits), encoding="utf-8"
     )
-    write_run_report_manifest(
-        run, output_dir=path.parent, report_path=path, interactive_asset_path=plotly_asset,
-        analysis_limits=analysis_limits,
+    _write_run_report_manifest(
+        run, outputs.manifest, report_path=path, interactive_asset_path=plotly_asset,
+        pdf_path=outputs.pdf, analysis_limits=analysis_limits,
     )
     return path
 
 
-def write_run_report_pdf(run: RunPackage, output_path: str | Path | None = None) -> Path:
+def write_run_report_pdf(
+    run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None,
+) -> Path:
     """Render the report as a portable PDF with its visible images and SVGs embedded."""
     path = Path(output_path) if output_path is not None else run.path / "report.pdf"
+    validate_run_report_outputs(run, [path], analysis_limits=analysis_limits)
+    output_dir = path.parent
+    if output_dir == output_dir.parent / "report-assets":
+        output_dir = output_dir.parent
+    # A standalone PDF must also leave the associated HTML and sidecars intact.
+    html_path = report_manifest_paths(run, output_dir).get("report", output_dir / "report.html")
+    outputs = _run_report_output_paths(run, html_path)
+    related = [path, outputs.html, outputs.manifest]
+    if outputs.plotly is not None:
+        related.append(outputs.plotly)
+    validate_report_output_pairs(related)
+    return _write_run_report_pdf(run, path, analysis_limits=analysis_limits)
+
+
+def _write_run_report_pdf(run: RunPackage, path: Path, *, analysis_limits=None) -> Path:
     try:
         from weasyprint import HTML
     except (ImportError, OSError) as exc:
@@ -57,7 +180,9 @@ def write_run_report_pdf(run: RunPackage, output_path: str | Path | None = None)
     # A full HTML report may contain hundreds of independent capture artifacts.
     # Keep the portable PDF focused on its reviewable result: summary, Bode curves,
     # fit, and point table. The run directory remains the authoritative raw evidence.
-    html = render_run_report_html(run, output_dir=path.parent, compact=True)
+    html = render_run_report_html(
+        run, output_dir=path.parent, compact=True, analysis_limits=analysis_limits,
+    )
     try:
         HTML(string=html, base_url=path.parent.resolve().as_uri() + "/").write_pdf(str(path))
     except Exception as exc:  # noqa: BLE001 - surface renderer failures as a user-facing config error
@@ -75,14 +200,34 @@ def write_run_report_manifest(
 ) -> Path:
     report_output_dir = Path(output_dir) if output_dir is not None else run.path
     manifest_path = report_output_dir / "report-assets" / "manifest.json"
+    report = Path(report_path) if report_path is not None else report_output_dir / "report.html"
+    targets = [manifest_path, report]
+    if interactive_asset_path is not None:
+        targets.append(Path(interactive_asset_path))
+    # The referenced report/asset are not written by this standalone operation.
+    validate_report_output_pairs(targets)
+    validate_run_report_outputs(run, [manifest_path], analysis_limits=analysis_limits)
+    return _write_run_report_manifest(
+        run, manifest_path, report_path=report, interactive_asset_path=interactive_asset_path,
+        analysis_limits=analysis_limits,
+    )
+
+
+def _write_run_report_manifest(
+    run: RunPackage, manifest_path: Path, *, report_path: Path,
+    interactive_asset_path: str | Path | None = None, pdf_path: Path | None = None,
+    analysis_limits=None,
+) -> Path:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = _build_report_manifest(
         run,
-        output_dir=report_output_dir,
-        report_path=Path(report_path) if report_path is not None else report_output_dir / "report.html",
+        output_dir=manifest_path.parent.parent,
+        report_path=report_path,
         interactive_asset_path=(Path(interactive_asset_path) if interactive_asset_path is not None else None),
         analysis_limits=analysis_limits,
     )
+    if pdf_path is not None:
+        manifest["pdf"] = artifact_url(pdf_path, manifest_path.parent.parent)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest_path
 
@@ -2719,6 +2864,23 @@ def _resolve_capture_file_path(run_path: Path, package_dir: Path, file_text: str
     return package_dir / file_text.replace("\\", "/")
 
 
+def _capture_file_references(files: Any):
+    """Include all capture file leaves, including per-channel file maps."""
+    if isinstance(files, dict):
+        for value in files.values():
+            yield from _capture_file_references(value)
+    elif isinstance(files, list):
+        for value in files:
+            yield from _capture_file_references(value)
+    elif isinstance(files, str) and files:
+        yield files
+
+
+def _resolve_capture_screenshot_path(run_path: Path, package_dir: Path, file_text: str) -> Path:
+    candidate = _resolve_artifact_path(run_path, file_text)
+    return candidate if candidate.exists() else package_dir / "screenshot.png"
+
+
 def _collect_signal_summaries(
     run: RunPackage, *, analysis_limits=None, warnings: list[str] | None = None,
     retained_bytes: int = 0,
@@ -2791,9 +2953,7 @@ def _collect_screenshots(
         screenshot_text = _metadata_screenshot_path(metadata)
         if not screenshot_text:
             continue
-        screenshot_path = _resolve_artifact_path(run.path, screenshot_text)
-        if not screenshot_path.exists():
-            screenshot_path = package_dir / "screenshot.png"
+        screenshot_path = _resolve_capture_screenshot_path(run.path, package_dir, screenshot_text)
         if not screenshot_path.exists():
             continue
         screenshots.append(
@@ -2807,15 +2967,16 @@ def _collect_screenshots(
     return screenshots
 
 
-def _capture_references(run: RunPackage) -> list[ReportCaptureReference]:
+def _capture_references(run: RunPackage, *, unique_packages: bool = True) -> list[ReportCaptureReference]:
     references: list[ReportCaptureReference] = []
-    seen: set[str] = set()
+    seen: set[Any] = set()
 
     def add(step_index: str, package: Any, metadata: Any) -> None:
         package_text = str(package or "").strip()
-        if not package_text or package_text in seen:
+        key = package_text if unique_packages else (package_text, str(metadata or ""))
+        if not package_text or key in seen:
             return
-        seen.add(package_text)
+        seen.add(key)
         references.append(
             ReportCaptureReference(
                 step_index=step_index,
@@ -2846,24 +3007,39 @@ def _capture_references(run: RunPackage) -> list[ReportCaptureReference]:
             row.get("capture_package"),
             row.get("metadata_path"),
         )
+    for response in run.frequency_responses:
+        for row in response.rows:
+            add(
+                f"frequency response {row.get('index', '')}",
+                row.get("capture_package"),
+                row.get("metadata_path"),
+            )
     return references
+
+
+def _capture_metadata_paths(package_dir: Path, metadata_text: Any) -> tuple[Path, Path]:
+    explicit = _resolve_artifact_path(package_dir, str(metadata_text)) if metadata_text else package_dir / "metadata.json"
+    return explicit, explicit if explicit.exists() else package_dir / "metadata.json"
 
 
 def _read_capture_metadata(
     package_dir: Path, metadata_text: Any, *, limits=None, warnings: list[str] | None = None,
-    retained_bytes: int = 0,
+    retained_bytes: int = 0, strict_resources: bool = False,
 ) -> dict[str, Any]:
     from wavebench.data.analysis_io import read_json_bounded
     from wavebench.data.analysis_resources import AnalysisLimits
+    from wavebench.errors import DataError
 
-    metadata_path = _resolve_artifact_path(package_dir, str(metadata_text)) if metadata_text else package_dir / "metadata.json"
-    if not metadata_path.exists():
-        metadata_path = package_dir / "metadata.json"
+    _explicit, metadata_path = _capture_metadata_paths(package_dir, metadata_text)
     try:
         data = read_json_bounded(
             metadata_path, limits or AnalysisLimits(), retained_bytes=retained_bytes,
         )
     except Exception as exc:  # noqa: BLE001 - reports retain unavailable evidence as warnings
+        # Output validation needs a complete inventory to protect external
+        # evidence. A budget rejection must never turn it into an empty one.
+        if strict_resources and isinstance(exc, DataError):
+            raise
         if warnings is not None:
             warnings.append(f"capture metadata unavailable: {metadata_path}: {type(exc).__name__}: {exc}")
         return {}

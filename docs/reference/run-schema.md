@@ -119,6 +119,8 @@ Windows 硬限额使用 Job Object 的 job committed memory；Linux 使用 cgrou
 
 采集 metadata 解析和原始预览扫描也计入已保留的报告内容。预览 HTML 及最终 HTML 在拼接前检查输入字符串、Unicode 副本和 UTF-8 编码空间；曲线超限时显示警告，完整 HTML 无法准入时返回 `resource_limit_exceeded`，需要减少报告内容或显式选择更大的资源配置，不会自动放宽限额。这仍是阶段工作集估算，不覆盖读取 RunPackage、截图解码、PDF 排版或频响区域生成的全部资源。
 
+报告导出前的证据路径校验使用同一资源配置读取采集 metadata。无法准入完整证据清单时拒绝导出，避免漏掉目录外的原始文件；直接渲染仍可显示 metadata 不可用警告。
+
 ```bash
 wavebench analysis check --capture data/capture --channel 1 --recipe plans/example_analysis_recipe.toml
 wavebench analysis run --capture data/capture --channel 1 --recipe plans/example_analysis_recipe.toml --output data/analysis_trial_1

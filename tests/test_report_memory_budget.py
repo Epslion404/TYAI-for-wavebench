@@ -1,5 +1,6 @@
 """Measure real text allocations and keep admission ahead of report copies."""
 import json
+from dataclasses import replace
 import tracemalloc
 from unittest.mock import patch
 
@@ -49,7 +50,7 @@ def test_full_hundred_curve_report_refuses_without_relaxing_profile(tmp_path):
 
 def test_budget_refusal_leaves_existing_html_unchanged(tmp_path):
     run = repeated_run(tmp_path)
-    output = tmp_path / "existing.html"
+    output = tmp_path.parent / (tmp_path.name + "-existing.html")
     output.write_text("previous report", encoding="utf-8")
     with pytest.raises(AnalysisResourceError):
         html.write_run_report_html(
@@ -57,7 +58,7 @@ def test_budget_refusal_leaves_existing_html_unchanged(tmp_path):
             analysis_limits=AnalysisLimits(max_working_bytes=120_000, max_report_curves=128),
         )
     assert output.read_text(encoding="utf-8") == "previous report"
-    assert not (tmp_path / "report-assets/manifest.json").exists()
+    assert not (output.parent / "report-assets/manifest.json").exists()
 
 
 def test_admitted_preview_block_measured_copies_and_encoding_fit(tmp_path):
@@ -143,3 +144,43 @@ def test_small_metadata_does_not_allocate_default_eight_megabyte_read_buffer(tmp
         tracemalloc.stop()
     assert result == {"channel": 1}
     assert peak < limits.max_working_bytes
+
+
+@pytest.mark.parametrize("entry,expected_reads", [("manifest", 3), ("html", 7), ("unified", 7)])
+def test_guard_and_writer_share_bounded_metadata_profile(tmp_path, entry, expected_reads):
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    run = replace(repeated_run(capture, 1), path=tmp_path)
+    limits = AnalysisLimits(max_metadata_bytes=512)
+    output = tmp_path / "report.html"
+    with patch("wavebench.data.analysis_io.read_json_bounded", wraps=read_json_bounded) as read:
+        if entry == "manifest":
+            html.write_run_report_manifest(run, analysis_limits=limits)
+        elif entry == "html":
+            html.write_run_report_html(run, output, analysis_limits=limits)
+        else:
+            with patch("wavebench.report.html._write_run_report_pdf") as pdf:
+                html.write_run_report(
+                    run, output, pdf_output_path=tmp_path / "report.pdf", analysis_limits=limits,
+                )
+            assert pdf.call_args.kwargs["analysis_limits"] is limits
+    assert read.call_count == expected_reads
+    assert all(call.args[1] is limits for call in read.call_args_list)
+
+
+def test_unified_export_refuses_incomplete_external_evidence_inventory(tmp_path):
+    run = repeated_run(tmp_path, 1)
+    metadata = tmp_path / "metadata.json"
+    external = tmp_path.parent / (tmp_path.name + "-screenshot.png")
+    external.write_bytes(b"original screenshot")
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    payload["files"]["screenshot"] = str(external)
+    metadata.write_text(json.dumps(payload), encoding="utf-8")
+    with patch("wavebench.report.html._write_run_report_html") as writer:
+        with pytest.raises(AnalysisResourceError):
+            html.write_run_report(
+                run, external, pdf_output_path=tmp_path.parent / "budget-output.pdf",
+                analysis_limits=AnalysisLimits(max_metadata_bytes=4),
+            )
+    writer.assert_not_called()
+    assert external.read_bytes() == b"original screenshot"

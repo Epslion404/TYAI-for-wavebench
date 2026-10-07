@@ -17,7 +17,7 @@ from .config import load_advisor_config, load_config, vertical_scale_from_vpp
 from .data.packages import load_capture_package, load_run_package
 from .discovery import discover_instruments
 from .doctor import doctor_records, has_doctor_errors as has_config_doctor_errors
-from .report.html import write_run_report_html, write_run_report_pdf
+from .report.html import write_run_report
 from .report.index import write_report_index
 from .errors import ConfigError, WaveBenchError, error_envelope
 from .cli_parser import build_parser
@@ -1392,17 +1392,18 @@ def _main(argv: list[str] | None = None) -> int:
                     raise ConfigError(
                         "run report --pdf-output is a PDF path and must not use an HTML suffix"
                     )
+                analysis_limits = None
                 if args.analysis_resources:
                     from .data.analysis_resources import load_resource_limits
 
-                    output = write_run_report_html(package, output_path=output,
-                                                   analysis_limits=load_resource_limits(args.analysis_resources))
-                else:
-                    output = write_run_report_html(package, output_path=output)
-                print(f"report={output}")
-                if args.pdf:
-                    pdf = write_run_report_pdf(package, output_path=pdf_output)
-                    print(f"pdf={pdf}")
+                    analysis_limits = load_resource_limits(args.analysis_resources)
+                outputs = write_run_report(
+                    package, output_path=output, pdf_output_path=pdf_output if args.pdf else None,
+                    analysis_limits=analysis_limits,
+                )
+                print(f"report={outputs.html}")
+                if outputs.pdf is not None:
+                    print(f"pdf={outputs.pdf}")
                 return 0
             if args.command == "report-index":
                 result = write_report_index(args.paths, args.output)

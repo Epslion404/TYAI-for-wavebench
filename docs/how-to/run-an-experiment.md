@@ -56,6 +56,8 @@ python -m wavebench run report data/runs/<run-dir>
 
 传统 `expect_fft` 按执行资源配置检查完整采集长度、FFT 长度、内存估算和工作量；超限时明确失败，不以降采样替代验收。报告波形预览使用同类预算和只读映射，分块选取至多 600 点；无法准入的曲线显示原因。资源准入是估算限制；分析监督执行配置的进程级硬限制适用于独立分析及 RunPlan 分析 step，传统 `expect_fft` 和报告预览在当前进程中执行。详见[Run Schema Reference](../reference/run-schema.md) 的「分析资源预算」。
 
+用 `--output` 或 `--pdf-output` 导出时，选择独立报告路径。命令会拒绝覆盖原始运行文件、步骤记录、采集包或处理结果，包括 run 引用的目录外采集 metadata、截图、波形文件，以及处理清单、指标和导出文件，也检查符号链接、Windows junction 和硬链接别名。HTML、PDF、报告清单和实际使用的 Plotly 文件会在写入前统一检查路径与硬链接冲突。已有独立报告可刷新；自定义 HTML 和 PDF 名称通过 `report-assets/manifest.json` 识别，保留该文件即可继续更新报告。文件被引用为原始证据时，即使使用默认报告名称也会拒绝覆盖。
+
 ## Verification
 
 - `run check` 完成且没有 schema 或安全上限错误。

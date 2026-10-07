@@ -255,9 +255,9 @@ def test_failed_preview_keeps_scan_charge_and_blocks_later_scans(tmp_path, failu
     assert all("max_work_units" in preview.warning for preview in previews[1:])
 
 
-@pytest.mark.parametrize("entry,expected_reads", [("render", 4), ("manifest", 2), ("writer", 6)])
+@pytest.mark.parametrize("entry,expected_reads", [("render", 4), ("manifest", 1), ("writer", 1)])
 @pytest.mark.parametrize("use_default_limits", [False, True])
-def test_all_report_metadata_reads_are_bounded_and_recover_with_warnings(
+def test_all_report_metadata_reads_are_bounded_and_warn_or_refuse_export(
     tmp_path, entry, expected_reads, use_default_limits,
 ):
     capture_dir = tmp_path / "capture"
@@ -291,14 +291,20 @@ def test_all_report_metadata_reads_are_bounded_and_recover_with_warnings(
         if entry == "render":
             rendered = html.render_run_report_html(run, analysis_limits=limits)
             manifest = None
-        elif entry == "manifest":
-            manifest_path = html.write_run_report_manifest(run, analysis_limits=limits)
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            rendered = ""
         else:
-            html.write_run_report_html(run, output, analysis_limits=limits)
-            rendered = output.read_text(encoding="utf-8")
-            manifest = json.loads((tmp_path / "report-assets/manifest.json").read_text(encoding="utf-8"))
+            # Writers must inspect the complete capture inventory to protect
+            # directory-external evidence. Never swallow an inventory budget
+            # failure and write with incomplete output validation.
+            with pytest.raises(AnalysisResourceError) as refused:
+                if entry == "manifest":
+                    html.write_run_report_manifest(run, analysis_limits=limits)
+                else:
+                    html.write_run_report_html(run, output, analysis_limits=limits)
+            assert refused.value.evidence["dimension"] == "max_metadata_bytes"
+            assert not output.exists()
+            assert not (tmp_path / "report-assets").exists()
+            rendered = ""
+            manifest = None
     assert unbounded_reads == []
     assert bounded.call_count == expected_reads
     for call in bounded.call_args_list:
