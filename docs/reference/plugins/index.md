@@ -26,6 +26,9 @@ V2 entry point 名必须与 canonical `driver_id` 一致。可执行插件不能
 
 ## 声明式二进制帧
 
+本节描述开发线的离线校验切片，尚未随正式版本发布。完整协议接入合同见
+[自定义设备与协议 RFC](../../project/rfcs/WaveBench_自定义设备与协议支持RFC.md)。
+
 `plugin protocol check` 和 `plugin protocol info` 通过
 位置参数 `path` 读取本地 TOML，不打开 transport。字段与默认值由
 `src/wavebench/plugins/protocol.py` 定义；manifest 上限为 1 MiB，帧与 header 上限为 64 MiB。
