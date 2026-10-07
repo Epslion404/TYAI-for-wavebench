@@ -24,6 +24,7 @@ from packaging.version import InvalidVersion, Version
 
 from wavebench import __version__
 from wavebench.errors import ConfigError
+from wavebench.plugins.install_paths import installation_path_key
 from wavebench.instruments.source_conformance import (
     MAX_SOURCE_CONFORMANCE_BYTES,
     SOURCE_CONFORMANCE_DIRECTORY,
@@ -415,7 +416,7 @@ def _validate_wheel_members(infos: Iterable[object]) -> None:
     items = tuple(infos)
     if len(items) > MAX_WHEEL_MEMBERS:
         raise ConfigError("plugin wheel contains too many members / 插件 wheel 成员过多")
-    names = [info.filename for info in items]
+    names = [installation_path_key(info.filename) for info in items]
     if len(names) != len(set(names)):
         raise ConfigError("plugin wheel contains duplicate members / 插件 wheel 包含重复成员")
     if sum(info.file_size for info in items) > MAX_WHEEL_UNCOMPRESSED_BYTES:
@@ -425,14 +426,15 @@ def _validate_wheel_members(infos: Iterable[object]) -> None:
         path = PurePosixPath(name)
         if path.is_absolute() or ".." in path.parts or "\\" in name:
             raise ConfigError(f"unsafe wheel member path / 不安全的 wheel 成员路径: {name}")
-        if path.parts and path.parts[0] == "wavebench":
+        target_path = PurePosixPath(installation_path_key(name).replace("\\", "/"))
+        if target_path.parts and target_path.parts[0] == "wavebench":
             raise ConfigError(
                 f"plugin wheel must not overwrite the WaveBench core package / "
                 f"插件 wheel 不能覆盖 WaveBench 核心包: {name}"
             )
-        if path.suffix == ".pth":
+        if target_path.suffix == ".pth":
             raise ConfigError(f"plugin wheel pth files are not supported / 不支持插件 wheel 的 pth 文件: {name}")
-        if any(part.endswith(".data") for part in path.parts):
+        if any(part.endswith(".data") for part in target_path.parts):
             raise ConfigError(f"plugin wheel data relocation is not supported / 不支持 wheel data 重定位: {name}")
         mode = (info.external_attr >> 16) & 0o170000
         if mode == stat.S_IFLNK:

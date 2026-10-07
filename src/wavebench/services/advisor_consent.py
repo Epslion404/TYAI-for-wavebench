@@ -50,7 +50,12 @@ _SENSITIVE_KEY_PARTS = (
     "token",
 )
 _SENSITIVE_TEXT = re.compile(
-    r"(?i)\b(?:api[_-]?key|authorization|credential|password|secret|token)\b\s*[:=]\s*(?:bearer\s+)?\S+"
+    r"(?i)\b(?:api[_-]?key|authorization|credential|password|secret|token)\b"
+    # Consume escaped characters as pairs so an escaped quote cannot end the value.
+    r"[\"']?\s*[:=]\s*(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|"
+    # Free-form credentials can contain JSON punctuation; only whitespace ends
+    # an unquoted value. Quoted strings keep their own closing-quote boundary.
+    r"(?:bearer\s+)?\S+)"
 )
 
 

@@ -13,15 +13,15 @@ from wavebench.services.run_analysis import (
 )
 
 
-def test_even_sample_nyquist_tone_has_unit_amplitude() -> None:
-    samples = 16
-    sample_rate_hz = 16.0
+@pytest.mark.parametrize("samples", [16, 128, 1024])
+def test_even_sample_nyquist_tone_has_unit_amplitude(samples) -> None:
+    sample_rate_hz = float(samples)
     time_s = np.arange(samples) / sample_rate_hz
     waveform = np.column_stack((time_s, (-1.0) ** np.arange(samples)))
 
     result = analyze_fft(waveform)
 
-    assert result["peak_frequency_hz"] == 8.0
+    assert result["peak_frequency_hz"] == pytest.approx(sample_rate_hz / 2)
     assert result["peak_amplitude_v"] == pytest.approx(1.0)
 
 
@@ -91,4 +91,37 @@ def test_capture_nyquist_fft_expectation_uses_corrected_amplitude(tmp_path):
     assert step_status({"expect_fft": expectation}) == "ok"
     rejection = evaluate_expect(summary, {"peak_amplitude_v": {"min": 1.9, "max": 2.1}})
     assert rejection["status"] == "failed"
+    assert step_status({"expect_fft": rejection}) == "failed"
+
+
+@pytest.mark.parametrize("nyquist_amplitude", [0.6, 0.75, 0.9, 1.25])
+def test_separated_tones_rank_peaks_in_volts(nyquist_amplitude, tmp_path):
+    indices = np.arange(1024)
+    voltage = np.sin(2 * np.pi * 128 * indices / 1024)
+    voltage += nyquist_amplitude * (-1.0) ** indices
+    waveform = np.column_stack((indices / 1024.0, voltage))
+    result = analyze_fft(waveform)
+    expected_frequency = 128.0 if nyquist_amplitude < 1.0 else 512.0
+    expected_amplitude = max(1.0, nyquist_amplitude)
+
+    assert result["peak_frequency_hz"] == pytest.approx(expected_frequency)
+    assert result["peak_amplitude_v"] == pytest.approx(expected_amplitude, abs=1e-4)
+    if nyquist_amplitude < 1.0:
+        assert result["harmonic_4_amplitude_v"] == pytest.approx(nyquist_amplitude, abs=1e-4)
+        assert result["thd_ratio"] == pytest.approx(nyquist_amplitude, abs=1e-4)
+
+    npy_path = tmp_path / "multitone.npy"
+    np.save(npy_path, waveform)
+    summary = capture_fft_summary(SimpleNamespace(npy_path=npy_path))
+    expectation = evaluate_expect(summary, {
+        "peak_frequency_hz": {"min": expected_frequency - 0.1,
+                              "max": expected_frequency + 0.1},
+        "peak_amplitude_v": {"min": expected_amplitude - 0.01,
+                             "max": expected_amplitude + 0.01},
+    })
+    assert step_status({"expect_fft": expectation}) == "ok"
+    rejection = evaluate_expect(summary, {
+        "peak_frequency_hz": {"min": 510, "max": 514} if nyquist_amplitude < 1.0
+        else {"min": 126, "max": 130},
+    })
     assert step_status({"expect_fft": rejection}) == "failed"
