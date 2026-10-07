@@ -27,6 +27,18 @@ UNQUOTED_DELIMITED_CREDENTIALS = [
     "api_key=prefix}AUDIT_DUMMY",
     "authorization: Bearer prefix,AUDIT_DUMMY",
 ]
+QUOTED_BEARER_CREDENTIALS = [
+    'authorization: Bearer "prefix AUDIT_DUMMY"',
+    "authorization: Bearer 'prefix AUDIT_DUMMY'",
+    'AUTHORIZATION\t=\t bearer\t"prefix AUDIT_DUMMY"',
+    r'authorization: Bearer "prefix\" AUDIT_DUMMY\\tail"',
+    r"authorization: Bearer 'prefix\' AUDIT_DUMMY\\tail'",
+    json.dumps({"authorization": 'Bearer "prefix AUDIT_DUMMY"'}),
+    json.dumps({"authorization": 'Bearer "prefix\\\" AUDIT_DUMMY\\tail"'}),
+    'api_key="prefix AUDIT_DUMMY"',
+    "password='prefix AUDIT_DUMMY'",
+    'authorization:\nBearer\t"prefix AUDIT_DUMMY"',
+]
 
 
 def response(**overrides):
@@ -111,6 +123,7 @@ def test_probability_boundaries_remain_valid(probability):
     "fake api_key=AUDIT_DUMMY", 'fake {"api_key": "AUDIT_DUMMY extra"}',
     "fake {'token': 'AUDIT_DUMMY extra'}",
     *("fake " + text + " diagnosis=keep" for text in ESCAPED_CREDENTIALS),
+    *("fake " + text + " diagnosis=keep" for text in QUOTED_BEARER_CREDENTIALS),
 ])
 def test_response_diagnostics_are_safe_in_cli_and_persisted_artifact(valid, model, tmp_path, capsys):
     raw = response(choice="scope" if valid else "token=AUDIT_DUMMY")
@@ -133,6 +146,7 @@ def test_response_diagnostics_are_safe_in_cli_and_persisted_artifact(valid, mode
     "token=AUDIT_DUMMY", "api_key=AUDIT_DUMMY", "password=AUDIT_DUMMY",
     "authorization: Bearer AUDIT_DUMMY", *ESCAPED_CREDENTIALS,
     *UNQUOTED_DELIMITED_CREDENTIALS,
+    *QUOTED_BEARER_CREDENTIALS,
 ])
 def test_direct_artifact_diagnostics_are_redacted(credential, tmp_path, capsys):
     artifact = DecisionArtifact(
@@ -167,8 +181,38 @@ def test_normal_artifact_diagnostics_are_preserved(capsys):
 
 
 @pytest.mark.parametrize("credential", UNQUOTED_DELIMITED_CREDENTIALS)
-def test_unquoted_delimited_request_is_redacted_before_call_and_persistence(credential, tmp_path):
-    state = DecisionState(fields={"request": credential + " diagnosis=keep"})
+def test_unquoted_delimited_request_is_redacted_before_call_and_persistence(
+    credential, tmp_path, capsys,
+):
+    assert_request_boundaries(credential + " diagnosis=keep", tmp_path, capsys)
+
+
+@pytest.mark.parametrize("credential", QUOTED_BEARER_CREDENTIALS + ESCAPED_CREDENTIALS)
+def test_quoted_bearer_request_is_redacted_before_call_and_persistence(credential, tmp_path, capsys):
+    expected = None if credential.startswith("{") else "[REDACTED] diagnosis=keep"
+    assert_request_boundaries(credential + " diagnosis=keep", tmp_path, capsys, expected=expected)
+
+
+@pytest.mark.parametrize("input_text,expected", [
+    ('authorization: Bearer "prefix AUDIT_DUMMY', "[REDACTED]"),
+    ("authorization: Bearer 'prefix AUDIT_DUMMY diagnosis=keep", "[REDACTED]"),
+    (r'authorization: Bearer "prefix AUDIT_DUMMY\"', "[REDACTED]"),
+    ('authorization: Bearer "prefix AUDIT_DUMMY\\', "[REDACTED]"),
+    ('authorization: Bearer "prefix AUDIT_DUMMY\ndiagnosis=keep',
+     "[REDACTED]\ndiagnosis=keep"),
+    ("authorization: bearer 'prefix AUDIT_DUMMY\r\ndiagnosis=keep",
+     "[REDACTED]\r\ndiagnosis=keep"),
+    ('authorization: Bearer "prefix AUDIT_DUMMY\ndiagnosis=keep"',
+     '[REDACTED]\ndiagnosis=keep"'),
+    ('authorization: Bearer "prefix AUDIT_DUMMY"\ndiagnosis=keep',
+     "[REDACTED]\ndiagnosis=keep"),
+])
+def test_unterminated_quotes_fail_closed_within_the_line(input_text, expected, tmp_path, capsys):
+    assert_request_boundaries(input_text, tmp_path, capsys, expected=expected)
+
+
+def assert_request_boundaries(request, tmp_path, capsys, *, expected=None):
+    state = DecisionState(fields={"request": request})
     questions = build_questions(build_routing_question(OPTIONS))
     preview = build_preview(
         model="fake.v1", state=state.as_payload(),
@@ -193,16 +237,23 @@ def test_unquoted_delimited_request_is_redacted_before_call_and_persistence(cred
     assert artifact.status == "ok"
     assert len(calls) == 1
     path = write_decision_artifact(artifact, run_dir=tmp_path, advisor_id="fake")
+    print_decision_artifact(artifact)
     # Check each boundary independently: another pass cannot recognize a suffix
     # after the first pass has removed its sensitive field label.
     boundaries = {
         "preview": json.dumps(preview.as_dict(), allow_nan=False),
         "client": json.dumps(calls, allow_nan=False),
         "artifact": path.read_text(encoding="utf-8"),
+        "artifact_json": artifact.to_json(),
+        "cli": capsys.readouterr().out,
     }
     leaks = [name for name, text in boundaries.items() if "AUDIT_DUMMY" in text]
     assert not leaks, f"credential fragment crossed boundaries: {leaks}"
     assert calls[0]["state"] == preview.payload["state"]
     assert artifact.state == preview.payload["state"]
-    for text in boundaries.values():
-        assert "diagnosis=keep" in text
+    if expected is not None:
+        assert preview.payload["state"]["fields"]["request"] == expected
+    if expected is None or "diagnosis=keep" in expected:
+        for name, text in boundaries.items():
+            if name != "cli":  # CLI prints recommendations and diagnostics, not request state.
+                assert "diagnosis=keep" in text

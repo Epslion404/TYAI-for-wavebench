@@ -51,11 +51,15 @@ _SENSITIVE_KEY_PARTS = (
 )
 _SENSITIVE_TEXT = re.compile(
     r"(?i)\b(?:api[_-]?key|authorization|credential|password|secret|token)\b"
-    # Consume escaped characters as pairs so an escaped quote cannot end the value.
-    r"[\"']?\s*[:=]\s*(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|"
+    # Select quoted values after the optional scheme, including Bearer "two words".
+    r"[\"']?\s*[:=]\s*(?:bearer\s+)?"
+    # Escaped characters cannot end a quote. An unclosed quote consumes the rest
+    # of its line (including a dangling backslash), never the next diagnostic line.
+    r"(?:\"(?:\\[^\r\n]|[^\"\\\r\n])*(?:\"|\\?(?=[\r\n]|\Z))|"
+    r"'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|\\?(?=[\r\n]|\Z))|"
     # Free-form credentials can contain JSON punctuation; only whitespace ends
     # an unquoted value. Quoted strings keep their own closing-quote boundary.
-    r"(?:bearer\s+)?\S+)"
+    r"\S+)"
 )
 
 
