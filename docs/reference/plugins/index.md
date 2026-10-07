@@ -27,7 +27,7 @@ V2 entry point 名必须与 canonical `driver_id` 一致。可执行插件不能
 ## 声明式二进制帧
 
 `plugin protocol check`、`plugin protocol doctor` 和 `plugin protocol info` 通过
-`--file` 读取本地 TOML，不打开 transport。字段与默认值由
+位置参数 `path` 读取本地 TOML，不打开 transport。字段与默认值由
 `src/wavebench/plugins/protocol.py` 定义；manifest 上限为 1 MiB，帧与 header 上限为 64 MiB。
 插件 metadata 和必填帧字段必须完整，非法描述统一返回配置错误。
 
