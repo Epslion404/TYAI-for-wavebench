@@ -7,7 +7,7 @@ WaveBench 支持下列彼此独立的插件路径。它们的共同边界是：C
 | V1 metadata | `wavebench.drivers` / `wavebench.instrument.v1` | 否。用于展示 metadata。 |
 | V2 executable plugin | `wavebench.instruments` / `wavebench.instrument.v2` | 仅在配置选中 driver 后。 |
 | 声明式 SCPI TOML | 本地 TOML | 否；只允许显式只读 IDN probe。 |
-| 声明式二进制帧 TOML | `plugin protocol check/doctor/info` | 否；离线校验描述和单帧。 |
+| 声明式二进制帧 TOML | `plugin protocol check/info` | 否；离线校验描述和单帧。 |
 | advisor 类别 | `wavebench.advisor` / `wavebench.advisor.v1` | 否；只产出建议，不连接仪器。 |
 
 ## 加载与信任边界
@@ -26,7 +26,7 @@ V2 entry point 名必须与 canonical `driver_id` 一致。可执行插件不能
 
 ## 声明式二进制帧
 
-`plugin protocol check`、`plugin protocol doctor` 和 `plugin protocol info` 通过
+`plugin protocol check` 和 `plugin protocol info` 通过
 位置参数 `path` 读取本地 TOML，不打开 transport。字段与默认值由
 `src/wavebench/plugins/protocol.py` 定义；manifest 上限为 1 MiB，帧与 header 上限为 64 MiB。
 插件 metadata 和必填帧字段必须完整，非法描述统一返回配置错误。
