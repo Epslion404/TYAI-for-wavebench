@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from hmac import compare_digest
+from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -64,11 +66,48 @@ def validate_mcp_host(host: str) -> str:
     normalized = host.strip()
     if not normalized:
         raise ConfigError("MCP host is required / MCP host 不能为空")
-    if normalized in {"0.0.0.0", "::", "[::]"}:
-        raise ConfigError(
-            "MCP host 0.0.0.0 is refused / MCP 拒绝监听 0.0.0.0；请显式使用 127.0.0.1 或私网地址"
+
+    def reject_wildcard(address: str) -> None:
+        parsed = ip_address(address)
+        mapped = parsed.ipv4_mapped if isinstance(parsed, IPv6Address) else None
+        if parsed.is_unspecified or (mapped is not None and mapped.is_unspecified):
+            raise ConfigError(
+                "MCP host 0.0.0.0 / :: is refused / MCP 拒绝监听通配地址；"
+                "请显式使用 127.0.0.1 或私网地址"
+            )
+
+    # IPv6 wildcard spellings must be rejected even though the HTTP server is IPv4-only.
+    try:
+        literal = ip_address(normalized.removeprefix("[").removesuffix("]"))
+    except ValueError:
+        literal = None
+    if literal is not None:
+        reject_wildcard(str(literal))
+
+    # Normalize inet_aton numeric aliases consistently across platforms.
+    try:
+        numeric = socket.inet_ntoa(socket.inet_aton(normalized))
+    except OSError:
+        numeric = None
+    if numeric is not None:
+        reject_wildcard(numeric)
+        return numeric
+
+    # Match ThreadingHTTPServer's address family, including platform numeric aliases.
+    try:
+        answers = socket.getaddrinfo(
+            normalized, None, socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP
         )
-    return normalized
+    except socket.gaierror as exc:
+        raise ConfigError("MCP host cannot be resolved / MCP host 无法解析为 IPv4 地址") from exc
+    if not answers:
+        raise ConfigError(
+            "MCP host has no IPv4 address / MCP host 没有 IPv4 地址"
+        )
+    for answer in answers:
+        reject_wildcard(answer[4][0])
+    # Bind the checked numeric address, avoiding a second hostname resolution at bind time.
+    return answers[0][4][0]
 
 
 def resolve_mcp_token(token: str | None, token_env: str | None = DEFAULT_MCP_TOKEN_ENV) -> str:
