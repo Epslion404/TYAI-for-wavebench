@@ -1,5 +1,6 @@
 """Encoded credentials must be removed at every actual advisor output boundary."""
 
+import hashlib
 import json
 
 import pytest
@@ -53,9 +54,16 @@ def assert_boundaries(request, tmp_path, capsys, *, keep=True):
     assert artifact.status == "ok"
     assert len(calls) == 1
     assert calls[0]["state"] == preview.payload["state"] == artifact.state
+    wire_state = json.loads(json.dumps(calls[0]["state"]))
+    assert artifact.as_dict()["state"] == json.loads(artifact.to_json())["state"] == wire_state
+    wire_body = json.dumps(preview.payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    assert preview.payload_bytes == len(wire_body)
+    assert preview.payload_sha256 == hashlib.sha256(wire_body).hexdigest()
     direct = DecisionArtifact(
         status="invalid", requested_model=request, reported_model=request, reason=request,
     )
+    for diagnostic in (direct.requested_model, direct.reported_model, direct.reason):
+        assert redact_sensitive(diagnostic) == diagnostic
     boundaries = {
         "preview": json.dumps(preview.as_dict()), "client": json.dumps(calls),
         "artifact": artifact.to_json(), "direct": direct.to_json(),
@@ -64,6 +72,8 @@ def assert_boundaries(request, tmp_path, capsys, *, keep=True):
     for name, item in (("artifact_file", artifact), ("direct_file", direct)):
         path = write_artifact(item, run_dir=tmp_path, advisor_id="fake")
         boundaries[name] = path.read_text(encoding="utf-8")
+        if item is artifact:
+            assert json.loads(boundaries[name])["state"] == wire_state
     _print_advisor_result(artifact)
     _print_advisor_result(direct)
     boundaries["cli"] = capsys.readouterr().out
@@ -240,3 +250,149 @@ def test_decode_count_is_checked_before_ninth_load(monkeypatch):
 ])
 def test_obviously_malformed_encoded_candidates_never_fall_back_to_plain_regex(text):
     assert redact_sensitive(text) == "[REDACTED_ENCODED_TEXT]"
+
+
+def unicode_credential(count, layers=0, diagnostic="雪"):
+    text = json.dumps({"token": SECRET, "diagnosis": diagnostic * count}, ensure_ascii=False)
+    for _ in range(layers):
+        text = json.dumps(text, ensure_ascii=False)
+    return text
+
+
+@pytest.mark.parametrize("count,layers,diagnostic", [
+    (21000, 0, "雪"), (10000, 1, "雪"), (6000, 2, "雪"),
+    (10000, 0, "\ud800"), (9000, 2, "😀"),
+], ids=["unicode-output-limit", "one-wrapper", "two-wrappers", "surrogate", "astral"])
+def test_unicode_reencoding_stays_identical_at_all_boundaries(
+    count, layers, diagnostic, tmp_path, capsys,
+):
+    text = unicode_credential(count, layers, diagnostic)
+    safe = assert_boundaries(text, tmp_path, capsys, keep=False)
+    assert redact_sensitive(safe) == safe
+    assert len(safe.encode("utf-8", errors="surrogatepass")) <= 65536
+
+
+def near_work_limit_credential():
+    def wrapped(count):
+        text = json.dumps({"token": SECRET, "diagnosis": "x" * count}, separators=(",", ":"))
+        for _ in range(7):
+            text = json.dumps(text)
+        return text
+
+    def work_bytes(text):
+        total = 0
+        while isinstance(text, str):
+            total += len(text.encode("utf-8"))
+            text = json.loads(text)
+        return total
+
+    count = (262144 - work_bytes(wrapped(0))) // 8
+    text = wrapped(count)
+    assert work_bytes(text) <= 262144
+    assert len(text.encode("utf-8")) <= 65536
+    return text
+
+
+def test_reencoded_output_cannot_cross_next_pass_work_limit(tmp_path, capsys):
+    safe = assert_boundaries(near_work_limit_credential(), tmp_path, capsys, keep=False)
+    assert safe == "[REDACTED_JSON_LIMIT]"
+    assert redact_sensitive(safe) == safe
+
+
+def test_exact_reported_work_boundary_is_stable_and_validation_is_bounded(
+    tmp_path, capsys, monkeypatch,
+):
+    text = json.dumps({"token": "x", "diagnosis": "x" * 32422})
+    for _ in range(7):
+        text = json.dumps(text)
+    assert len(text.encode("utf-8")) == 33723
+    safe = assert_boundaries(text, tmp_path, capsys, keep=False)
+    assert safe == "[REDACTED_JSON_LIMIT]"
+
+    real_loads = json.loads
+    calls = []
+
+    def spy(value):
+        calls.append(len(value.encode("utf-8")))
+        return real_loads(value)
+
+    monkeypatch.setattr(consent.json, "loads", spy)
+    assert redact_sensitive(text) == safe
+    assert sum(calls[:8]) == 262094
+    assert 8 < len(calls) <= 16
+    assert sum(calls) <= 2 * 262144
+    previous_calls = len(calls)
+    assert redact_sensitive(safe) == safe
+    assert len(calls) == previous_calls
+
+
+def test_output_byte_limit_rejects_before_validation_decode(monkeypatch):
+    text = unicode_credential(21000)
+    assert len(text.encode("utf-8")) < 65536
+    real_loads = json.loads
+    calls = []
+
+    def spy(value):
+        calls.append(value)
+        return real_loads(value)
+
+    monkeypatch.setattr(consent.json, "loads", spy)
+    assert redact_sensitive(text) == "[REDACTED_JSON_LIMIT]"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("text", [
+    unicode_credential(9000), unicode_credential(5000, 2),
+    unicode_credential(3000, 4), unicode_credential(1000, 2, "\ud800"),
+], ids=["unicode", "two-wrappers", "four-wrappers", "surrogate"])
+def test_supported_reencoded_unicode_is_stable_and_keeps_diagnostics(text):
+    safe = redact_sensitive(text)
+    assert safe != "[REDACTED_JSON_LIMIT]"
+    assert SECRET not in safe
+    assert redact_sensitive(safe) == safe
+
+
+@pytest.mark.parametrize("count", [7, 8, 256, 2800])
+def test_many_plain_credentials_do_not_spend_decodes_on_output_markers(count, tmp_path, capsys):
+    safe = assert_boundaries(json.dumps(["token=" + SECRET] * count), tmp_path, capsys, keep=False)
+    assert json.loads(safe) == ["[REDACTED]"] * count
+    assert redact_sensitive(safe) == safe
+
+
+def test_marker_leaves_at_token_and_depth_boundaries(tmp_path, capsys):
+    text = json.dumps(["token=x"] * 4095)
+    safe = assert_boundaries(text, tmp_path, capsys, keep=False)
+    assert json.loads(safe) == ["[REDACTED]"] * 4095
+    nested = "[" * 32 + json.dumps("token=" + SECRET) + "]" * 32
+    safe_nested = assert_boundaries(nested, tmp_path, capsys, keep=False)
+    assert safe_nested != "[REDACTED_JSON_LIMIT]"
+    assert redact_sensitive(safe_nested) == safe_nested
+
+
+@pytest.mark.parametrize("count", [8, 256, 1600])
+def test_marker_plus_diagnostic_suffix_remains_readable_and_stable(count, tmp_path, capsys):
+    text = json.dumps(["token=" + SECRET + " diagnosis=keep"] * count)
+    safe = assert_boundaries(text, tmp_path, capsys)
+    assert json.loads(safe) == ["[REDACTED] diagnosis=keep"] * count
+    assert redact_sensitive(safe) == safe
+
+
+@pytest.mark.parametrize("marker", [
+    "[REDACTED]", "[REDACTED_JSON_LIMIT]", "[REDACTED_ENCODED_TEXT]", "[REDACTED_UNTRUSTED_TEXT]",
+])
+def test_only_exact_known_markers_bypass_json_interpretation(marker, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("fixed marker literals must not spend a JSON decode")
+
+    monkeypatch.setattr(consent.json, "loads", forbidden)
+    assert redact_sensitive(marker) == marker
+
+
+@pytest.mark.parametrize("text", [
+    '[REDACTED] token=AUDIT_DUMMY', '[REDACTED_UNTRUSTED_TEXT token=AUDIT_DUMMY]',
+    '["[REDACTED]", "token=AUDIT_DUMMY"]',
+])
+def test_marker_lookalikes_and_marker_plus_credentials_are_still_redacted(text):
+    safe = redact_sensitive(text)
+    assert SECRET not in safe
+    assert redact_sensitive(safe) == safe

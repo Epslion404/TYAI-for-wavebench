@@ -64,12 +64,16 @@ _SENSITIVE_TEXT = re.compile(
 # Interpretation limits apply to each string, not the surrounding trusted Python
 # mapping. Check bytes and lexical structure BEFORE json.loads allocates a tree.
 _JSON_INPUT_BYTES = 64 * 1024
+_JSON_OUTPUT_BYTES = 64 * 1024
 _JSON_WORK_BYTES = 256 * 1024
 _JSON_MAX_DEPTH = 32
 _JSON_MAX_TOKENS = 4096
 _JSON_MAX_DECODES = 8
 _JSON_LIMIT = "[REDACTED_JSON_LIMIT]"
 _ENCODED_TEXT = "[REDACTED_ENCODED_TEXT]"
+_REDACTION_MARKERS = frozenset({
+    "[REDACTED]", _JSON_LIMIT, _ENCODED_TEXT, "[REDACTED_UNTRUSTED_TEXT]",
+})
 # Embedded escaped JSON is not a complete document we can safely interpret.
 # Unicode escapes also allow a field name to evade the plain-text key matcher.
 _ENCODED_FRAGMENT = re.compile(r'(?<!\\)\\+"\s*:|\\u[0-9a-fA-F]{4}')
@@ -144,12 +148,43 @@ def _redact_json_value(value: Any, budget: _JsonBudget, depth: int) -> Any:
     return value
 
 
+def _bounded_json_encode(value: Any, suffix: str) -> str:
+    """Bound the joined output, including its UTF-8 suffix, before returning it.
+
+    Encoder chunks come from the already bounded JSON tree; a string chunk can
+    expand its bounded scalar, but we never assemble an over-limit document.
+    """
+    if len(suffix) > _JSON_OUTPUT_BYTES:
+        raise _JsonLimit
+    remaining = _JSON_OUTPUT_BYTES - len(suffix.encode("utf-8", errors="surrogatepass"))
+    if remaining < 0:
+        raise _JsonLimit
+    chunks = []
+    for chunk in json.JSONEncoder(ensure_ascii=True).iterencode(value):
+        # ensure_ascii=True means every encoder chunk is ASCII, so len is bytes.
+        remaining -= len(chunk)
+        if remaining < 0:
+            raise _JsonLimit
+        chunks.append(chunk)
+    return "".join(chunks) + suffix
+
+
 def _redact_encoded_text(value: str, budget: _JsonBudget, depth: int) -> str:
+    if value in _REDACTION_MARKERS:
+        return value
     # Index without strip(): oversized inputs must not create another large copy.
     start = 0
     while start < len(value) and value[start] in " \t\r\n":
         start += 1
-    if start < len(value) and value[start] in '{["':
+    # Known fixed marker tokens followed by whitespace are ordinary text, not
+    # JSON containers. Still run the text redactor on the entire suffix below;
+    # this is not a bypass for marker-like strings or appended credentials.
+    marker_text = any(
+        value.startswith(marker, start)
+        and (start + len(marker) == len(value) or value[start + len(marker)].isspace())
+        for marker in _REDACTION_MARKERS
+    )
+    if start < len(value) and value[start] in '{["' and not marker_text:
         if depth > _JSON_MAX_DEPTH:
             raise _JsonLimit
         budget.before_decode(value, depth)
@@ -186,7 +221,7 @@ def _redact_encoded_text(value: str, budget: _JsonBudget, depth: int) -> str:
             if safe == decoded and safe_suffix == suffix:
                 return value
             # A string input always stays a string, including each outer wrapper.
-            return json.dumps(safe, ensure_ascii=True) + safe_suffix
+            return _bounded_json_encode(safe, safe_suffix)
     safe_text = _SENSITIVE_TEXT.sub("[REDACTED]", value)
     if _ENCODED_FRAGMENT.search(safe_text):
         return _ENCODED_TEXT
@@ -216,7 +251,14 @@ def _is_sensitive_key(key: object) -> bool:
 
 def _redact_sensitive_text(value: str) -> str:
     try:
-        return _redact_encoded_text(value, _JsonBudget(), 0)
+        safe = _redact_encoded_text(value, _JsonBudget(), 0)
+        if safe != value and safe not in _REDACTION_MARKERS:
+            # Exactly one bounded validation pass, never a retry-to-convergence
+            # loop. The output must be accepted unchanged by the same contract,
+            # including cumulative work/tokens/depth, before crossing a boundary.
+            if _redact_encoded_text(safe, _JsonBudget(), 0) != safe:
+                return _JSON_LIMIT
+        return safe
     except _JsonLimit:
         # Discard the original string, never a partially processed prefix/suffix.
         return _JSON_LIMIT
