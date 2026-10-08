@@ -155,6 +155,17 @@ python -m wavebench advisor ask --state state.json --config wavebench.toml --pre
 
 `advisor ask` 读取本地 state fixture 与 `[advisor]` 配置，默认只打印脱敏预览，不发起外发；`--accept-external-state` 才可能在通过同意门后外发，`--run-dir` 决定 decision artifact 的落点。
 
+自动化调用使用 `advisor ask --json`，输出沿用 `wavebench.cli.result.v1` 包络。
+`result` 为结构化对象，包含 `status`、`reason`、`requested_model`、`reported_model`、
+`duration_ms`、`thresholds`、`consent`、`recommendations`、`artifact_path`，以及
+`target`、`state`、`questions`、`answers` 和 `advisory_only`。
+`consent` 保留 `payload_sha256`、`payload_bytes` 和 `accepted_data_leaves_machine`；
+无产物写入时 `artifact_path` 为 `null`，无建议时 `recommendations` 为 `[]`。
+`preview_only`、`refused`、`unavailable` 和 `invalid` 同样使用该形状。
+包络的 `status`／`exit_code` 表示 CLI 执行结果；advisor 的判断状态位于 `result.status`。
+有效调用得到拒绝或无可用判断时，既有 CLI 退出码仍为 `0`；配置或参数错误仍使用既有错误包络。
+不带 `--json` 的文本输出保持原样；落盘产物仍使用 `wavebench.decision.v1`，同意门与产物行为不变。
+
 ## 兼容策略
 
 - `advisor` 使用独立版本门 `wavebench.advisor.v1`；调整契约时提升该门，不动 `wavebench.instrument.*`。
