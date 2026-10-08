@@ -109,6 +109,8 @@ Python mapping 中的敏感键（忽略大小写，`-` 归一为 `_`，包含 `a
 
 完整 JSON 文本（去掉前导 JSON 空白后以 `"`、`{` 或 `[` 开始）在预算内通过标准 JSON 解码、敏感键脱敏再编码；例如 key 的 `\u0061uthorization` 会按 `authorization` 处理。每一层 JSON string 的类型与编码层数保持不变，输入 `str` 不会变成 Python dict。预算内没有脱敏变化的合法 JSON 保留原始字节；发生变化的 JSON 用标准 `json.dumps(..., ensure_ascii=True)` 重编码，所以空白和 Unicode 转义形式可能改变，非敏感字段的内容保留。
 
+解码后的 JSON key 本身也是文本，使用同一共享预算与脱敏规则；例如 `{"token=dummy": "private"}` 的字段名和值都会变为 `[REDACTED]`。是否遮蔽整个值仍由原字段名判定。若两个不同 key 脱敏后成为同名，整个原始字符串替换为 `[REDACTED_ENCODED_TEXT]`，不选择其中一个值或静默丢弃字段；同字符串中的普通诊断也会被省略。
+
 开头的完整 JSON string token 后还可以追加普通诊断，例如 `json.dumps(json.dumps({"token": "dummy"})) + " diagnosis=keep"`：先按转义引号边界识别 token，解码并脱敏后重编码，再独立脱敏并保留后缀。token 与后缀共享原字符串的预算，候选输入的字节统计包含后缀；任一部分超限仍省略整个字符串。
 
 每个待处理字符串单独拥有以下解释预算，包含其解码出的嵌套字符串，共享而不在子节点重置：

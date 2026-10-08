@@ -83,6 +83,10 @@ class _JsonLimit(ValueError):
     pass
 
 
+class _JsonKeyCollision(ValueError):
+    pass
+
+
 @dataclass
 class _JsonBudget:
     bytes_left: int = _JSON_WORK_BYTES
@@ -136,11 +140,21 @@ def _redact_json_value(value: Any, budget: _JsonBudget, depth: int) -> Any:
     if depth > _JSON_MAX_DEPTH:
         raise _JsonLimit
     if isinstance(value, dict):
-        return {
-            key: "[REDACTED]" if _is_sensitive_key(key)
-            else _redact_json_value(item, budget, depth + 1)
-            for key, item in value.items()
-        }
+        safe = {}
+        for key, item in value.items():
+            # JSON field names are untrusted text too. Inspect the original key
+            # when deciding whether to omit its entire value, then sanitize the
+            # name with the same shared interpretation budget as other strings.
+            safe_key = _redact_encoded_text(key, budget, depth + 1)
+            if safe_key in safe:
+                # Distinct field names can become the same redaction marker.
+                # Never pick one value or silently discard another field.
+                raise _JsonKeyCollision
+            safe[safe_key] = (
+                "[REDACTED]" if _is_sensitive_key(key)
+                else _redact_json_value(item, budget, depth + 1)
+            )
+        return safe
     if isinstance(value, list):
         return [_redact_json_value(item, budget, depth + 1) for item in value]
     if isinstance(value, str):
@@ -262,6 +276,8 @@ def _redact_sensitive_text(value: str) -> str:
     except _JsonLimit:
         # Discard the original string, never a partially processed prefix/suffix.
         return _JSON_LIMIT
+    except _JsonKeyCollision:
+        return _ENCODED_TEXT
 
 
 def redact_sensitive(value: Any) -> Any:

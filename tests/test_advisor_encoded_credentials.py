@@ -25,6 +25,79 @@ def encoded_credential(key, layers, diagnosis="keep"):
     return text
 
 
+@pytest.mark.parametrize("layers", [0, 1, 2])
+def test_json_key_credentials_cross_real_boundaries(layers, tmp_path, capsys):
+    request = json.dumps({"token=AUDIT_DUMMY": "private value", "diagnosis": "keep"})
+    for _ in range(layers):
+        request = json.dumps(request)
+    safe = assert_boundaries(request, tmp_path, capsys)
+    assert redact_sensitive(safe) == safe
+    for _ in range(layers):
+        safe = json.loads(safe)
+    assert json.loads(safe) == {"[REDACTED]": "[REDACTED]", "diagnosis": "keep"}
+
+
+@pytest.mark.parametrize("key", [
+    'authorization: Bearer "prefix AUDIT_DUMMY"',
+    "password=prefix,AUDIT_DUMMY", "api_key=prefix}AUDIT_DUMMY",
+    "note token=AUDIT_DUMMY diagnosis=keep", "雪 token=AUDIT_DUMMY",
+    'authorization: Bearer "prefix\\\" AUDIT_DUMMY\\tail"',
+    json.dumps({"authorization": "AUDIT_DUMMY", "diagnosis": "keep"}),
+])
+@pytest.mark.parametrize("layers", [0, 1, 2])
+def test_json_key_text_uses_existing_redaction_contract(key, layers, tmp_path, capsys):
+    request = json.dumps({"nested": [{key: "original value", "diagnosis": "keep"}]})
+    for _ in range(layers):
+        request = json.dumps(request)
+    safe = assert_boundaries(request, tmp_path, capsys)
+    assert redact_sensitive(safe) == safe
+    for _ in range(layers):
+        safe = json.loads(safe)
+    decoded = json.loads(safe)
+    child = decoded["nested"][0]
+    assert child["diagnosis"] == "keep"
+    assert len(child) == 2
+    assert "original value" not in child.values()
+
+
+@pytest.mark.parametrize("layers", [0, 1, 2])
+@pytest.mark.parametrize("keys", [
+    ("token=AUDIT_DUMMY", "token=another"),
+    ("[REDACTED]", "password=AUDIT_DUMMY"),
+    ('authorization: Bearer "AUDIT_DUMMY"', "api_key=another"),
+])
+def test_colliding_redacted_json_keys_omit_entire_input(keys, layers, tmp_path, capsys):
+    request = json.dumps({keys[0]: "first", keys[1]: "second", "diagnosis": "keep"})
+    for _ in range(layers):
+        request = json.dumps(request)
+    request += " diagnosis=keep" if layers else ""
+    safe = assert_boundaries(request, tmp_path, capsys, keep=False)
+    assert safe == "[REDACTED_ENCODED_TEXT]"
+    assert redact_sensitive(safe) == safe
+
+
+def test_json_key_redaction_preserves_nonsensitive_structure_and_unicode_names():
+    request = r'{"nested": {"\u0074oken=AUDIT_DUMMY": "secret value", "计数": 2}, "diagnosis": "keep"}'
+    safe = redact_sensitive(request)
+    assert json.loads(safe) == {"nested": {"[REDACTED]": "[REDACTED]", "计数": 2}, "diagnosis": "keep"}
+    unchanged = ' { "计数" : 2, "diagnosis" : "keep", "nested" : {"plain": [1, true]} } '
+    assert redact_sensitive(unchanged) == unchanged
+
+
+def test_json_key_interpretation_uses_shared_budget(monkeypatch):
+    request = json.dumps({json.dumps({"diagnosis": str(index)}): index for index in range(8)})
+    real_loads = json.loads
+    calls = []
+
+    def spy(text):
+        calls.append(text)
+        return real_loads(text)
+
+    monkeypatch.setattr(consent.json, "loads", spy)
+    assert redact_sensitive(request) == "[REDACTED_JSON_LIMIT]"
+    assert len(calls) == 8
+
+
 def assert_boundaries(request, tmp_path, capsys, *, keep=True):
     state = DecisionState(fields={"request": request})
     questions = build_questions(build_routing_question(OPTIONS))
