@@ -846,7 +846,14 @@ class RunService:
                             plan, step, run_dir=run_dir, services=services, plan_hash=plan_hash
                         )
                     except _FrequencyResponseExecutionError as exc:
-                        if isinstance(exc.cause, (TransportIOError, SessionHealthError)):
+                        response = exc.record.artifact.get("frequency_response")
+                        stop_condition = (
+                            isinstance(response, dict) and response.get("stop_reason") is not None
+                        )
+                        if isinstance(exc.cause, (TransportIOError, SessionHealthError)) or stop_condition:
+                            # An explicit stop condition is an expected partial result:
+                            # keep the points, stop cause and resume evidence even when
+                            # the plan has no safety gate enabled.
                             step_failure = exc.cause
                             record = exc.record
                         elif isinstance(exc.cause, WaveBenchError) and self._safety_gate_for_step(
@@ -2739,6 +2746,7 @@ class RunService:
         calibration_csv_path: Path | None = None,
         calibration_json_path: Path | None = None,
         fixed_point_paths: dict[str, Path] | None = None,
+        resume: dict[str, Any] | None = None,
         stop_conditions: dict[str, Any] | None = None,
         stop_reason: str | None = None,
     ) -> _FrequencyResponseExecutionError:
@@ -2756,6 +2764,7 @@ class RunService:
             calibration_csv_path=calibration_csv_path,
             calibration_json_path=calibration_json_path,
             fixed_point_paths=fixed_point_paths,
+            resume=resume,
             stop_conditions=stop_conditions,
             stop_reason=stop_reason,
             error=cause,
