@@ -933,7 +933,15 @@ def _run_advisor_ask(args: argparse.Namespace) -> int:
         if target is not None
         else None
     )
-    _print_advisor_result(artifact, written)
+    if args.json:
+        payload = artifact.as_dict()
+        # The CLI envelope owns the schema; the on-disk decision stays unchanged.
+        payload.pop("schema")
+        payload.update(payload.pop("advisory"))
+        payload["artifact_path"] = str(written) if written is not None else None
+        _emit_json_result(payload)
+    else:
+        _print_advisor_result(artifact, written)
     return 0
 
 
