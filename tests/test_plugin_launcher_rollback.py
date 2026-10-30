@@ -157,9 +157,10 @@ def test_postflight_requires_prior_record_digest_except_during_rollback(rollback
     monkeypatch.setattr(manager, "_run_json", run_json)
 
     manager._postflight(record)
-    assert run_json.call_args.args[0][-2] == "old-record"
+    # The trailing arguments are installed_record_sha256, wheel_path, category.
+    assert run_json.call_args.args[0][-3] == "old-record"
     manager._postflight(record, rollback_reinstall=True)
-    assert run_json.call_args.args[0][-2] == ""
+    assert run_json.call_args.args[0][-3] == ""
 
 
 @pytest.mark.parametrize("damage", ["omitted", "rehashed"])
