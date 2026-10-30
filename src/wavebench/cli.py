@@ -115,6 +115,7 @@ from .plugins.lifecycle import PluginLifecycle
 from .plugins.package_inspect import inspect_plugin_package
 from .plugins.api import PluginDoctorRecord
 from .plugins.registry import (
+    advisor_dependency_doctor_records,
     advisor_doctor_records,
     build_advisor_registry,
     build_plugin_registry,
@@ -999,6 +1000,7 @@ def _main(argv: list[str] | None = None) -> int:
                 records = advisor_doctor_records(
                     advisor_result.registry, load_errors=advisor_result.load_errors
                 )
+                records.extend(advisor_dependency_doctor_records())
                 _print_plugin_doctor(records)
                 return 2 if has_advisor_doctor_errors(records) else 0
             lifecycle_commands = {

@@ -45,7 +45,7 @@ header 和精确长度；分隔符 framing 以首次分隔符结束，拒绝内�
 
 `plugin list` 与 `plugin doctor` 用 `--category {instrument|advisor}` 选择类别（默认 `instrument`）。`--include-entry-points` 在 advisor 类别下加载 `wavebench.advisor` 入口点；`--kind` 与 `--load` 只对仪器插件有效，advisor 类别下会报错。
 
-实现状态：开发线已实现，未随正式版本发布；包内安装与生命周期路径尚未覆盖。合同与裁决见 [advisor 插件类别 RFC](../../project/rfcs/WaveBench_advisor插件RFC.md)，实现流程见[advisor 插件开发](../../development/advisor-plugin-development.md)。
+实现状态：开发线已实现，未随正式版本发布；包内安装、升级、降级、卸载与恢复已覆盖，postflight 走 `validate_advisor`。`plugin doctor --category advisor` 会从 `Requires-Dist` 报告缺失依赖，不联网。合同与裁决见 [advisor 插件类别 RFC](../../project/rfcs/WaveBench_advisor插件RFC.md)，实现流程见[advisor 插件开发](../../development/advisor-plugin-development.md)。
 
 ## 相关页面
 

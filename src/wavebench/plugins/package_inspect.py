@@ -35,6 +35,11 @@ from wavebench.instruments.source_conformance import (
 
 
 ENTRY_POINT_GROUP = "wavebench.instruments"
+ADVISOR_ENTRY_POINT_GROUP = "wavebench.advisor"
+CATEGORY_ENTRY_POINT_GROUPS = {
+    "instrument": ENTRY_POINT_GROUP,
+    "advisor": ADVISOR_ENTRY_POINT_GROUP,
+}
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_WHEEL_BYTES = 64 * 1024 * 1024
 MAX_WHEEL_MEMBERS = 4096
@@ -83,6 +88,7 @@ def build_subprocess_environment() -> dict[str, str]:
 class WheelEntryPoint:
     driver_id: str
     value: str
+    group: str = ENTRY_POINT_GROUP
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,7 @@ class PluginPackage:
     source_conformance_wheel_sha256: str | None = None
     build_backend: str | None = None
     generated_scripts: tuple[str, ...] = ()
+    category: str = "instrument"
 
     @property
     def driver_ids(self) -> tuple[str, ...]:
@@ -119,6 +126,7 @@ class SourceProject:
     version: str
     build_backend: str
     entry_points: tuple[WheelEntryPoint, ...]
+    category: str = "instrument"
 
 
 def inspect_plugin_package(
@@ -157,6 +165,11 @@ def inspect_plugin_package(
             raise ConfigError(
                 "built wheel entry points do not match pyproject.toml / "
                 "构建出的 wheel entry point 与 pyproject.toml 不一致"
+            )
+        if source.category != inspected.category:
+            raise ConfigError(
+                "built wheel plugin category does not match pyproject.toml / "
+                "构建出的 wheel 插件类别与 pyproject.toml 不一致"
             )
         return PluginPackage(
             **{
@@ -199,13 +212,14 @@ def inspect_source_project(path: str | Path) -> SourceProject:
         Version(version)
     except InvalidVersion as exc:
         raise ConfigError(f"invalid plugin version / 插件版本无效: {version}") from exc
-    entry_points = _source_entry_points(project)
+    category, entry_points = _source_entry_points(project)
     return SourceProject(
         path=root,
         distribution=name,
         version=version,
         build_backend=backend,
         entry_points=entry_points,
+        category=category,
     )
 
 
@@ -346,7 +360,7 @@ def inspect_plugin_wheel(path: str | Path) -> PluginPackage:
     _validate_python_requirement(requires_python)
     dependencies = tuple(message.get_all("Requires-Dist", ()))
     _validate_wavebench_requirement(dependencies)
-    entry_points = _parse_entry_points(entry_text)
+    category, entry_points = _parse_entry_points(entry_text)
     for manifest in source_conformance_manifests:
         if Version(manifest.plugin_version) != parsed_version:
             raise ConfigError(
@@ -372,33 +386,67 @@ def inspect_plugin_wheel(path: str | Path) -> PluginPackage:
         generated_scripts=_parse_generated_scripts(entry_text),
         source_conformance_manifests=source_conformance_manifests,
         source_conformance_wheel_sha256=source_conformance_wheel_sha256,
+        category=category,
     )
 
 
-def _source_entry_points(project: dict[str, object]) -> tuple[WheelEntryPoint, ...]:
+def _source_entry_points(
+    project: dict[str, object],
+) -> tuple[str, tuple[WheelEntryPoint, ...]]:
     groups = project.get("entry-points")
-    group = groups.get(ENTRY_POINT_GROUP) if isinstance(groups, dict) else None
-    if not isinstance(group, dict) or not group:
-        raise ConfigError(f"plugin must declare [{ENTRY_POINT_GROUP}] entry points / 插件必须声明可执行仪器 entry point")
-    return _validated_entry_points(group.items())
+    present = [
+        (category, group_name, groups[group_name])
+        for category, group_name in CATEGORY_ENTRY_POINT_GROUPS.items()
+        if isinstance(groups, dict)
+        and isinstance(groups.get(group_name), dict)
+        and groups[group_name]
+    ]
+    if not present:
+        raise ConfigError(
+            "plugin must declare exactly one category entry point group: "
+            f"{ENTRY_POINT_GROUP} or {ADVISOR_ENTRY_POINT_GROUP} / "
+            "插件必须声明且只声明一个类别"
+        )
+    if len(present) > 1:
+        raise ConfigError(
+            f"plugin must not mix {ENTRY_POINT_GROUP} and {ADVISOR_ENTRY_POINT_GROUP} / "
+            "一个包只允许声明一个类别"
+        )
+    category, group_name, group = present[0]
+    return category, _validated_entry_points(group.items(), category=category, group=group_name)
 
 
-def _parse_entry_points(text: str) -> tuple[WheelEntryPoint, ...]:
+def _parse_entry_points(text: str) -> tuple[str, tuple[WheelEntryPoint, ...]]:
     parser = ConfigParser(interpolation=None)
     parser.optionxform = str
     try:
         parser.read_string(text)
     except Exception as exc:
         raise ConfigError(f"invalid wheel entry_points.txt / wheel entry_points.txt 无效: {exc}") from exc
-    if not parser.has_section(ENTRY_POINT_GROUP):
-        raise ConfigError(f"wheel does not provide {ENTRY_POINT_GROUP} / wheel 未提供可执行仪器 entry point")
-    return _validated_entry_points(parser.items(ENTRY_POINT_GROUP))
+    present: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for category, group_name in CATEGORY_ENTRY_POINT_GROUPS.items():
+        if parser.has_section(group_name):
+            items = parser.items(group_name)
+            if items:
+                present.append((category, group_name, items))
+    if not present:
+        raise ConfigError(
+            f"wheel does not provide {ENTRY_POINT_GROUP} or {ADVISOR_ENTRY_POINT_GROUP} / "
+            "wheel 未提供插件类别 entry point"
+        )
+    if len(present) > 1:
+        raise ConfigError(
+            f"wheel must not mix {ENTRY_POINT_GROUP} and {ADVISOR_ENTRY_POINT_GROUP} / "
+            "一个包只允许声明一个类别"
+        )
+    category, group_name, items = present[0]
+    return category, _validated_entry_points(items, category=category, group=group_name)
 
 
 def _parse_generated_scripts(text: str) -> tuple[str, ...]:
     parser = ConfigParser(interpolation=None)
     parser.optionxform = str
-    parser.read_string(text)  # Instrument entry points already validated this document.
+    parser.read_string(text)  # Category entry points already validated this document.
     scripts: dict[str, str] = {}
     for group in ("console_scripts", "gui_scripts"):
         if not parser.has_section(group):
@@ -429,22 +477,36 @@ def _parse_generated_scripts(text: str) -> tuple[str, ...]:
     return tuple(sorted(scripts.values()))
 
 
-def _validated_entry_points(items: Iterable[tuple[str, object]]) -> tuple[WheelEntryPoint, ...]:
+def _validated_entry_points(
+    items: Iterable[tuple[str, object]],
+    *,
+    category: str,
+    group: str,
+) -> tuple[WheelEntryPoint, ...]:
     result: list[WheelEntryPoint] = []
     seen: set[str] = set()
+    label_zh = "仪器" if category == "instrument" else "advisor"
     for raw_name, raw_value in items:
         name = str(raw_name)
         value = str(raw_value)
         if not name or name.strip() != name or any(char.isspace() for char in name):
-            raise ConfigError(f"invalid instrument entry point name / 仪器 entry point 名称无效: {name!r}")
+            raise ConfigError(
+                f"invalid {category} entry point name / {label_zh} entry point 名称无效: {name!r}"
+            )
         if name in seen:
-            raise ConfigError(f"duplicate instrument entry point / 重复的仪器 entry point: {name}")
+            raise ConfigError(
+                f"duplicate {category} entry point / 重复的{label_zh} entry point: {name}"
+            )
         if not value.strip() or ":" not in value:
-            raise ConfigError(f"invalid instrument entry point target / 仪器 entry point 目标无效: {name}")
+            raise ConfigError(
+                f"invalid {category} entry point target / {label_zh} entry point 目标无效: {name}"
+            )
         seen.add(name)
-        result.append(WheelEntryPoint(name, value.strip()))
+        result.append(WheelEntryPoint(name, value.strip(), group))
     if not result:
-        raise ConfigError("plugin wheel has no instrument entry points / 插件 wheel 没有仪器 entry point")
+        raise ConfigError(
+            f"plugin wheel has no {category} entry points / 插件 wheel 没有{label_zh} entry point"
+        )
     return tuple(sorted(result, key=lambda item: item.driver_id))
 
 

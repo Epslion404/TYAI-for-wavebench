@@ -22,6 +22,12 @@ python -m wavebench plugin install <plugin-path>
 
 wheel 的 `.data/purelib` 和 `.data/platlib` 普通文件按目标环境的安装目录检查，其他 `.data` 重定位仍会拒绝。安装后的 RECORD 必须包含缓存 wheel 的全部普通文件、dist-info 文件及生成的启动器；缺少普通模块条目时，即使模块仍可导入，也不会接受安装或回滚结果。
 
+## advisor 类别
+
+advisor 包使用同一组命令；类别由包声明的 entry point 组（`wavebench.advisor`）决定，不需要额外参数。一个包首版只允许声明一个类别，同时声明 `wavebench.instruments` 与 `wavebench.advisor` 的包会被拒绝。
+
+advisor 的 postflight 按类别调用 `validate_advisor`；`plugin doctor --category advisor` 从打包元数据 `Requires-Dist` 报告缺失或版本不匹配的依赖，不联网。安装仍保持离线 `--no-deps`，不会替 advisor 下载运行时依赖。`plugin installed` 在存在 advisor 包时会增加 `category` 列；纯仪器安装的输出保持不变。
+
 ## 查看已安装插件
 
 ```bash
