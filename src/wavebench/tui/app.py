@@ -296,21 +296,34 @@ if _TEXTUAL_IMPORT_ERROR is None:
                 self._refresh_source(skip_if_busy=True)
 
         async def action_quit(self) -> None:
+            if self._shutting_down:
+                return
             self._shutting_down = True
             if self._refresh_timer is not None:
                 self._refresh_timer.stop()
             self.workers.cancel_all()
-            close_power = getattr(self.power_adapter, "close", None)
-            if close_power is not None:
-                close_power()
-            close_dmm = getattr(self.dmm_adapter, "close", None)
-            if close_dmm is not None:
-                close_dmm()
-            close_source = getattr(self.source_adapter, "close", None)
-            if close_source is not None:
-                close_source()
+            self._close_adapter_after_pending_io(self.power_adapter, self._power_adapter_lock)
+            self._close_adapter_after_pending_io(self.dmm_adapter, self._dmm_adapter_lock)
+            self._close_adapter_after_pending_io(self.source_adapter, self._source_adapter_lock)
             self._append_persistent_log_line("TUI session stopping / TUI 会话停止")
             self.exit()
+
+        def _close_adapter_after_pending_io(self, adapter: object, adapter_lock: Lock) -> None:
+            """Close an adapter after any operation that already holds its lock.
+
+            The close runs outside the UI thread: a blocked read must not make
+            quit unresponsive. Operations waiting for the lock see
+            ``_shutting_down`` after acquiring it and do not start I/O.
+            """
+            close = getattr(adapter, "close", None)
+            if close is None:
+                return
+
+            def _locked_close() -> None:
+                with adapter_lock:
+                    close()
+
+            Thread(target=_locked_close, name="wavebench-tui-close", daemon=True).start()
 
         async def _run_daemon_operation(self, operation: Callable[[], object]) -> object:
             loop = asyncio.get_running_loop()
@@ -444,6 +457,8 @@ if _TEXTUAL_IMPORT_ERROR is None:
         ) -> Callable[[], PowerPanelState]:
             def _locked_operation() -> PowerPanelState:
                 with self._power_adapter_lock:
+                    if self._shutting_down:
+                        raise RuntimeError("TUI is shutting down; adapter operation was not started")
                     return operation()
 
             return _locked_operation
@@ -454,6 +469,8 @@ if _TEXTUAL_IMPORT_ERROR is None:
         ) -> Callable[[], DmmPanelState]:
             def _locked_operation() -> DmmPanelState:
                 with self._dmm_adapter_lock:
+                    if self._shutting_down:
+                        raise RuntimeError("TUI is shutting down; adapter operation was not started")
                     return operation()
 
             return _locked_operation
@@ -508,6 +525,8 @@ if _TEXTUAL_IMPORT_ERROR is None:
         ) -> Callable[[], SourcePanelState]:
             def _locked_operation() -> SourcePanelState:
                 with self._source_adapter_lock:
+                    if self._shutting_down:
+                        raise RuntimeError("TUI is shutting down; adapter operation was not started")
                     return operation()
 
             return _locked_operation

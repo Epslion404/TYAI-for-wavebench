@@ -5,6 +5,8 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
+from unittest.mock import patch
 
 from wavebench.cli import build_parser
 from wavebench.config import (
@@ -526,6 +528,69 @@ class TuiPowerBusyBehaviorTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(app._refresh_timer)
             await app.action_quit()
             self.assertTrue(app._shutting_down)
+
+    async def test_quit_blocks_queued_power_write_and_serializes_close(self):
+        class BlockingPowerAdapter(FakePowerPanelAdapter):
+            def __init__(self):
+                super().__init__()
+                self.read_started = Event()
+                self.release_read = Event()
+                self.queued_write_runner_started = Event()
+                self.write_started = Event()
+                self.close_started = Event()
+                self.closed = Event()
+
+            def refresh_measurements(self):  # type: ignore[override]
+                self.read_started.set()
+                if not self.release_read.wait(timeout=1):
+                    raise TimeoutError("test did not release the blocking read")
+                return super().refresh_measurements()
+
+            def set_output(self, channel: int, enabled: bool):  # type: ignore[override]
+                self.write_started.set()
+                return super().set_output(channel, enabled)
+
+            def close(self):
+                self.close_started.set()
+                self.closed.set()
+
+        power = BlockingPowerAdapter()
+        app = tui_app.WaveBenchTuiApp(
+            power_adapter=power,
+            dmm_adapter=FakeDmmPanelAdapter(),
+            source_adapter=FakeSourcePanelAdapter(),
+            refresh_interval_s=60.0,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause(0.25)
+            read_worker = app.run_worker(
+                app._run_daemon_operation(app._wrap_power_operation(power.refresh_measurements)),
+                name="blocking-read",
+            )
+            self.assertTrue(await asyncio.to_thread(power.read_started.wait, 1))
+
+            def queued_write() -> object:
+                power.queued_write_runner_started.set()
+                return app._wrap_power_operation(lambda: power.set_output(1, True))()
+
+            write_worker = app.run_worker(
+                app._run_daemon_operation(queued_write),
+                name="queued-write",
+            )
+            self.assertTrue(await asyncio.to_thread(power.queued_write_runner_started.wait, 1))
+            await pilot.pause(0.02)
+
+            with patch.object(app, "exit") as exit_app:
+                await app.action_quit()
+            exit_app.assert_called_once()
+            self.assertTrue(app._shutting_down)
+            self.assertTrue(read_worker.is_cancelled)
+            self.assertTrue(write_worker.is_cancelled)
+            self.assertFalse(power.close_started.is_set())
+
+            power.release_read.set()
+            self.assertTrue(await asyncio.to_thread(power.closed.wait, 1))
+            self.assertFalse(power.write_started.is_set())
 
     async def test_layout_keeps_user_input_controls_in_scroll_area(self):
         app = tui_app.build_app(fake=True, refresh_interval_s=60.0)
