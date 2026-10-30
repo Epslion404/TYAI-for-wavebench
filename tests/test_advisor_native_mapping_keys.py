@@ -258,6 +258,15 @@ def test_colliding_question_ids_still_produce_an_artifact(preview_only, tmp_path
     }
     state = DecisionState(fields={"request": "keep"})
     client = None if preview_only else _Client()
+    marker = {"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"}
+    preview = build_preview(
+        model="fake.v1",
+        state=state.as_payload(),
+        questions={qid: spec.as_payload() for qid, spec in questions.items()},
+    )
+    assert preview.payload["questions"] == marker
+    assert preview.as_dict()["payload"]["questions"] == marker
+
     artifact = advise(
         model="fake.v1",
         client=client,
@@ -275,7 +284,6 @@ def test_colliding_question_ids_still_produce_an_artifact(preview_only, tmp_path
         ),
     )
 
-    marker = {"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"}
     assert artifact.questions == marker
     assert artifact.status == ("preview_only" if preview_only else "ok")
     if client is not None:
