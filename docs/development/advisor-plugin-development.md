@@ -121,6 +121,8 @@ Decision artifact 的 `reason`、requested model 与 reported model 在构造时
 
 Python mapping 中的敏感键（忽略大小写，`-` 归一为 `_`，包含 `api_key`、`apikey`、`authorization`、`credential`、`password`、`secret` 或 `token`）对应的**整个值**替换为 `[REDACTED]`，不解析该值。普通文本继续识别 `token=...` 等标签、带引号的 Bearer 值和转义引号；未闭合的值只遮蔽本行，无引号的值以空白为界，逗号或花括号不会结束凭据。
 
+mapping 的**字段名本身**也按同一文本规则脱敏，并递归覆盖嵌套 mapping 与数组；是否遮蔽整个值仍由**原字段名**判定。例如 `{"token=AUDIT_DUMMY": "private"}` 的键和值都会变为 `[REDACTED]`。不同原字段名（包括非字符串键的 `str()` 结果）脱敏后撞名，或与已有固定 marker 键撞名时，该层 mapping 整体替换为 `[REDACTED_ENCODED_TEXT]`，不覆盖、不择一，也不与 marker 键合并；外层同级的普通字段保留。未触发文本脱敏的普通字段名保持原样。
+
 完整 JSON 文本（去掉前导 JSON 空白后以 `"`、`{` 或 `[` 开始）在预算内通过标准 JSON 解码、敏感键脱敏再编码；例如 key 的 `\u0061uthorization` 会按 `authorization` 处理。每一层 JSON string 的类型与编码层数保持不变，输入 `str` 不会变成 Python dict。预算内没有脱敏变化的合法 JSON 保留原始字节；发生变化的 JSON 用标准 `json.dumps(..., ensure_ascii=True)` 重编码，所以空白和 Unicode 转义形式可能改变，非敏感字段的内容保留。
 
 解码后的 JSON key 本身也是文本，使用同一共享预算与脱敏规则；例如 `{"token=dummy": "private"}` 的字段名和值都会变为 `[REDACTED]`。是否遮蔽整个值仍由原字段名判定。若两个不同 key 脱敏后成为同名，整个原始字符串替换为 `[REDACTED_ENCODED_TEXT]`，不选择其中一个值或静默丢弃字段；同字符串中的普通诊断也会被省略。
