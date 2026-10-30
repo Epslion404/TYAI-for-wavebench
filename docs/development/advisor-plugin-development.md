@@ -2,7 +2,7 @@
 
 本页适用于为 WaveBench 提供 **advisor** 实现的开发者。advisor 接收应用状态与封闭问题集，输出 typed judgment（选项、分数、概率），供操作者参考；它不做仪器 I/O，也不决定任何安全或质量结论。
 
-> 实施状态：`advisor` 类别已在开发线实现（类别与注册表、内置确定性基线、`advisor ask`），**未随正式版本发布**；包内安装与生命周期路径尚未实现（[#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19) 单独跟踪）。合同与裁决见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)（`Draft`）。
+> 实施状态：`advisor` 类别已在开发线实现（类别与注册表、内置确定性基线、`advisor ask`，以及包内安装与生命周期，[#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19)），**未随正式版本发布**。合同与裁决见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)（`Draft`）。
 
 ## 类别边界
 
@@ -77,6 +77,20 @@ python -m wavebench plugin doctor --category advisor --include-entry-points
 ```
 
 `--category` 默认 `instrument`；advisor 类别下 `--kind` 与 `--load` 会报错，因为它们只对仪器插件有意义。
+
+## 打包与安装
+
+advisor 包与仪器插件共用受管生命周期：`plugin package check`、`install`、`installed`、`upgrade`、`downgrade`、`remove`、`recover`。类别由包声明的 entry point 组决定，不需要额外参数；同时声明 `wavebench.instruments` 与 `wavebench.advisor` 的包会被拒绝。
+
+- 安装保持离线 `--no-deps`，不会联网下载 advisor 的运行时依赖。
+- postflight 按类别调用 `validate_advisor`；非法 API 版本、capability 或 egress 声明会让安装失败并回滚。
+- `plugin doctor --category advisor` 从打包元数据 `Requires-Dist` 读取依赖，报告缺失或版本不匹配，不联网。
+
+```bash
+python -m wavebench plugin package check dist/wavebench_example_advisor-0.1.0-py3-none-any.whl
+python -m wavebench plugin install dist/wavebench_example_advisor-0.1.0-py3-none-any.whl
+python -m wavebench plugin doctor --category advisor --include-entry-points
+```
 
 ## Core 拥有的部分
 
@@ -169,8 +183,8 @@ python -m wavebench advisor ask --state state.json --config wavebench.toml --pre
 ## 兼容策略
 
 - `advisor` 使用独立版本门 `wavebench.advisor.v1`；调整契约时提升该门，不动 `wavebench.instrument.*`。
-- 现有仪器插件契约、entry point 组与账本记录不受 advisor 类别影响；`plugin list` 不带 `--category` 时行为与输出保持仪器语义。
-- 包内安装、依赖校验与漂移检测尚未覆盖 advisor 包，因此本阶段的 advisor 实现以开发线加载与内置基线验证为准，不能据此声明生产支持。
+- 仪器插件的 entry point 组、安装路径与 CLI 输出保持不变；账本记录新增可选的 `category` 字段，旧记录按 `instrument` 读取。`plugin list` 不带 `--category` 时行为与输出保持仪器语义。
+- 包内安装、postflight（`validate_advisor`）、账本/漂移检测与依赖 doctor 已覆盖 advisor 包；仍应逐包验证真实 advisor 的运行时依赖与外部服务，不能据此声明所有第三方 advisor 的生产支持。
 
 ## 相关页面
 

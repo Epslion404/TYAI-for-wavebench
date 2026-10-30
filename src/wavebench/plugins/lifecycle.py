@@ -22,12 +22,14 @@ from wavebench.services.file_lock import FileLock, FileLockBusy, FileLockError, 
 from wavebench.services.platform_io import atomic_write_json, ensure_private_directory
 
 from .package_inspect import (
+    CATEGORY_ENTRY_POINT_GROUPS,
     PluginPackage,
     WheelEntryPoint,
     build_subprocess_environment,
     inspect_plugin_package,
     inspect_plugin_wheel,
 )
+from .builtin import BUILTIN_ADVISORS
 from .install_paths import installation_path_key
 
 
@@ -118,6 +120,7 @@ class InstalledPlugin:
     status: str
     wheel_sha256: str | None = None
     detail: str = ""
+    category: str = "instrument"
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,7 @@ class LifecycleResult:
     driver_id: str
     distribution: str
     version: str
+    category: str = "instrument"
 
 
 class PluginLifecycle:
@@ -277,6 +281,7 @@ print(json.dumps(payload, sort_keys=True))
                     status=status,
                     wheel_sha256=record["wheel_sha256"],
                     detail=detail,
+                    category=self._record_category(record),
                 )
                 for entry in self._record_entry_points(record)
             )
@@ -292,6 +297,7 @@ print(json.dumps(payload, sort_keys=True))
                             version=str(item["version"]),
                             status="unmanaged",
                             detail="distribution is not managed by WaveBench / 分发不受 WaveBench 管理",
+                            category=str(item.get("category") or "instrument"),
                         )
                     )
         return tuple(sorted(results, key=lambda item: (item.driver_id, item.distribution)))
@@ -316,6 +322,7 @@ print(json.dumps(payload, sort_keys=True))
                 driver_id=package.driver_ids[0],
                 distribution=package.distribution,
                 version=package.version,
+                category=package.category,
             )
             if dry_run:
                 environment = self.environment()
@@ -354,6 +361,7 @@ print(json.dumps(payload, sort_keys=True))
                 current.driver_id,
                 current.distribution,
                 current.version,
+                category=current.category,
             )
         with self._locked():
             self._assert_no_pending_journal()
@@ -388,6 +396,7 @@ print(json.dumps(payload, sort_keys=True))
             driver_id,
             record["distribution"],
             record["version"],
+            category=self._record_category(record),
         )
 
     def recover(self) -> LifecycleResult:
@@ -455,6 +464,7 @@ print(json.dumps(payload, sort_keys=True))
                 driver_id,
                 package.distribution,
                 package.version,
+                category=package.category,
             )
             if dry_run:
                 return result
@@ -648,6 +658,7 @@ print(json.dumps(payload, sort_keys=True))
             raise ConfigError("invalid plugin transaction journal / 插件事务日志无效")
         record = self._record(package)
         driver_id = self._record_entry_points(record)[0].driver_id
+        category = self._record_category(record)
         record_key = record["normalized_distribution"]
         current_ledger = self._load_ledger(environment)
         before_record_raw = self._ledger_plugins(before).get(record_key)
@@ -667,7 +678,7 @@ print(json.dumps(payload, sort_keys=True))
             if current_ledger != before or not before_matches:
                 return self._recovery_required()
             self._remove_journal()
-            return LifecycleResult("recovered-before-mutation", driver_id, record["distribution"], record["version"])
+            return LifecycleResult("recovered-before-mutation", driver_id, record["distribution"], record["version"], category=category)
 
         if stage == "ledger_committed":
             if operation == "remove":
@@ -678,7 +689,7 @@ print(json.dumps(payload, sort_keys=True))
             if not desired_matches or not ledger_matches:
                 return self._recovery_required()
             self._remove_journal()
-            return LifecycleResult("recovered-after-commit", driver_id, record["distribution"], record["version"])
+            return LifecycleResult("recovered-after-commit", driver_id, record["distribution"], record["version"], category=category)
 
         if stage in {"pip_started", "pip_finished", "postflight_finished"}:
             if desired_matches:
@@ -691,11 +702,11 @@ print(json.dumps(payload, sort_keys=True))
                     updated = self._with_record(before, record)
                 self._write_json(self.ledger_path, updated)
                 self._remove_journal()
-                return LifecycleResult("recovered-to-desired", driver_id, record["distribution"], record["version"])
+                return LifecycleResult("recovered-to-desired", driver_id, record["distribution"], record["version"], category=category)
             if before_matches:
                 self._write_json(self.ledger_path, before)
                 self._remove_journal()
-                return LifecycleResult("recovered-to-before", driver_id, record["distribution"], record["version"])
+                return LifecycleResult("recovered-to-before", driver_id, record["distribution"], record["version"], category=category)
 
         if stage == "rollback_started":
             if not before_matches:
@@ -709,7 +720,7 @@ print(json.dumps(payload, sort_keys=True))
                 self._update_journal(journal, "rollback_started")
             self._write_json(self.ledger_path, before)
             self._remove_journal()
-            return LifecycleResult("recovered-after-rollback", driver_id, record["distribution"], record["version"])
+            return LifecycleResult("recovered-after-rollback", driver_id, record["distribution"], record["version"], category=category)
         return self._recovery_required()
 
     @staticmethod
@@ -764,6 +775,15 @@ print(json.dumps(payload, sort_keys=True))
         return not self._distribution_inventory(record["distribution"])
 
     def _assert_package_identity(self, package: PluginPackage) -> None:
+        if package.category == "advisor":
+            builtin_advisor_ids = {plugin.advisor_id for plugin in BUILTIN_ADVISORS}
+            for advisor_id in package.driver_ids:
+                if advisor_id in builtin_advisor_ids:
+                    raise ConfigError(
+                        "external advisor conflicts with built-in advisor / "
+                        f"外置 advisor 与内置 advisor 冲突: {advisor_id}"
+                    )
+            return
         builtin_references = {
             reference
             for descriptor in BUILTIN_INSTRUMENTS
@@ -996,6 +1016,7 @@ print(json.dumps({
             "distribution": package.distribution,
             "normalized_distribution": package.normalized_distribution,
             "version": package.version,
+            "category": package.category,
             "entry_points": [
                 {"driver_id": entry.driver_id, "value": entry.value}
                 for entry in package.entry_points
@@ -1041,6 +1062,7 @@ from wavebench.instruments.rf_source_capabilities import validate_rf_source_plug
     expected_metadata_sha256,
     expected_installed_record_sha256,
     wheel_path,
+    category,
 ) = __import__("sys").argv[1:]
 try:
     expected_entries = tuple(
@@ -1078,35 +1100,64 @@ if installed_metadata_hash(".dist-info/METADATA") != expected_metadata_sha256:
 installed_record_sha256 = installed_metadata_hash(".dist-info/RECORD")
 if expected_installed_record_sha256 and installed_record_sha256 != expected_installed_record_sha256:
     raise SystemExit("installed RECORD hash mismatch")
-entries = [entry for entry in dist.entry_points if entry.group == "wavebench.instruments"]
+entry_group = {
+    "instrument": "wavebench.instruments",
+    "advisor": "wavebench.advisor",
+}.get(category)
+if entry_group is None:
+    raise SystemExit(f"unsupported plugin category: {category!r}")
+category_groups = {"wavebench.instruments", "wavebench.advisor"}
+installed_groups = {
+    entry.group for entry in dist.entry_points if entry.group in category_groups
+}
+if len(installed_groups) > 1:
+    raise SystemExit("installed package mixes plugin categories")
+entries = [entry for entry in dist.entry_points if entry.group == entry_group]
 actual_entries = tuple(sorted((entry.name, entry.value) for entry in entries))
 if actual_entries != expected_entries:
     raise SystemExit("installed entry point mismatch")
-for expected_driver, expected_value in expected_entries:
-    entry = next(
-        item
-        for item in entries
-        if item.name == expected_driver and item.value == expected_value
-    )
-    descriptor = descriptor_from_entry_point(entry.load())
-    if descriptor.driver_id != expected_driver or descriptor.aliases:
-        raise SystemExit("descriptor identity mismatch")
-    descriptor = descriptor.with_distribution(
-        distribution=dist.metadata.get("Name", ""),
-        version=dist.version,
-        source=f"entry_point:{expected_driver}",
-        origin="entry_point",
-    )
-    _validate_descriptor(descriptor, expected_kind=None)
-    validate_source_conformance_distribution(descriptor, dist)
-    validate_source_plugin_dependencies(
-        descriptor,
-        tuple(dist.metadata.get_all("Requires-Dist") or ()),
-    )
-    validate_rf_source_plugin_dependencies(
-        descriptor,
-        tuple(dist.metadata.get_all("Requires-Dist") or ()),
-    )
+if category == "instrument":
+    for expected_driver, expected_value in expected_entries:
+        entry = next(
+            item
+            for item in entries
+            if item.name == expected_driver and item.value == expected_value
+        )
+        descriptor = descriptor_from_entry_point(entry.load())
+        if descriptor.driver_id != expected_driver or descriptor.aliases:
+            raise SystemExit("descriptor identity mismatch")
+        descriptor = descriptor.with_distribution(
+            distribution=dist.metadata.get("Name", ""),
+            version=dist.version,
+            source=f"entry_point:{expected_driver}",
+            origin="entry_point",
+        )
+        _validate_descriptor(descriptor, expected_kind=None)
+        validate_source_conformance_distribution(descriptor, dist)
+        validate_source_plugin_dependencies(
+            descriptor,
+            tuple(dist.metadata.get_all("Requires-Dist") or ()),
+        )
+        validate_rf_source_plugin_dependencies(
+            descriptor,
+            tuple(dist.metadata.get_all("Requires-Dist") or ()),
+        )
+elif category == "advisor":
+    from wavebench.plugins.registry import advisor_plugin_from_entry_point
+    for expected_driver, expected_value in expected_entries:
+        entry = next(
+            item
+            for item in entries
+            if item.name == expected_driver and item.value == expected_value
+        )
+        try:
+            plugin = advisor_plugin_from_entry_point(entry)
+        except Exception as exc:
+            raise SystemExit(f"advisor validation failed: {exc}")
+        if plugin.advisor_id != expected_driver:
+            raise SystemExit("advisor identity mismatch")
+else:
+    raise SystemExit(f"unsupported plugin category: {category!r}")
 installation_paths = wheel_installation_paths(__import__("pathlib").Path(wheel_path), expected_name)
 with zipfile.ZipFile(wheel_path) as archive:
     record_names = [name for name in archive.namelist() if name.endswith(".dist-info/RECORD")]
@@ -1200,6 +1251,7 @@ print(json.dumps({
                     record["metadata_sha256"],
                     "" if rollback_reinstall else record["installed_record_sha256"],
                     str(self._record_wheel(record)),
+                    self._record_category(record),
                 ]
             )
         except ConfigError as exc:
@@ -1221,9 +1273,15 @@ import sysconfig
 
 paths = list(dict.fromkeys((sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"])))
 target_name = __import__("sys").argv[1]
+category_by_group = {
+    "wavebench.instruments": "instrument",
+    "wavebench.advisor": "advisor",
+}
 result = []
 for dist in distributions(path=paths):
-    entries = [entry for entry in dist.entry_points if entry.group == "wavebench.instruments"]
+    entries = [entry for entry in dist.entry_points if entry.group in category_by_group]
+    categories = sorted({category_by_group[entry.group] for entry in entries})
+    category = categories[0] if len(categories) == 1 else ("mixed" if categories else "")
     name = dist.metadata.get("Name", "")
     normalized_name = re.sub(r"[-_.]+", "-", name).lower()
     if target_name:
@@ -1269,7 +1327,11 @@ for dist in distributions(path=paths):
         "name": name,
         "normalized_name": normalized_name,
         "version": dist.version,
-        "entry_points": [{"name": entry.name, "value": entry.value} for entry in entries],
+        "category": category,
+        "entry_points": [
+            {"name": entry.name, "value": entry.value, "group": entry.group}
+            for entry in entries
+        ],
         "integrity": integrity,
         "metadata_sha256": metadata_hash(".dist-info/METADATA"),
         "record_sha256": metadata_hash(".dist-info/RECORD"),
@@ -1509,6 +1571,7 @@ print(json.dumps({
             "distribution": legacy["distribution"],
             "normalized_distribution": legacy["normalized_distribution"],
             "version": legacy["version"],
+            "category": "instrument",
             "entry_points": [
                 {
                     "driver_id": legacy["driver_id"],
@@ -1540,6 +1603,9 @@ print(json.dumps({
         )
         if any(not isinstance(value.get(field), str) for field in required):
             raise ConfigError("invalid managed plugin record / 受管插件记录无效")
+        category = value.get("category", "instrument")
+        if not isinstance(category, str) or category not in CATEGORY_ENTRY_POINT_GROUPS:
+            raise ConfigError("invalid managed plugin category / 受管插件类别无效")
         entries = value.get("entry_points")
         if not isinstance(entries, list) or not entries:
             raise ConfigError("invalid managed plugin record / 受管插件记录无效")
@@ -1559,13 +1625,16 @@ print(json.dumps({
                 or ":" not in entry_point
             ):
                 raise ConfigError("invalid managed plugin record / 受管插件记录无效")
-            points.append(WheelEntryPoint(driver_id, entry_point))
+            points.append(
+                WheelEntryPoint(driver_id, entry_point, CATEGORY_ENTRY_POINT_GROUPS[category])
+            )
         ordered = tuple(sorted(points, key=lambda entry: entry.driver_id))
         if tuple(points) != ordered or len({entry.driver_id for entry in points}) != len(points):
             raise ConfigError("invalid managed plugin record / 受管插件记录无效")
         record = {field: str(value[field]) for field in required}
         if record["normalized_distribution"] != canonicalize_name(record["distribution"]):
             raise ConfigError("invalid managed plugin record / 受管插件记录无效")
+        record["category"] = category
         record["entry_points"] = [
             {"driver_id": entry.driver_id, "value": entry.value}
             for entry in points
@@ -1573,9 +1642,17 @@ print(json.dumps({
         return record
 
     @staticmethod
-    def _record_entry_points(record: dict[str, object]) -> tuple[WheelEntryPoint, ...]:
+    def _record_category(record: dict[str, object]) -> str:
+        category = record.get("category", "instrument")
+        if not isinstance(category, str) or category not in CATEGORY_ENTRY_POINT_GROUPS:
+            raise ConfigError("invalid managed plugin category / 受管插件类别无效")
+        return category
+
+    @classmethod
+    def _record_entry_points(cls, record: dict[str, object]) -> tuple[WheelEntryPoint, ...]:
+        group = CATEGORY_ENTRY_POINT_GROUPS[cls._record_category(record)]
         return tuple(
-            WheelEntryPoint(str(entry["driver_id"]), str(entry["value"]))
+            WheelEntryPoint(str(entry["driver_id"]), str(entry["value"]), group)
             for entry in record["entry_points"]
         )
 
@@ -1609,6 +1686,11 @@ print(json.dumps({
         package: PluginPackage,
         record: dict[str, object],
     ) -> None:
+        if package.category != self._record_category(record):
+            raise ConfigError(
+                "replacement package category does not match managed plugin / "
+                "替换包类别与受管插件不一致"
+            )
         expected = set(self._record_entry_point_pairs(record))
         actual = {(entry.driver_id, entry.value) for entry in package.entry_points}
         if not expected <= actual:
