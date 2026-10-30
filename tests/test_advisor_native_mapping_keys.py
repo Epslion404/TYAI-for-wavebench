@@ -10,6 +10,7 @@ from wavebench.services.advisor_consent import build_preview, redact_sensitive
 from wavebench.services.advisor_seam import (
     AdvisorAccess,
     DecisionState,
+    QuestionSpec,
     RoutingOption,
     advise,
     build_questions,
@@ -122,7 +123,7 @@ def test_native_keys_are_redacted_recursively_in_nested_objects_and_arrays():
 def test_colliding_native_keys_replace_that_mapping_explicitly(value):
     safe = redact_sensitive(value)
 
-    assert safe == "[REDACTED_ENCODED_TEXT]"
+    assert safe == {"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"}
     assert redact_sensitive(safe) == safe
 
 
@@ -134,7 +135,10 @@ def test_nested_native_key_collision_keeps_sibling_fields():
         }
     )
 
-    assert safe == {"outer": "[REDACTED_ENCODED_TEXT]", "diagnosis": "keep"}
+    assert safe == {
+        "outer": {"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"},
+        "diagnosis": "keep",
+    }
     assert redact_sensitive(safe) == safe
 
 
@@ -216,7 +220,9 @@ def test_native_key_collision_is_explicit_across_preview_client_and_artifact(tmp
         }
     )
     preview = _preview(state)
-    assert preview.payload["state"]["fields"]["params"] == "[REDACTED_ENCODED_TEXT]"
+    assert preview.payload["state"]["fields"]["params"] == {
+        "[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]",
+    }
 
     client = _Client()
     artifact = _advise(state, client)
@@ -239,3 +245,43 @@ def test_native_key_collision_is_explicit_across_preview_client_and_artifact(tmp
         "[REDACTED_ENCODED_TEXT]" in boundaries[name]
         for name in ("preview", "client", "artifact", "artifact_file")
     )
+
+
+@pytest.mark.parametrize("preview_only", [True, False], ids=["preview", "granted"])
+def test_colliding_question_ids_still_produce_an_artifact(preview_only, tmp_path):
+    # These are legitimate question ids, not credentials. Both hit the bounded
+    # encoded-text marker, so the collision must stay a mapping instead of
+    # turning `questions` into a string that `dict(...)` cannot consume.
+    questions = {
+        "a\\u0041": QuestionSpec("choice", "pick", ("scope",)),
+        "b\\u0042": QuestionSpec("choice", "pick", ("scope",)),
+    }
+    state = DecisionState(fields={"request": "keep"})
+    client = None if preview_only else _Client()
+    artifact = advise(
+        model="fake.v1",
+        client=client,
+        state=state,
+        questions=questions,
+        options=OPTIONS,
+        policy=ThresholdPolicy(),
+        access=AdvisorAccess(
+            enabled=True,
+            interactive=not preview_only,
+            preview_only=preview_only,
+            accepted=not preview_only,
+            registered_endpoint_hosts=("example.invalid",),
+            registered_state_fields=("request",),
+        ),
+    )
+
+    marker = {"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"}
+    assert artifact.questions == marker
+    assert artifact.status == ("preview_only" if preview_only else "ok")
+    if client is not None:
+        assert client.calls[0]["questions"] == marker
+    assert json.loads(artifact.to_json())["questions"] == marker
+
+    path = write_artifact(artifact, run_dir=tmp_path, advisor_id="fake")
+    assert path is not None
+    assert "[REDACTED_KEY_COLLISION]" in path.read_text(encoding="utf-8")

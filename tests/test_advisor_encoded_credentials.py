@@ -451,7 +451,8 @@ def test_marker_plus_diagnostic_suffix_remains_readable_and_stable(count, tmp_pa
 
 
 @pytest.mark.parametrize("marker", [
-    "[REDACTED]", "[REDACTED_JSON_LIMIT]", "[REDACTED_ENCODED_TEXT]", "[REDACTED_UNTRUSTED_TEXT]",
+    "[REDACTED]", "[REDACTED_JSON_LIMIT]", "[REDACTED_ENCODED_TEXT]", "[REDACTED_KEY_COLLISION]",
+    "[REDACTED_UNTRUSTED_TEXT]",
 ])
 def test_only_exact_known_markers_bypass_json_interpretation(marker, monkeypatch):
     def forbidden(*args, **kwargs):
