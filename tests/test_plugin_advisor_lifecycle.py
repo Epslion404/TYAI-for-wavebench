@@ -248,6 +248,49 @@ def test_advisor_upgrade_preserves_category(tmp_path):
     ] == [("example.advisor", "advisor", "0.2.0", "healthy")]
 
 
+def test_advisor_drift_is_reported(tmp_path):
+    python = _target_venv(tmp_path)
+    wheel = _advisor_wheel(tmp_path)
+    lifecycle = PluginLifecycle(python_executable=python)
+    lifecycle.install(wheel)
+    module = Path(lifecycle.environment().purelib) / "wavebench_example_advisor/__init__.py"
+    module.write_text(module.read_text(encoding="utf-8") + "\n# drifted\n", encoding="utf-8")
+
+    statuses = lifecycle.installed()
+
+    assert [(item.driver_id, item.category, item.status) for item in statuses] == [
+        ("example.advisor", "advisor", "drifted")
+    ]
+
+
+def test_advisor_recover_commits_desired_state(tmp_path):
+    python = _target_venv(tmp_path)
+    wheel = _advisor_wheel(tmp_path)
+    lifecycle = PluginLifecycle(python_executable=python)
+    environment = lifecycle.environment()
+    before = lifecycle.empty_ledger(environment)
+    with lifecycle._inspected_input(wheel) as package:
+        cached = lifecycle._cache_wheel(package)
+        record = lifecycle._package_record(package, cached)
+    journal = lifecycle._journal(
+        environment=environment,
+        operation="install",
+        stage="pip_finished",
+        before_ledger=before,
+        package=record,
+    )
+    lifecycle.state_dir.mkdir(mode=0o700, exist_ok=True)
+    lifecycle._write_json(lifecycle.journal_path, journal)
+    lifecycle._pip_install(cached)
+
+    result = lifecycle.recover()
+
+    assert result.status == "recovered-to-desired"
+    assert result.category == "advisor"
+    assert lifecycle.info("example.advisor").category == "advisor"
+    assert not lifecycle.journal_path.exists()
+
+
 def test_advisor_postflight_rejects_invalid_metadata(tmp_path):
     python = _target_venv(tmp_path)
     wheel = _advisor_wheel(tmp_path, capabilities=("scope.idn",))
