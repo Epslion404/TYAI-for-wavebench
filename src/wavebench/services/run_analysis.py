@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,16 @@ def evaluate_expect(values: dict[str, Any], expect: dict[str, dict[str, float]])
                 "limits": limits,
             }
             failures.append(f"{metric}: not numeric")
+            continue
+        if not math.isfinite(value):
+            # Keep the artifact JSON-compatible; the reason and limits carry the diagnosis.
+            checks[metric] = {
+                "status": "failed",
+                "reason": "not_finite",
+                "value": str(value),
+                "limits": limits,
+            }
+            failures.append(f"{metric}: not finite")
             continue
         status = "ok"
         reasons: list[str] = []
