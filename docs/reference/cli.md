@@ -27,7 +27,7 @@ python -m wavebench --json <domain> <command> ...
 
 `advisor ask` 是离线决策入口：它读取本地 state fixture 与 `[advisor]` 配置，默认只打印脱敏后的预览，不发起任何外发；只有显式 `--accept-external-state` 且通过同意门（endpoint 与字段白名单）时才可能把状态发出本机，`--run-dir` 指定 decision artifact 的落点。它不连接仪器，也不参与写路径、安全门、质量门或 `auto_recover`。
 
-实现状态：开发线已实现，未随正式版本发布。`advisor` 包的生命周期（`plugin package check` / `install` / `installed` / `remove` / `upgrade` / `downgrade` / `recover`）由插件域管理，类别由 `wavebench.advisor` entry point 推断；用法见[管理插件](../how-to/manage-plugins.md)。合同见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)，实现流程见[advisor 插件开发](../development/advisor-plugin-development.md)。
+实现状态：开发线已实现，未随正式版本发布。`advisor` 包的生命周期（`plugin package check` / `install` / `installed` / `remove` / `upgrade` / `downgrade` / `recover`）由插件域管理，类别由 `wavebench.advisor` entry point 推断；用法见[管理插件](../how-to/manage-plugins.md)。合同状态见 [RFC 索引](../rfcs/index.md)，实现流程见[advisor 插件开发](../development/advisor-plugin-development.md)。
 
 ## JSON 输出与退出码
 
