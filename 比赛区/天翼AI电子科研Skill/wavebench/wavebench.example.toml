@@ -23,18 +23,12 @@ backend = "lan"
 # rtscts = false
 # dsrdtr = false
 
-# CAN and CAN-FD are optional transports: install `wavebench[can]`, set
-# backend = "can" or "can-fd", and use the bus channel as resource (for
-# example `can0` or a python-can virtual channel).  These settings do not
-# make CAN a SCPI transport: the selected driver must declare a raw-frame
-# protocol and the CAN backend explicitly.
-# can_interface = "socketcan"
-# can_arbitration_id = 256
-# can_extended_id = false
-# can_bitrate = 500000
-# can_sample_point = 0.875
-# can_data_bitrate = 2000000       # CAN-FD only
-# can_data_sample_point = 0.8      # CAN-FD only
+# Use "can" only when the selected descriptor declares that backend (dev line).
+# Requires `pip install wavebench[can]`.  The resource must be `can://<channel>`.
+# CAN options come from the descriptor's [options] table (can_bitrate, can_fd,
+# can_arbitration_id, can_extended_id, can_max_frame_bytes, can_read_timeout_ms).
+# backend = "can"
+# resource = "can://can0"
 
 # VISA resource string for the oscilloscope.
 # Replace the IP address with your oscilloscope LAN address. For the external

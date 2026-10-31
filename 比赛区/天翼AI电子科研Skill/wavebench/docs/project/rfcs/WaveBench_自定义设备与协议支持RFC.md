@@ -1,6 +1,6 @@
 # 自定义设备与协议支持 RFC
 
-- 状态：`Draft`（2026-10-02）
+- 状态：`Draft`（2026-10-02；阶段 1–6 实现状态见表格与正文，2026-10-31 同步）
 - 目标：让 WaveBench 以**插件与声明式描述**接入非 SCPI 设备与自定义协议（串口设备、CAN／CAN-FD、私有帧协议），而不把总线细节或厂商差异写进 Core 业务层。
 - 关联：tracker 上的 `#1`／`#2`／`#3`／`#4`／`#5`／`#6`；现状基线与执行清单见 [自定义设备与协议支持规范](../design/WaveBench_自定义设备与协议支持规范.md) 与 [同名 TODO](../design/WaveBench_自定义设备与协议支持TODO.md)。
 - 说明：本文件在 `Draft` 状态下不构成对外承诺；「实现状态」以落地后的 Reference 与提交为准。
@@ -57,10 +57,10 @@
 
 ## 3. 拟新增的公共合同
 
-1. **按帧读写（append-only）**：在 `InstrumentTransport` 上新增 `send_frame(bytes)`／`read_exact(n)`／`read_until(delimiter)`，复用既有 `ReplayPolicy`、session 健康与 resource lease；既有方法与签名不变。
-2. **后端分派查表**：`_open_transport` 改为「backend → 构造器」查表，`descriptor.backends` 决定可用集合；未声明的后端仍在真实 I/O 前失败。
-3. **声明式协议描述（TOML）**：`framing`（`definite-block`／`delimited`／`fixed`／`length-field`）、`magic_hex`、`header_bytes`、`length_field`（偏移／宽度／字节序）、`checksum`（`none`／`crc16/arc` 等）、`max_frame_bytes`、`inter_frame_ms`、`response_timeout_ms`、`sample_type`／`endian` 白名单、帧字段到 payload 的映射。形状对齐现有声明式 SCPI 插件与技能包已实现的 JSON manifest。
-4. **资源 scheme**：串口沿用 VISA 风格的 `ASRL::`（或 `serial://`），CAN 用 `can://<channel>`；descriptor 通过 `resource_schemes` 声明。
+1. **按帧读写（append-only）**：在 `InstrumentTransport` 上新增 `send_frame(bytes)`／`read_exact(n)`／`read_until(delimiter)`，复用既有 `ReplayPolicy`、session 健康与 resource lease；既有方法与签名不变。**已落地**（master `f7ce0a6`，串口实现；`can` 后端实现 `read_exact` 为精确帧长语义，`read_until` 报 `raw_frame_unsupported`）。
+2. **后端分派查表**：`_open_transport` 改为「backend → 构造器」查表，`descriptor.backends` 决定可用集合；未声明的后端仍在真实 I/O 前失败。**已落地**；`can` 后端于 2026-10-31 注册。
+3. **声明式协议描述（TOML）**：`framing`（`definite-block`／`delimited`／`fixed`／`length-field`）、`magic_hex`、`header_bytes`、`length_field`（偏移／宽度／字节序）、`checksum`（`none`／`crc16/arc` 等）、`max_frame_bytes`、`inter_frame_ms`、`response_timeout_ms`、`sample_type`／`endian` 白名单、帧字段到 payload 的映射。形状对齐现有声明式 SCPI 插件与技能包已实现的 JSON manifest。**已落地**（fixed/length_prefixed/delimiter + CRC16/Modbus + 最大帧长 + 响应超时 + 帧间隔）；2026-10-31 补充 `escape_hex`（delimiter 单字节转义）、流拆帧 `extract_stream_frame`、请求映射 `[[protocol.requests]]` 与 `encode_request`。
+4. **资源 scheme**：串口沿用 VISA 风格的 `ASRL::`（或 `serial://`），CAN 用 `can://<channel>`；descriptor 通过 `resource_schemes` 声明。**已落地**：`can://<channel>` 由 `CanTransport` 验证。
 
 ## 4. 分期实施
 
@@ -72,6 +72,8 @@
 | 4 | CAN／CAN-FD 后端（可选 extra + 虚拟总线测试） | 阶段 1、2 |
 | 5 | 只读探测与 `doctor`／`discover` 接入（不依赖 kind 的路径） | 阶段 3 |
 | 6 | 文档与验收（canonical Reference、CHANGELOG、实机验收清单） | 全部 |
+
+阶段状态：1–6 已于 2026-10-31 实现（阶段 6 的实机验收仍待授权；离线验收通过）。
 
 ## 5. 验收门
 

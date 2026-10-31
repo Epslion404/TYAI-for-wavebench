@@ -15,7 +15,7 @@ def test_comparison_uses_saved_exports_and_preserves_metrics(tmp_path, analysis_
     run_analysis(capture, 1, recipe, first)
     run_analysis(capture, 1, recipe, second)
     original = (first / "metrics.json").read_bytes()
-    html = write_analysis_report([first, second], tmp_path / "compare.html").read_text()
+    html = write_analysis_report([first, second], tmp_path / "compare.html").read_text(encoding="utf-8")
     assert html.count("<svg") == 1
     assert html.count("<polyline") == 2  # NPY + CSV aren't drawn twice.
     assert "time_s / V" in html
@@ -26,7 +26,7 @@ def test_comparison_uses_saved_exports_and_preserves_metrics(tmp_path, analysis_
         write_analysis_report([first], tmp_path / "compare.html")
     with pytest.raises(ConfigError, match="source capture"):
         write_analysis_report([first], capture / "report.html")
-    (first / "manifest.json").write_text("invalid json")
+    (first / "manifest.json").write_text("invalid json", encoding="utf-8")
     with pytest.raises(ConfigError, match="source capture"):
         write_analysis_report([first], capture / "report.html")
 
@@ -36,11 +36,11 @@ def test_bad_exports_fall_back_to_csv_and_show_warning(tmp_path, analysis_input)
     output = tmp_path / "analysis"
     run_analysis(capture, 1, recipe, output)
     (output / "exports/waveform.npy").write_bytes(b"corrupt")
-    html = write_analysis_report([output], tmp_path / "report.html").read_text()
+    html = write_analysis_report([output], tmp_path / "report.html").read_text(encoding="utf-8")
     assert "SHA-256 mismatch" in html
     assert html.count("<polyline") == 1
     (output / "exports/waveform.csv").unlink()
-    html = write_analysis_report([output], tmp_path / "report2.html").read_text()
+    html = write_analysis_report([output], tmp_path / "report2.html").read_text(encoding="utf-8")
     assert "No usable curve exports" in html
 
 
@@ -50,7 +50,7 @@ def test_distinct_sources_are_not_overlaid(tmp_path, analysis_input):
     run_analysis(capture, 1, recipe, first)
     np.save(capture / "ch1.npy", np.column_stack((np.arange(128.) / 128, np.zeros(128))))
     run_analysis(capture, 1, recipe, second)
-    html = write_analysis_report([first, second], tmp_path / "report.html").read_text()
+    html = write_analysis_report([first, second], tmp_path / "report.html").read_text(encoding="utf-8")
     assert html.count("<svg") == 2
 
 
@@ -59,10 +59,13 @@ def test_fft_and_psd_have_separate_units(tmp_path, analysis_input):
     capture, recipe = analysis_input
     roots = []
     for name, operation in [("fft", '{op="fft"}'), ("psd", '{op="psd",method="welch",window="hann",nperseg=32,noverlap=16,nfft=32,detrend="none",average="mean"}')]:
-        recipe.write_text('schema="wavebench.analysis_recipe.v1"\noperations=[' + operation + ',{op="export",name="spectrum",formats=["npy"]}]')
+        recipe.write_text(
+            'schema="wavebench.analysis_recipe.v1"\noperations=[' + operation + ',{op="export",name="spectrum",formats=["npy"]}]',
+            encoding="utf-8",
+        )
         roots.append(tmp_path / name)
         run_analysis(capture, 1, recipe, roots[-1])
-    html = write_analysis_report(roots, tmp_path / "report.html").read_text()
+    html = write_analysis_report(roots, tmp_path / "report.html").read_text(encoding="utf-8")
     assert html.count("<svg") == 2
     assert "frequency_hz / V²/Hz" in html
     assert "frequency_hz / V" in html
@@ -81,10 +84,10 @@ def test_export_path_escape_is_not_read(tmp_path, analysis_input):
     capture, recipe = analysis_input
     output = tmp_path / "analysis"
     run_analysis(capture, 1, recipe, output)
-    manifest = json.loads((output / "manifest.json").read_text())
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     for item in manifest["exports"]:
         item["path"] = "../capture/ch1.npy"
-    (output / "manifest.json").write_text(json.dumps(manifest))
-    html = write_analysis_report([output], tmp_path / "report.html").read_text()
+    (output / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    html = write_analysis_report([output], tmp_path / "report.html").read_text(encoding="utf-8")
     assert "artifact path must be relative" in html
     assert "<polyline" not in html

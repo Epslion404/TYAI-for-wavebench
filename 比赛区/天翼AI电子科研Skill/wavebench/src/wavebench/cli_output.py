@@ -52,8 +52,8 @@ from .plugins.api import AdvisorPlugin, InstrumentPlugin, PluginDoctorRecord
 from .plugins.market import MarketPlugin
 from .plugins.lifecycle import InstalledPlugin, LifecycleResult
 from .plugins.package_inspect import PluginPackage
-from .plugins.protocol import DeclarativeProtocolPlugin
 from .plugins.scpi import DeclarativeScpiPlugin, ScpiProbeResult
+from .plugins.protocol import DeclarativeProtocolPlugin
 from .services.run_plan import RunPlan, RunStep
 from .services.scope_service import ScopeStatusSummary
 from .services.capability_explain import CapabilityExplanation
@@ -217,7 +217,11 @@ def _print_plugin_package(package: PluginPackage) -> None:
     print(f"source_kind={package.source_kind}")
     print(f"distribution={package.distribution}")
     print(f"version={package.version}")
-    print("driver_ids=" + ", ".join(package.driver_ids))
+    if package.category == "advisor":
+        print("category=advisor")
+        print("advisor_ids=" + ", ".join(package.driver_ids))
+    else:
+        print("driver_ids=" + ", ".join(package.driver_ids))
     print(f"sha256={package.sha256}")
     print(f"files={package.file_count}")
     print(f"size_bytes={package.size_bytes}")
@@ -228,16 +232,25 @@ def _print_installed_plugins(plugins: tuple[InstalledPlugin, ...]) -> None:
     if not plugins:
         print("no_installed_plugins / 未发现已安装插件")
         return
-    print("driver_id\tdistribution\tversion\tstatus\tdetail")
+    has_advisor = any(plugin.category != "instrument" for plugin in plugins)
+    if has_advisor:
+        print("category\tdriver_id\tdistribution\tversion\tstatus\tdetail")
+    else:
+        print("driver_id\tdistribution\tversion\tstatus\tdetail")
     for plugin in plugins:
+        prefix = f"{plugin.category}\t" if has_advisor else ""
         print(
-            f"{plugin.driver_id}\t{plugin.distribution}\t{plugin.version}\t"
+            f"{prefix}{plugin.driver_id}\t{plugin.distribution}\t{plugin.version}\t"
             f"{plugin.status}\t{plugin.detail}"
         )
 
 
 def _print_installed_plugin(plugin: InstalledPlugin) -> None:
-    print(f"driver_id={plugin.driver_id}")
+    if plugin.category == "advisor":
+        print("category=advisor")
+        print(f"advisor_id={plugin.driver_id}")
+    else:
+        print(f"driver_id={plugin.driver_id}")
     print(f"distribution={plugin.distribution}")
     print(f"version={plugin.version}")
     print(f"status={plugin.status}")
@@ -250,7 +263,11 @@ def _print_installed_plugin(plugin: InstalledPlugin) -> None:
 def _print_lifecycle_result(result: LifecycleResult) -> None:
     print(f"status={result.status}")
     if result.driver_id:
-        print(f"driver_id={result.driver_id}")
+        if result.category == "advisor":
+            print("category=advisor")
+            print(f"advisor_id={result.driver_id}")
+        else:
+            print(f"driver_id={result.driver_id}")
     if result.distribution:
         print(f"distribution={result.distribution}")
     if result.version:
@@ -922,6 +939,19 @@ def _print_discovery_results(results: list[Any]) -> None:
             f"{item.address}	{port}	{item.status}	{item.protocol}	"
             f"{item.source}	{item.resource}	{idn}	{item.note}"
         )
+
+
+def _print_discovery_summary(results: list[Any]) -> None:
+    from collections import Counter
+
+    total = len(results)
+    by_source = Counter(getattr(item, "source", "unknown") for item in results)
+    by_protocol = Counter(getattr(item, "protocol", "unknown") for item in results)
+    source_text = ", ".join(f"{source}={count}" for source, count in sorted(by_source.items()))
+    protocol_text = ", ".join(
+        f"{protocol}={count}" for protocol, count in sorted(by_protocol.items())
+    )
+    print(f"summary_total={total} sources=({source_text}) protocols=({protocol_text})")
 
 
 def _print_doctor_records(records: list[Any]) -> None:

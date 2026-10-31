@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 import json
+import math
 from typing import Any, Protocol
 
 from .advisor_consent import (
@@ -186,22 +187,25 @@ def parse_answers(raw: Mapping[str, Any]) -> dict[str, Answer]:
     answers: dict[str, Answer] = {}
     for question_id, entry in body.items():
         if not isinstance(entry, Mapping):
-            raise SeamError(f"answer {question_id!r} is not an object")
+            raise SeamError("answer entry is not an object")
         kind = str(entry.get("type", ""))
         probabilities = entry.get("probabilities")
+        if probabilities is not None and not isinstance(probabilities, Mapping):
+            raise SeamError("probabilities must be an object")
         normalized = (
-            {str(key): float(value) for key, value in probabilities.items()}
-            if isinstance(probabilities, Mapping)
-            else None
+            {str(key): _probability(value) for key, value in probabilities.items()}
+            if isinstance(probabilities, Mapping) else None
         )
         if kind == "choice":
             value: Any = entry.get("choice")
+            if not isinstance(value, str) or normalized is None or value not in normalized:
+                raise SeamError("choice requires a string id and its probability")
         elif kind == "score":
-            value = entry.get("score")
+            value = _finite_number(entry.get("score"))
         elif kind == "noul":
-            value = entry.get("noul")
+            value = _probability(entry.get("noul"))
         else:
-            raise SeamError(f"unknown answer type for {question_id!r}: {kind!r}")
+            raise SeamError("unknown answer type")
         answers[str(question_id)] = Answer(
             question_id=str(question_id),
             kind=kind,
@@ -212,10 +216,27 @@ def parse_answers(raw: Mapping[str, Any]) -> dict[str, Answer]:
     return answers
 
 
-def _optional_float(value: Any) -> float | None:
+def _finite_number(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
+        raise SeamError("answer number must be numeric")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise SeamError("answer number must be finite") from exc
+    if not math.isfinite(number):
+        raise SeamError("answer number must be finite")
+    return number
+
+
+def _probability(value: Any) -> float:
+    number = _finite_number(value)
+    if not 0.0 <= number <= 1.0:
+        raise SeamError("answer probability must be within 0..1")
+    return number
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else _probability(value)
 
 
 def apply_choice_threshold(
@@ -225,12 +246,19 @@ def apply_choice_threshold(
 ) -> list[dict[str, Any]]:
     """把 Choice 概率映射成建议；低于 accept 给人工复核，低于 review 什么都不给。"""
     if answer.kind != "choice":
-        raise SeamError(f"expected choice answer, got {answer.kind!r}")
+        raise SeamError("expected choice answer")
     by_id = {option.option_id: option for option in options}
-    choice = str(answer.value)
-    if choice not in by_id:
-        raise UnknownOptionError(f"option {choice!r} is not in the catalog")
-    probability = float((answer.probabilities or {}).get(choice, 0.0))
+    choice = answer.value
+    if not isinstance(choice, str) or choice not in by_id:
+        raise UnknownOptionError("option is not in the catalog")
+    if not isinstance(answer.probabilities, Mapping) or choice not in answer.probabilities:
+        raise SeamError("choice probability is missing")
+    for option_id, value in answer.probabilities.items():
+        if option_id not in by_id:
+            raise UnknownOptionError("probability option is not in the catalog")
+        _probability(value)
+    _optional_float(answer.confidence)
+    probability = _probability(answer.probabilities[choice])
     if probability < policy.review:
         return []
     if probability < policy.accept:

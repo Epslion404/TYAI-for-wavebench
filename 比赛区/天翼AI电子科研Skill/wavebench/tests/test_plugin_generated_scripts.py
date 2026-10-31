@@ -50,35 +50,6 @@ example = example:main
         inspect_plugin_wheel(wheel)
 
 
-def test_default_entries_do_not_become_instruments_or_generated_scripts(tmp_path):
-    wheel = _wheel(tmp_path, entry_points='''[DEFAULT]
-ghost.scope = example:descriptor
-wavebench = example:main
-[wavebench.instruments]
-example.scope = example:descriptor
-[console_scripts]
-independent-tool = example:main
-[gui_scripts]
-''')
-    package = inspect_plugin_wheel(wheel)
-    assert package.driver_ids == ("example.scope",)
-    assert package.generated_scripts == (
-        "independent-tool.exe" if os.name == "nt" else "independent-tool",
-    )
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows reserved devices")
-@pytest.mark.parametrize("name", ["CON", "nul.py", "COM1", "LPT9.txt"])
-def test_reserved_device_launchers_are_rejected(tmp_path, name):
-    wheel = _wheel(tmp_path, entry_points=f'''[wavebench.instruments]
-example.scope = example:descriptor
-[console_scripts]
-{name} = example:main
-''')
-    with pytest.raises(ConfigError, match="reserved"):
-        inspect_plugin_wheel(wheel)
-
-
 @pytest.mark.skipif(os.name != "nt", reason="distlib Windows launcher naming")
 @pytest.mark.parametrize("extension", [".py", ".pyw", ".python"])
 def test_py_suffix_alias_cannot_replace_core_launcher(tmp_path, extension):

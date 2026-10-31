@@ -42,6 +42,26 @@ access = "read_only"
 | `rtscts` | `false` | 硬件流控 |
 | `dsrdtr` | `false` | 硬件流控 |
 
+## CAN/CAN-FD 连接
+
+`connection.backend = "can"` 时，资源使用 `can://<channel>` scheme，例如 `can://can0`。
+CAN 是可选的开发线后端：需要 `pip install wavebench[can]`（python-can），默认安装
+不会引入总线依赖。只有选中 descriptor 声明 `can` backend 时该值才可用。
+
+| 字段 | 默认值 | 约束 |
+| --- | --- | --- |
+| `resource` | 必填 | 必须为 `can://<channel>` |
+| `can_interface` | `"virtual"` | python-can 接口名，例如 `socketcan`、`pcan`；离线测试默认使用 `virtual` |
+| `can_bitrate` | `500000` | 正整数的比特率 |
+| `can_arbitration_id` | `256`（`0x100`） | CAN 仲裁 ID |
+| `can_extended_id` | `false` | 是否使用扩展帧 |
+| `can_fd` | `false` | 是否使用 CAN-FD |
+| `can_max_frame_bytes` | `8`（FD 为 `64`） | 单帧 payload 上限 |
+| `can_read_timeout_ms` | `500` | 单帧读取超时，毫秒 |
+
+选项由选中 descriptor 的 `[options]` 表声明；`factory` 只在 descriptor 声明 `can`
+后端时读取它们，非法值在打开总线前以结构化配置错误失败。
+
 字段、默认值与校验以 config model 为准；本表不替代 parser 的报错。
 
 ## Access policy

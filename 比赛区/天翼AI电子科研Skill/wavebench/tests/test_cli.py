@@ -397,12 +397,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.discover_max_hosts, 32)
         self.assertTrue(args.no_visa)
 
-    def test_doctor_accepts_local_serial_and_can_enumeration_flags(self):
-        args = build_parser().parse_args(["doctor", "--discover-serial", "--discover-can"])
-
-        self.assertTrue(args.discover_serial)
-        self.assertTrue(args.discover_can)
-
     def test_doctor_prints_records_and_returns_error_status(self):
         class StubRecord:
             severity = "error"
@@ -1266,13 +1260,6 @@ max_source_vpp = 2.0
         self.assertEqual(args.backend, "rsinstrument")
         self.assertEqual(args.timeout_ms, 250)
 
-    def test_plugin_protocol_check_accepts_path(self):
-        args = build_parser().parse_args(["plugin", "protocol", "check", "plugin.toml"])
-        self.assertEqual(args.domain, "plugin")
-        self.assertEqual(args.command, "protocol")
-        self.assertEqual(args.protocol_command, "check")
-        self.assertEqual(args.path, "plugin.toml")
-
     def test_plugin_list_prints_builtin_plugins(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -1470,40 +1457,6 @@ max_source_vpp = 2.0
         self.assertIn("origin=local", output)
         self.assertIn("scpi_idn_query=*IDN?", output)
 
-    def test_plugin_protocol_info_prints_declared_frame_contract(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "protocol.toml"
-            path.write_text(
-                '''
-driver_id = "example.bus-scope"
-kind = "scope"
-display_name = "Example Bus Scope"
-manufacturer = "Example"
-models = ["BUS1"]
-capabilities = ["scope.idn"]
-summary = "Example protocol."
-
-[protocol]
-framing = "fixed"
-magic_hex = "AA55"
-header_bytes = 2
-fixed_length = 4
-max_frame_bytes = 64
-sample_type = "u16"
-endian = "little"
-'''.strip(),
-                encoding="utf-8",
-            )
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                code = main(["plugin", "protocol", "info", str(path)])
-
-        self.assertEqual(code, 0)
-        output = stdout.getvalue()
-        self.assertIn("protocol_framing=fixed", output)
-        self.assertIn("protocol_magic_hex=AA55", output)
-        self.assertIn("protocol_max_frame_bytes=64", output)
-
     def test_plugin_scpi_probe_prints_result(self):
         from wavebench.plugins.scpi import ScpiProbeResult
 
@@ -1541,6 +1494,10 @@ endian = "little"
             "--no-idn",
             "--idn-only",
             "--no-visa",
+            "--serials",
+            "--can",
+            "--force",
+            "--summary",
         ])
         self.assertEqual(args.domain, "net")
         self.assertEqual(args.command, "discover")
@@ -1552,28 +1509,60 @@ endian = "little"
         self.assertTrue(args.no_idn)
         self.assertTrue(args.idn_only)
         self.assertTrue(args.no_visa)
-
-    def test_net_discover_accepts_local_serial_and_can_without_a_tcp_subnet(self):
-        args = build_parser().parse_args(["net", "discover", "--serial", "--can", "--no-visa"])
-
-        self.assertIsNone(args.subnet)
-        self.assertTrue(args.serial)
+        self.assertTrue(args.serials)
         self.assertTrue(args.can)
+        self.assertTrue(args.force)
+        self.assertTrue(args.summary)
 
-    def test_net_discover_accepts_mdns_without_a_tcp_subnet(self):
-        args = build_parser().parse_args(["net", "discover", "--mdns", "--no-visa"])
+    def test_net_discover_prints_local_serial_and_can_results(self):
+        class NetworkResult:
+            address = "192.0.2.161"
+            port = 5025
+            status = "idn"
+            protocol = "scpi-socket"
+            source = "network"
+            resource = "TCPIP::192.0.2.161::5025::SOCKET"
+            idn = "RIGOL TECHNOLOGIES,DP832,DP8A000000000,00.01.16"
+            note = ""
 
-        self.assertIsNone(args.subnet)
-        self.assertTrue(args.mdns)
+        class SerialResult:
+            address = "COM3"
+            port = None
+            status = "listed"
+            protocol = "serial"
+            source = "serial"
+            resource = "COM3"
+            idn = None
+            note = "USB serial adapter"
 
-    def test_net_discover_forwards_mdns_flag(self):
+        class CanResult:
+            address = "virtual"
+            port = None
+            status = "listed"
+            protocol = "can"
+            source = "can"
+            resource = "can://virtual"
+            idn = None
+            note = "CAN interface available (python-can)"
+
         stdout = io.StringIO()
-        with patch("wavebench.cli.discover_instruments", return_value=[]) as discover:
+        with (
+            patch("wavebench.cli.discover_instruments", return_value=[NetworkResult()]),
+            patch(
+                "wavebench.cli.discover_local_devices",
+                return_value=[SerialResult(), CanResult()],
+            ),
+        ):
             with redirect_stdout(stdout):
-                code = main(["net", "discover", "--mdns", "--no-visa"])
-
+                code = main([
+                    "net", "discover", "--subnet", "192.0.2.0/24",
+                    "--timeout-ms", "10", "--no-visa", "--serials", "--can",
+                ])
         self.assertEqual(code, 0)
-        self.assertTrue(discover.call_args.kwargs["include_mdns"])
+        output = stdout.getvalue()
+        self.assertIn("192.0.2.161", output)
+        self.assertIn("COM3", output)
+        self.assertIn("can://virtual", output)
 
     def test_net_discover_prints_results(self):
         class StubResult:
@@ -1808,9 +1797,7 @@ value_vpp = 5.0
             html_path = Path(tmp) / "report.html"
             pdf_path = Path(tmp) / "report.pdf"
             stdout = io.StringIO()
-            with patch("wavebench.cli.write_run_report_html", return_value=html_path) as write_html, patch(
-                "wavebench.cli.write_run_report_pdf", return_value=pdf_path
-            ) as write_pdf, redirect_stdout(stdout):
+            with patch("wavebench.report.html._write_run_report_pdf", return_value=pdf_path) as write_pdf, redirect_stdout(stdout):
                 code = main(
                     [
                         "run",
@@ -1825,7 +1812,7 @@ value_vpp = 5.0
                 )
 
             self.assertEqual(code, 0)
-            write_html.assert_called_once()
+            self.assertIn("<!doctype html>", html_path.read_text(encoding="utf-8").lower())
             write_pdf.assert_called_once()
             self.assertIn(f"report={html_path}", stdout.getvalue())
             self.assertIn(f"pdf={pdf_path}", stdout.getvalue())
@@ -1890,15 +1877,12 @@ value_vpp = 5.0
 
             for options, message in cases:
                 stderr = io.StringIO()
-                with patch("wavebench.cli.write_run_report_html") as write_html, patch(
-                    "wavebench.cli.write_run_report_pdf"
-                ) as write_pdf, redirect_stderr(stderr):
+                with patch("wavebench.cli.write_run_report") as write_report, redirect_stderr(stderr):
                     code = main(["run", "report", str(run_dir), *options])
 
                 self.assertEqual(code, 2)
                 self.assertIn(message, stderr.getvalue())
-                write_html.assert_not_called()
-                write_pdf.assert_not_called()
+                write_report.assert_not_called()
 
 
 if __name__ == "__main__":

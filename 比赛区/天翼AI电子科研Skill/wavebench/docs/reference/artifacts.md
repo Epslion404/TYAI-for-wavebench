@@ -55,6 +55,10 @@ NPY 来源先检查有界 header、实数 dtype、二维形状和文件长度，
 
 `run report <run-dir>` 只读取已有产物并生成离线报告，不连接仪器，也不修改原始采集数据；它会在运行目录或显式输出位置写入派生的 HTML，使用 `--pdf` 时还会写入 PDF。
 
+报告写入前会保护显式引用及实际回落路径上的采集 metadata、截图和 `files` 文件，并成对检查 HTML、PDF、`report-assets/manifest.json` 和实际使用的 Plotly 文件，拒绝同路径和硬链接冲突。组合导出时，报告清单的可选 `pdf` 字段保存 PDF 相对路径，供自定义报告刷新使用；显式原始证据引用优先于刷新许可。预检不是文件系统事务，不隔离外部并发替换，也不保证渲染失败时回滚已生成的派生文件。
+
+分析证据清单包含 run artifact 及实际分析 manifest 的 `exports[].path`、`peaks[].json`，也覆盖双通道分析导出。renderer 将 manifest 及其文件引用限制在 run 根内，引用以 run 根为基准，没有 manifest 所在目录回落规则；显式缺失路径也受保护。写前读取 JSON 使用所选资源 profile，并计入已保留清单的内存估算；已有 manifest 或 capture metadata 读取、解析或预算检查失败时拒绝导出，避免用不完整清单继续写入。
+
 ## `run.json`
 
 以下字段始终由 writer 写入：
@@ -105,6 +109,8 @@ IIR 项记录 design、响应、截止频率、原型阶数、变换后的数字
 
 指标值只写有限 JSON 数字或 `null`，不写 `NaN`、`Infinity`。step artifact 的 `metrics` 保留同一份小型映射；`expect` 继续使用既有 `{ min, max }` 结果结构，因此 `summary.csv` 的 expectation 列和 HTML 验收表不需要另一套解释。
 
+`expect` / `expect_fft` 遇到 NaN、+Inf、-Inf 时明确失败（`reason = "not_finite"`），check 的 `value` 用字符串保留诊断，避免向 JSON 写入非有限数；非数字输入和缺失值继续分别使用 `not_numeric` / `unavailable`。有限数字字符串仍按数字比较，边界相等视为通过。
+
 时域 NPY 和 CSV 固定为 `time_s,voltage_v` 两列。FFT 频域 NPY 和 CSV 固定为 `frequency_hz,real_v,imaginary_v,amplitude_v` 四列。PSD NPY 和 CSV 固定为 `frequency_hz,psd_v2_per_hz` 两列。每个导出记录文件路径、列名和 SHA-256；路径相对于 run 目录并使用 POSIX 分隔符。来源 NPY 保持原样，处理器只读取 capture package 内经过边界校验的文件。
 
 成功执行 PSD 时，manifest 条件性增加 `psd` 对象，并在对应 stage 中记录同一份元数据，输出域为 `psd`。该对象包括规范化参数、执行函数、SciPy 版本、实际采样率、周期窗标记、窗功率增益、窗 SHA-256、完整分段数和丢弃尾点数。窗 SHA-256 使用实际周期窗的 little-endian float64 字节计算。`bin_spacing_hz` 为采样率除以 `nfft`；`segment_frequency_scale_hz` 为采样率除以 `nperseg`，不表示加窗后的等效噪声带宽。
@@ -114,6 +120,8 @@ PSD 元数据的 `algorithm` 区分 `welch_segment_mean.v1` 与 `scipy_welch_med
 PSD 元数据同时记录单边密度缩放、`V^2/Hz` 单位和归一化公式。仅有一段或存在尾点时写入警告；后续导出失败仍保留成功 PSD 的元数据。没有成功 PSD 的流水线不增加 `psd` 字段，schema 继续使用 `wavebench.analysis_pipeline.v1`。`measure_band` 在对应 stage 的 `measurement` 中记录选中 bin 数量、间距、积分和边界规则，以及 Welch 平均方式；标量保存为 `<name>_<metric>` 并复用现有 `metrics` 与 `expect`。没有测量算子时 `metrics` 为空映射。HTML 报告显示 Welch 分段参数、警告和导出链接。
 
 频域 `amplitude_v` 是单边峰值幅度，不是 RMS。`noise_floor_v` 是排除 DC 与主峰后的非 DC 幅度 bin 中位数，表示每 bin 峰值幅度，不表示积分噪声。THD 使用 Nyquist 范围内的 H2～H5。
+
+传统 `expect_fft` 的 `fft` artifact 同样记录 `resources`。预算拒绝时状态为 `failed`，`error_code="resource_limit_exceeded"`，`resource_error` 包含 `dimension`、`limit`、`requested` 和 `stage`；相关 expectation 明确失败，完整采集数据保持原样。
 
 HTML 报告在存在分析 step 时增加「信号处理 / Signal processing」区域。FIR 算子显示 family、响应、截止频率、tap 数和执行模式；IIR 算子显示 family、响应、截止频率、design、order 和执行模式。报告 manifest 条件性增加 `analysis_pipelines`，没有分析 step 的旧报告 manifest 不增加该字段。
 

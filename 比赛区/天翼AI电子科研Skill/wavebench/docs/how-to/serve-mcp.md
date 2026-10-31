@@ -10,7 +10,7 @@ python -m wavebench mcp serve \
   --token-env WAVEBENCH_MCP_TOKEN
 ```
 
-服务默认监听 `127.0.0.1:8765`。认证 token 必须通过 `--token` 或 `--token-env` 提供；不要把 token 值写入配置、命令历史或公开文档。服务拒绝监听 `0.0.0.0` 或 `::`。
+服务默认监听 `127.0.0.1:8765`。认证 token 必须通过 `--token` 或 `--token-env` 提供；不要把 token 值写入配置、命令历史或公开文档。服务拒绝监听通配地址，包括解析为 `0.0.0.0` 的数字别名（如 `0`、`0.0`）和 IPv6 通配地址。`--host` 使用 IPv4 地址或可解析为 IPv4 的主机名；服务绑定已检查的解析地址。显式指定非通配地址时仍需提供认证 token。
 
 ## 端点与工具
 
@@ -21,6 +21,8 @@ python -m wavebench mcp serve \
 | `POST /call`、`POST /mcp` | Bearer token | 调用 MCP 工具或 JSON-RPC 方法。 |
 
 请求体上限为 1 MiB。当前工具仅包含 `run.schema`、`run.check` 和 `capture.inspect`；它们不会连接仪器。`run.check` 只接受项目内的 `plans/*.toml`，`capture.inspect` 只读取项目内的离线采集包。
+
+`capture.inspect` 的采集目录解析后必须位于项目 `data/raw/` 解析后的允许根下，包内 `metadata.json` 必须是普通文件，不接受符号链接或 Windows 重解析点，即使链接目标位于另一个合法采集包内。读取前会验证实际打开的文件，防止检查后替换链接导致越界读取；不支持这些检查的平台会拒绝读取。此边界不隔离硬链接或已允许文件的并发内容修改；项目目录和采集目录仍应由可信本地进程管理。
 
 ## Verification
 

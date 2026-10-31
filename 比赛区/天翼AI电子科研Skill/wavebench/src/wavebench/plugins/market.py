@@ -5,11 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from packaging.version import InvalidVersion, Version
-
 from wavebench.errors import ConfigError
-
-from .api import VALID_PLUGIN_KINDS
 
 DEFAULT_MARKET_INDEX_PATH = Path(__file__).resolve().parent / "market.example.json"
 
@@ -60,7 +56,7 @@ def load_market_index(path: str | Path | None = None) -> MarketIndex:
     index_path = Path(path) if path is not None else DEFAULT_MARKET_INDEX_PATH
     try:
         raw = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError) as exc:
+    except OSError as exc:
         raise ConfigError(f"unable to read market index {index_path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ConfigError(f"invalid market index JSON {index_path}: {exc}") from exc
@@ -70,8 +66,6 @@ def load_market_index(path: str | Path | None = None) -> MarketIndex:
 def _parse_market_index(path: Path, raw: Any) -> MarketIndex:
     if not isinstance(raw, dict):
         raise ConfigError("market index must be a JSON object")
-    if raw.get("schema_version") != 1:
-        raise ConfigError("market index schema_version must be 1")
     entries = raw.get("plugins")
     if not isinstance(entries, list):
         raise ConfigError("market index must contain a plugins list")
@@ -83,7 +77,7 @@ def _parse_market_index(path: Path, raw: Any) -> MarketIndex:
 def _parse_market_plugin(raw: Any, index: int) -> MarketPlugin:
     if not isinstance(raw, dict):
         raise ConfigError(f"market plugin #{index} must be an object")
-    plugin = MarketPlugin(
+    return MarketPlugin(
         plugin_id=_required_text(raw, "plugin_id", index),
         driver_id=_required_text(raw, "driver_id", index),
         name=_required_text(raw, "name", index),
@@ -95,13 +89,6 @@ def _parse_market_plugin(raw: Any, index: int) -> MarketPlugin:
         capabilities=_text_tuple(raw, "capabilities", index),
         tags=_text_tuple(raw, "tags", index),
     )
-    if plugin.kind not in VALID_PLUGIN_KINDS:
-        raise ConfigError(f"market plugin #{index} has unsupported kind: {plugin.kind}")
-    try:
-        Version(plugin.version)
-    except InvalidVersion as exc:
-        raise ConfigError(f"market plugin #{index} has invalid version: {plugin.version}") from exc
-    return plugin
 
 
 def _required_text(raw: dict[str, Any], key: str, index: int) -> str:

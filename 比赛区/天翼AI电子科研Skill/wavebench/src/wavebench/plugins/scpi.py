@@ -13,7 +13,7 @@ from wavebench.transport.pyvisa_transport import PyVisaTransport
 from wavebench.transport.rsinstrument_transport import RsInstrumentTransport
 from wavebench.transport.contracts import ReplayPolicy
 
-from .api import SUPPORTED_PLUGIN_API_VERSION, VALID_PLUGIN_KINDS, InstrumentPlugin
+from .api import SUPPORTED_PLUGIN_API_VERSION, InstrumentPlugin
 from .registry import PluginRegistry, plugin_doctor_records
 
 
@@ -37,7 +37,7 @@ def load_scpi_plugin(path: str | Path) -> DeclarativeScpiPlugin:
     plugin_path = Path(path)
     try:
         raw = tomllib.loads(plugin_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError) as exc:
+    except OSError as exc:
         raise ConfigError(f"unable to read SCPI plugin {plugin_path}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid SCPI plugin TOML {plugin_path}: {exc}") from exc
@@ -179,12 +179,6 @@ def _parse_scpi_plugin(raw: Any) -> DeclarativeScpiPlugin:
         )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
-    if plugin.kind not in VALID_PLUGIN_KINDS:
-        raise ConfigError(f"unsupported kind {plugin.kind!r}; expected one of {', '.join(VALID_PLUGIN_KINDS)}")
-    if plugin.api_version != SUPPORTED_PLUGIN_API_VERSION:
-        raise ConfigError(
-            f"unsupported api_version {plugin.api_version!r}; expected {SUPPORTED_PLUGIN_API_VERSION!r}"
-        )
     return DeclarativeScpiPlugin(plugin=plugin, idn_query=idn_query)
 
 
