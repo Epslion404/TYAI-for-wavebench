@@ -58,6 +58,8 @@ python -m venv .venv
 
 Protocol compatibility is handled by `protocols.py`. Use JSON manifests in `examples/protocols/` for vendor binary frames, and use `protocol capture-can` with `python-can` on Arm Linux. The Agent can identify a payload before decoding it.
 
+CAN DLC=0 frames are normalized with `samples: []` and retain `metadata.can_id` / `data_hex`; an explicit `samples: []` is also treated as an empty waveform, never padded with zeros. Signal analysis still rejects fewer than four samples.
+
 For hosts that are not on the same LAN, use `bridge serve` on a reachable relay, `bridge expose` on the device host, and `bridge connect` on the Agent host. The bridge forwards bytes without assuming SCPI.
 
 Use `plot --file input.json --output frame.svg` or `fetch --plot-output frame.svg` to create a dependency-free, annotated single-frame waveform artifact. `analysis.py` adds hysteresis frequency, rise time, overshoot, DFT and THD.
