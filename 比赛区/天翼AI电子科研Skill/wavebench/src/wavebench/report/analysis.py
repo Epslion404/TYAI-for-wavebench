@@ -16,6 +16,7 @@ from wavebench.errors import DataError
 from wavebench.data.analysis_resources import AnalysisLimits, AnalysisBudget
 from wavebench.data.analysis_io import mapped_npy, read_json_bounded, hash_stream, file_identity, BLOCK_ROWS
 from wavebench.services.run_pipeline import _sha256_file, _atomic_write_bytes
+from wavebench.report.html_budget import retained_size
 
 
 COLUMNS = {
@@ -25,11 +26,19 @@ COLUMNS = {
 }
 
 
-def artifact_file(root: Path, raw: str) -> Path:
+def artifact_path(root: Path, raw: str) -> Path:
+    """Resolve a renderer reference, including a currently missing evidence file."""
     if not isinstance(raw, str) or not raw or Path(raw).is_absolute() or ".." in Path(raw).parts:
         raise ValueError("artifact path must be relative to its result directory")
     path = (root / raw).resolve()
-    if not path.is_relative_to(root.resolve()) or not path.is_file():
+    if not path.is_relative_to(root.resolve()):
+        raise ValueError("artifact escapes its result directory")
+    return path
+
+
+def artifact_file(root: Path, raw: str) -> Path:
+    path = artifact_path(root, raw)
+    if not path.is_file():
         raise ValueError("artifact escapes its result directory or is missing")
     return path
 
@@ -206,9 +215,15 @@ def render_analysis_sections(entries: list[tuple[Path, str, dict[str, Any]]], *,
     sections: list[str] = []
     markers: dict[str, list[dict]] = {}
     for root, label, artifact in entries:
+        manifest = None
+        peak_sets = {}
+        detected = None
         try:
             pipeline = artifact["analysis_pipeline"]
-            manifest = read_json_bounded(artifact_file(root, pipeline["manifest"]), limits)
+            manifest = read_json_bounded(
+                artifact_file(root, pipeline["manifest"]), limits,
+                retained_bytes=retained_size([groups, sections, markers]),
+            )
             limits.check("max_operations", len(manifest.get("operations", [])), "report")
             limits.check("max_output_files", len(manifest.get("exports", [])), "report")
             if details:
@@ -227,7 +242,6 @@ def render_analysis_sections(entries: list[tuple[Path, str, dict[str, Any]]], *,
                     sections.append('<details><summary>PSD 积分质量估计 / Spectral quality</summary><pre>'
                                     + escape(json.dumps(measurement, ensure_ascii=False, indent=2)) + '</pre></details>')
             source = manifest["source"]
-            peak_sets = {}
             if manifest.get("schema") == "wavebench.analysis_pair.v1":
                 curve_count += 3 * sum(item.get("format") == "npy" for item in manifest.get("exports", []))
                 limits.check("max_report_curves", curve_count, "pair report")
@@ -235,10 +249,14 @@ def render_analysis_sections(entries: list[tuple[Path, str, dict[str, Any]]], *,
                 continue
             for peak in manifest.get("peaks", []):
                 try:
+                    detected = None
                     peak_file = artifact_file(root, peak["json"])
                     if _sha256_file(peak_file) != peak["json_sha256"]:
                         raise ValueError("peak table SHA-256 mismatch")
-                    detected = read_json_bounded(peak_file, limits)
+                    detected = read_json_bounded(
+                        peak_file, limits,
+                        retained_bytes=retained_size([groups, sections, markers, manifest, peak_sets]),
+                    )
                     rows = detected["peaks"]
                     peak_rows += len(rows)
                     limits.check("max_peak_candidates", peak_rows, "report peaks")

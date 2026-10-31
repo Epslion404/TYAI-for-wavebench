@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import time
 from typing import Any
 
@@ -177,11 +178,13 @@ class SerialTransport:
             raise self._frame_preflight_error("read_exact", replay, "frame_replay_unsupported")
 
         original_timeout = getattr(self.session, "timeout", None)
-        if timeout_ms is not None and hasattr(self.session, "timeout"):
-            self.session.timeout = timeout_ms / 1000.0
+        deadline = self._frame_read_deadline(
+            timeout_ms, original_timeout, operation="read_exact", replay=replay,
+        )
         received = bytearray()
         try:
             while len(received) < size:
+                self._set_frame_read_timeout(deadline, "read_exact", replay, len(received))
                 chunk = self.session.read(size - len(received))
                 if not chunk:
                     raise self._frame_read_error(
@@ -191,6 +194,12 @@ class SerialTransport:
                         reason_code="frame_read_timeout",
                     )
                 received.extend(chunk)
+                self._raise_if_frame_deadline_exhausted(
+                    deadline,
+                    "read_exact",
+                    replay,
+                    len(received),
+                )
                 if len(received) > size:
                     raise self._frame_read_error(
                         "read_exact",
@@ -208,7 +217,7 @@ class SerialTransport:
                 reason_code="frame_read_failed",
             ) from exc
         finally:
-            if timeout_ms is not None and hasattr(self.session, "timeout"):
+            if hasattr(self.session, "timeout"):
                 self.session.timeout = original_timeout
         payload = bytes(received)
         self.logger.record("read_frame", f"<bytes len={len(payload)}>")
@@ -235,11 +244,13 @@ class SerialTransport:
             raise self._frame_preflight_error("read_until", replay, "frame_replay_unsupported")
 
         original_timeout = getattr(self.session, "timeout", None)
-        if timeout_ms is not None and hasattr(self.session, "timeout"):
-            self.session.timeout = timeout_ms / 1000.0
+        deadline = self._frame_read_deadline(
+            timeout_ms, original_timeout, operation="read_until", replay=replay,
+        )
         received = bytearray()
         try:
             while True:
+                self._set_frame_read_timeout(deadline, "read_until", replay, len(received))
                 chunk = self.session.read(1)
                 if not chunk:
                     raise self._frame_read_error(
@@ -249,6 +260,12 @@ class SerialTransport:
                         reason_code="frame_read_timeout",
                     )
                 received.extend(chunk)
+                self._raise_if_frame_deadline_exhausted(
+                    deadline,
+                    "read_until",
+                    replay,
+                    len(received),
+                )
                 if received.endswith(delimiter):
                     if len(received) <= max_bytes:
                         break
@@ -275,7 +292,7 @@ class SerialTransport:
                 reason_code="frame_read_failed",
             ) from exc
         finally:
-            if timeout_ms is not None and hasattr(self.session, "timeout"):
+            if hasattr(self.session, "timeout"):
                 self.session.timeout = original_timeout
         payload = bytes(received)
         self.logger.record("read_frame", f"<bytes len={len(payload)}>")
@@ -631,6 +648,58 @@ class SerialTransport:
             consumed_bytes=consumed_bytes,
             discarded_bytes=0,
         )
+
+    def _frame_read_deadline(
+        self,
+        timeout_ms: int | None,
+        original_timeout: float | None,
+        *,
+        operation: str,
+        replay: ReplayPolicy,
+    ) -> float:
+        # pyserial's timeout is in seconds; capture it once for the entire frame.
+        budget = original_timeout if timeout_ms is None else timeout_ms / 1000.0
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, (int, float))
+            or not math.isfinite(budget)
+            or budget <= 0
+        ):
+            raise self._frame_preflight_error(operation, replay, "frame_timeout_invalid")
+        return time.monotonic() + budget
+
+    def _set_frame_read_timeout(
+        self,
+        deadline: float,
+        operation: str,
+        replay: ReplayPolicy,
+        consumed_bytes: int,
+    ) -> None:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise self._frame_read_error(
+                operation,
+                replay,
+                consumed_bytes=consumed_bytes,
+                reason_code="frame_read_timeout",
+            )
+        if hasattr(self.session, "timeout"):
+            self.session.timeout = remaining_seconds
+
+    def _raise_if_frame_deadline_exhausted(
+        self,
+        deadline: float,
+        operation: str,
+        replay: ReplayPolicy,
+        consumed_bytes: int,
+    ) -> None:
+        if time.monotonic() >= deadline:
+            raise self._frame_read_error(
+                operation,
+                replay,
+                consumed_bytes=consumed_bytes,
+                reason_code="frame_read_timeout",
+            )
 
     def close(self) -> None:
         try:

@@ -60,6 +60,8 @@ def test_spawn_offline_matches_inline(tmp_path, analysis_input):
     assert spawned['source']['npy_sha256'] == inline['source']['npy_sha256']
     info = spawned['artifact']['analysis_pipeline']['execution']
     assert info['start_method'] == 'spawn' and info['exitcode'] == 0 and not info['forced']
+    assert info['worker_stage'] == 'target_completed'
+    assert info['worker_report_available']
     assert not list(tmp_path.glob('.analysis-control-*'))
 
 
@@ -336,6 +338,10 @@ def test_worker_start_failure_has_terminal_artifact(tmp_path):
     artifact = supervise(lambda: None, {}, policy=AnalysisExecution(), run_dir=output,
         processing_dir=output, fields=FIELDS, source={'status': 'ok'}, limits=AnalysisLimits())
     assert artifact['analysis_pipeline']['error']['code'] == 'analysis_worker_failed'
+    assert artifact['analysis_pipeline']['execution']['worker_stage'] == 'not_started'
+    assert not artifact['analysis_pipeline']['execution']['worker_report_available']
+    assert not list(tmp_path.glob('.analysis-control-*'))
+    assert not multiprocessing.active_children()
     assert json.loads((output / 'manifest.json').read_text())['status'] == 'failed'
 
 

@@ -110,17 +110,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip PyVISA resource-manager discovery / 跳过 PyVISA 资源枚举",
     )
-    doctor_parser.add_argument(
-        "--discover-serial",
-        action="store_true",
-        help="List local serial ports only; does not open or probe them",
-    )
-    doctor_parser.add_argument(
-        "--discover-can",
-        action="store_true",
-        help="List local CAN adapters only; does not open a bus or send frames",
-    )
-
     capability_parser = subparsers.add_parser(
         "capability",
         help="Explain offline operation capability decisions / 离线解释操作能力",
@@ -138,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capability_explain.add_argument(
         "--kind",
-        choices=("scope", "source", "rf_source", "power", "dmm", "sweep_analyzer"),
+        choices=("scope", "source", "rf_source", "power", "dmm"),
         default=None,
         help="Instrument kind when selecting a configured driver / 仪器类型",
     )
@@ -246,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plugin_list.add_argument(
         "--kind",
-        choices=("scope", "source", "rf_source", "power", "dmm", "sweep_analyzer"),
+        choices=("scope", "source", "rf_source", "power", "dmm"),
         default=None,
         help="Filter plugins by instrument kind / 按仪器类型过滤",
     )
@@ -433,29 +422,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     plugin_protocol = plugin_sub.add_parser(
         "protocol",
-        help="Validate local declarative non-SCPI protocol plugins / 检查本地声明式非 SCPI 协议插件",
+        help="Validate local declarative non-SCPI protocol plugins / 离线检查协议插件",
     )
-    plugin_protocol_sub = plugin_protocol.add_subparsers(dest="protocol_command", required=True)
-    plugin_protocol_check = plugin_protocol_sub.add_parser(
-        "check",
-        help="Validate a local protocol plugin TOML file without opening a transport / 离线检查协议插件 TOML",
-    )
-    plugin_protocol_check.add_argument("path", help="Path to a protocol plugin TOML file / 协议插件 TOML 路径")
-    plugin_protocol_info = plugin_protocol_sub.add_parser(
-        "info",
-        help="Show a local protocol plugin TOML contract / 显示本地协议插件 TOML 合同",
-    )
-    plugin_protocol_info.add_argument("path", help="Path to a protocol plugin TOML file / 协议插件 TOML 路径")
+    protocol_sub = plugin_protocol.add_subparsers(dest="protocol_command", required=True)
+    for command in ("check", "info"):
+        protocol_command = protocol_sub.add_parser(
+            command,
+            help="Validate or show a local protocol TOML contract / 校验或显示本地协议合同",
+        )
+        protocol_command.add_argument("path", help="Path to a protocol plugin TOML file / 协议 TOML 路径")
 
     net_sub = net_parser.add_subparsers(dest="command", required=True)
     net_discover = net_sub.add_parser(
         "discover",
         help="Read-only scan for LAN SCPI/VISA instruments / 只读扫描局域网 SCPI/VISA 仪器",
     )
-    net_discover.add_argument(
-        "--subnet",
-        help="TCP subnet to scan, e.g. 192.0.2.0/24; never used for serial or CAN enumeration",
-    )
+    net_discover.add_argument("--subnet", required=True, help="Subnet to scan, e.g. 192.0.2.0/24")
     net_discover.add_argument(
         "--ports",
         default=",".join(str(port) for port in DEFAULT_DISCOVERY_PORTS),
@@ -489,21 +471,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip PyVISA resource-manager discovery / 跳过 PyVISA 资源枚举",
     )
-
     net_discover.add_argument(
-        "--serial",
+        "--serials",
         action="store_true",
-        help="List local serial ports; does not open or send bytes to them",
+        help="Also enumerate local serial ports / 同时枚举本地串口",
     )
     net_discover.add_argument(
         "--can",
         action="store_true",
-        help="List local CAN adapters; does not open a bus or send CAN frames",
+        dest="can",
+        help="Also enumerate python-can interfaces / 同时枚举 CAN 适配器",
     )
     net_discover.add_argument(
-        "--mdns",
+        "--force",
         action="store_true",
-        help="Query _scpi._tcp.local advertisements; does not open TCP or send SCPI",
+        help="Skip the host-count confirmation threshold / 跳过主机数确认阈值",
+    )
+    net_discover.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print a one-line summary of enumerated results / 输出枚举结果摘要",
     )
 
     run_sub = run_parser.add_subparsers(dest="command", required=True)

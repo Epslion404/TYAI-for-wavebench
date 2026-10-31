@@ -1,11 +1,13 @@
 import http.client
 import json
+import socket
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from wavebench import __version__
 from wavebench.cli import build_parser
@@ -130,6 +132,57 @@ value_vpp = 1.0
     def test_rejects_unspecified_all_interfaces_host(self):
         with self.assertRaisesRegex(ConfigError, "0.0.0.0"):
             validate_mcp_host("0.0.0.0")
+
+    def test_rejects_resolved_wildcard_aliases_before_server_creation(self):
+        hosts = (
+            "0", "0.0", "0.0.0", "0.0.0.00", "00", "0x0", "0.0.0.0",
+            "::", "[::]", "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0", " :: ",
+        )
+        with patch("wavebench.mcp_http.McpHttpServer") as server:
+            for host in hosts:
+                with self.subTest(host=host):
+                    with self.assertRaises(ConfigError):
+                        make_mcp_http_server(host=host, port=0, token="test-token")
+            server.assert_not_called()
+
+    def test_hostname_with_any_wildcard_answer_is_rejected(self):
+        answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 0))
+            for ip in ("127.0.0.1", "0.0.0.0")
+        ]
+        with patch("wavebench.mcp_http.socket.getaddrinfo", return_value=answers):
+            with self.assertRaises(ConfigError):
+                validate_mcp_host("mixed.example.invalid")
+
+    def test_resolved_address_is_pinned_for_binding(self):
+        answers = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP,
+                    "", ("192.0.2.42", 0))]
+        with patch("wavebench.mcp_http.socket.getaddrinfo", return_value=answers) as resolve:
+            with patch("wavebench.mcp_http.McpHttpServer") as server:
+                make_mcp_http_server(host=" explicit.example.invalid ", port=8765,
+                                     token="test-token")
+            self.assertEqual(resolve.call_count, 1)
+            self.assertEqual(server.call_args.args[0], ("192.0.2.42", 8765))
+
+    def test_loopback_hostname_and_numeric_alias_bind_to_loopback(self):
+        for host in ("localhost", "127.1", " 127.0.0.1 "):
+            with self.subTest(host=host):
+                server = make_mcp_http_server(host=host, port=0, token="test-token")
+                try:
+                    self.assertEqual(server.server_address[0], "127.0.0.1")
+                finally:
+                    server.server_close()
+
+    def test_host_resolution_failure_is_config_error(self):
+        with patch("wavebench.mcp_http.socket.getaddrinfo",
+                   side_effect=socket.gaierror("not found")):
+            with self.assertRaises(ConfigError):
+                validate_mcp_host("missing.example.invalid")
+
+    def test_host_resolution_without_addresses_is_rejected(self):
+        with patch("wavebench.mcp_http.socket.getaddrinfo", return_value=[]):
+            with self.assertRaises(ConfigError):
+                validate_mcp_host("empty.example.invalid")
 
     def test_missing_token_is_rejected(self):
         with self.assertRaisesRegex(ConfigError, "token"):
@@ -260,6 +313,66 @@ value_vpp = 1.0
             self.assertEqual(payload["result"]["channels"][0]["channel"], 1)
             self.assertEqual(payload["result"]["channels"][0]["summary"]["samples"], 1000)
 
+
+    def _assert_linked_capture_denied(self, *, sibling):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._write_config(root)
+            capture = self._write_capture(root)
+            target_dir = capture.parent / "sibling" if sibling else root / "outside"
+            target_dir.mkdir()
+            target = target_dir / "metadata.json"
+            marker = "SYNTHETIC_OUTSIDE_METADATA_MARKER"
+            target.write_text(
+                json.dumps({
+                    "operation": {"command": marker},
+                    "waveform": {"summary": {"channel": 1, "marker": marker}},
+                }),
+                encoding="utf-8",
+            )
+            metadata = capture / "metadata.json"
+            metadata.unlink()
+            try:
+                metadata.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"real symlink creation unavailable: {exc}")
+            server = self._start_server(config)
+
+            with self.subTest(endpoint="/call"):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self._request(
+                        server, "POST", "/call", token="test-token",
+                        body={"tool": "capture.inspect", "arguments": {"path": str(capture)}},
+                    )
+                with caught.exception as response:
+                    self.assertEqual(response.code, 400)
+                    raw = response.read().decode("utf-8")
+                self.assertEqual(json.loads(raw)["error"]["type"], "ConfigError")
+                self.assertNotIn(marker, raw)
+                self.assertNotIn(json.dumps(str(target))[1:-1], raw)
+
+            with self.subTest(endpoint="/mcp"):
+                status, payload = self._request(
+                    server, "POST", "/mcp", token="test-token",
+                    body={
+                        "jsonrpc": "2.0", "id": 39, "method": "tools/call",
+                        "params": {"name": "capture.inspect", "arguments": {"path": str(capture)}},
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["id"], 39)
+                self.assertEqual(payload["error"]["code"], -32602)
+                self.assertEqual(payload["error"]["data"]["type"], "ConfigError")
+                self.assertNotIn("result", payload)
+                raw = json.dumps(payload)
+                self.assertNotIn(marker, raw)
+                self.assertNotIn(json.dumps(str(target))[1:-1], raw)
+
+    def test_capture_inspect_rejects_metadata_symlink_outside_raw_on_both_endpoints(self):
+        self._assert_linked_capture_denied(sibling=False)
+
+    def test_capture_inspect_rejects_metadata_symlink_to_sibling_on_both_endpoints(self):
+        self._assert_linked_capture_denied(sibling=True)
 
     def test_call_capture_inspect_rejects_path_outside_data_raw(self):
         with TemporaryDirectory() as tmp:

@@ -1227,7 +1227,7 @@ auto_recover = true
                 )
             )
             first = fake_capture(tmp, "weak", ["low_points_per_cycle: too sparse"])
-            second = fake_capture(tmp, "weak_retry", [])
+            second = fake_capture(tmp, "weak_retry", [], frequency_hz=2000.0)
             with patch("wavebench.services.run_service.ScopeService") as scope_cls:
                 scope = scope_cls.return_value
                 scope.capture_waveform.side_effect = [first, second]
@@ -1240,6 +1240,9 @@ auto_recover = true
                 scope.autoscale.assert_called_once_with()
                 artifact = result.steps[0].artifact
                 self.assertEqual(artifact["quality"]["status"], "ok")
+                self.assertEqual(result.steps[0].status, "ok")
+                self.assertEqual(artifact["quality_gate"]["status"], "ok")
+                self.assertEqual(artifact["quality_recovery"]["consistency"]["status"], "diverged")
                 self.assertEqual(artifact["quality_recovery"]["max_auto_recover_attempts"], 2)
                 self.assertIn("low_points_per_cycle", artifact["quality_recovery"]["attempts"][0]["quality"]["warnings"][0])
 
@@ -1310,7 +1313,98 @@ auto_recover = true
                 self.assertEqual(artifact["quality"]["status"], "ok_by_consistency")
                 self.assertTrue(artifact["quality"]["trusted_by_consistency"])
                 self.assertEqual(artifact["quality_recovery"]["consistency"]["status"], "consistent")
+                self.assertEqual(result.steps[0].status, "ok")
+                self.assertEqual(artifact["quality_gate"]["status"], "ok")
+                self.assertTrue(artifact["quality_gate"]["trusted_by_consistency"])
 
+    def test_scope_capture_exhausted_recovery_fails_quality_gate_and_stops(self):
+        with TemporaryDirectory() as tmp:
+            plan = load_run_plan(
+                write_plan(
+                    tmp,
+                    """
+[[steps]]
+kind = "scope.capture"
+label = "diverged"
+quality_gate = true
+auto_recover = true
+
+[[steps]]
+kind = "sleep"
+duration_s = 0.01
+""",
+                )
+            )
+            warning = ["low_points_per_cycle: too sparse"]
+            captures = [
+                fake_capture(tmp, "d0", warning, frequency_hz=1000.0),
+                fake_capture(tmp, "d1", warning, frequency_hz=2000.0),
+                fake_capture(tmp, "d2", warning, frequency_hz=4000.0),
+            ]
+            quality = QualityConfig(auto_recover_attempts=2, consistency_required_captures=3)
+            with patch("wavebench.services.run_service.ScopeService") as scope_cls:
+                scope = scope_cls.return_value
+                scope.capture_waveform.side_effect = captures
+
+                result = RunService(config=make_config(tmp, quality), logger=CommandLogger()).run(plan)
+
+                artifact = result.steps[0].artifact
+                self.assertEqual(result.steps[0].status, "failed")
+                self.assertEqual(artifact["quality_gate"]["status"], "failed")
+                self.assertEqual(artifact["quality_gate"]["consistency_status"], "diverged")
+                self.assertEqual(len(artifact["quality_recovery"]["attempts"]), 3)
+                self.assertEqual(len(result.steps), 1)
+                self.assertEqual(scope.capture_waveform.call_count, 3)
+                self.assertEqual(scope.autoscale.call_count, 2)
+                attempts = artifact["quality_recovery"]["attempts"]
+                self.assertEqual([item["package"] for item in attempts],
+                                 [str(capture.package_dir) for capture in captures])
+                self.assertTrue(all(item["quality"]["warnings"] == warning for item in attempts))
+                run_data = json.loads(result.run_json_path.read_text(encoding="utf-8"))
+                self.assertEqual(run_data["status"], "failed")
+                self.assertEqual(run_data["steps"][0]["artifact"]["quality_recovery"],
+                                 artifact["quality_recovery"])
+
+    def test_scope_capture_recovery_respects_quality_gate_and_failure_policy(self):
+        for gate, policy, budget, expected_steps in [
+            (True, "stop", 0, 1),
+            (True, "stop", 1, 1),
+            (True, "continue", 2, 2),
+            (False, "stop", 2, 2),
+        ]:
+            with self.subTest(gate=gate, policy=policy, budget=budget), TemporaryDirectory() as tmp:
+                plan = load_run_plan(write_plan(tmp, f'''
+[[steps]]
+kind = "scope.capture"
+quality_gate = {str(gate).lower()}
+auto_recover = true
+on_failure = "{policy}"
+
+[[steps]]
+kind = "sleep"
+duration_s = 0.01
+'''))
+                warning = ["low_points_per_cycle: too sparse"]
+                captures = [fake_capture(tmp, f"capture_{i}", warning,
+                                         frequency_hz=1000.0 * (2 ** i))
+                            for i in range(budget + 1)]
+                quality = QualityConfig(auto_recover_attempts=budget, consistency_required_captures=3)
+                with patch("wavebench.services.run_service.ScopeService") as scope_cls:
+                    scope = scope_cls.return_value
+                    scope.capture_waveform.side_effect = captures
+                    result = RunService(config=make_config(tmp, quality), logger=CommandLogger()).run(plan)
+                self.assertEqual(scope.capture_waveform.call_count, budget + 1)
+                self.assertEqual(scope.autoscale.call_count, budget)
+                self.assertEqual(len(result.steps), expected_steps)
+                self.assertEqual(result.steps[0].status, "failed" if gate else "ok")
+                artifact = result.steps[0].artifact
+                self.assertEqual(len(artifact["quality_recovery"]["attempts"]), budget + 1)
+                if gate:
+                    self.assertEqual(artifact["quality_gate"]["status"], "failed")
+                else:
+                    self.assertNotIn("quality_gate", artifact)
+                run_data = json.loads(result.run_json_path.read_text(encoding="utf-8"))
+                self.assertEqual(run_data["status"], "failed" if gate else "ok")
 
     def test_scope_capture_expect_passes_and_is_written_to_summary(self):
         with TemporaryDirectory() as tmp:

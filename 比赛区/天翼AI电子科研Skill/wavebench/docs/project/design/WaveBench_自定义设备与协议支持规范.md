@@ -10,6 +10,7 @@
 ## 现状基线（改前必须核对的事实）
 
 > 进展（2026-10-02）：下面第 3、4 项已随 M1 阶段 1（[#4](https://github.com/Epslion404/TYAI-for-wavebench/issues/4)）与 M2 阶段 2（[#5](https://github.com/Epslion404/TYAI-for-wavebench/issues/5)）落地而改变——串口参数已进 `[connection]`（RFC §7 第 2 项已裁决），`InstrumentTransport` 已有 `send_frame`／`read_exact`／`read_until`。当前事实以代码与[配置 Reference](../../reference/configuration.md)为准；以下列表保留改前的核对基线。
+> 进展（2026-10-31）：第 1 条后端分派已扩展为 `TRANSPORT_FACTORIES` 查表并注册 `can`（`transport/can_transport.py`，python-can 可选 extra）；第 9 条发现路径已扩展串口/CAN 枚举与端口协议标注（见 [CLI Reference](../../reference/cli.md) 的 `net discover`）。
 
 1. 传输后端在 Core 内硬编码：`src/wavebench/instruments/factory.py::_open_transport` 只接受 `serial`、`pyvisa`、`rsinstrument`、`rsinstrument-socket`、`rsinstrument-rsvisa`、`rsinstrument-pyvisa-py`，其它值抛 `ConfigError`。
 2. 插件拿不到自定义传输：`src/wavebench/instruments/api.py::DriverContext.open_transport` 由 Core 注入，且一次 factory 只允许打开一个传输（`factory.py` 的 "more than one transport" 分支）。

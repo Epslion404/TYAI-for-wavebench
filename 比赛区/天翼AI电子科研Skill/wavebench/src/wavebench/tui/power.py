@@ -118,6 +118,15 @@ class PowerServicePanelAdapter:
                     voltage_v=status.set_voltage_v,
                     current_limit_a=status.set_current_a,
                 )
+                # 与 PowerService.set_output 相同的开启前保护检查，持久会话不得绕过
+                protection = self._with_session(lambda power: power.get_protection_status(channel))
+                self.service._check_protection_relationship(
+                    set_voltage_v=status.set_voltage_v,
+                    set_current_a=status.set_current_a,
+                    ovp_threshold_v=protection.ovp_threshold_v,
+                    ocp_threshold_a=protection.ocp_threshold_a,
+                )
+                self.service._check_protection_tripped(protection)
             self._merge_status(
                 self._with_session(
                     lambda power: power.set_output(

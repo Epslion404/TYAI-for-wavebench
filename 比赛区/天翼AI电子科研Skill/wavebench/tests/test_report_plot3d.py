@@ -186,7 +186,7 @@ class FrequencyResponsePlot3DTests(unittest.TestCase):
 
             with patch(
                 "wavebench.report.html.write_plotly_asset", side_effect=fake_asset_writer
-            ):
+            ), patch("wavebench.report.html.plotly_asset_available", return_value=True):
                 result = write_run_report_html(load_run_package(run_dir), output_path=output)
 
             self.assertEqual(result, output)

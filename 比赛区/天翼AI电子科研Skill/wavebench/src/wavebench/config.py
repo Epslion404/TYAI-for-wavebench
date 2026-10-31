@@ -24,8 +24,6 @@ WAVEFORM_POINTS_ALIASES = {
 SCOPE_CONNECTION_BACKENDS = {
     "lan",
     "serial",
-    "can",
-    "can-fd",
     "visa",
     "pyvisa",
     "rsinstrument-socket",
@@ -75,14 +73,6 @@ class ConnectionConfig:
     xonxoff: bool = False
     rtscts: bool = False
     dsrdtr: bool = False
-    # CAN fields are append-only, preserving existing positional construction.
-    can_interface: str = "socketcan"
-    can_arbitration_id: int = 0x100
-    can_extended_id: bool = False
-    can_bitrate: int | None = None
-    can_data_bitrate: int | None = None
-    can_sample_point: float | None = None
-    can_data_sample_point: float | None = None
 
     def serial_connection(self, *, resource: str | None = None) -> "SerialConnectionConfig":
         """Build serial settings for this connection or another declared instrument resource."""
@@ -99,21 +89,6 @@ class ConnectionConfig:
             xonxoff=self.xonxoff,
             rtscts=self.rtscts,
             dsrdtr=self.dsrdtr,
-        )
-
-    def can_connection(self, *, resource: str | None = None) -> "CanConnectionConfig":
-        """Build CAN/CAN-FD settings; ``resource`` is the declared bus channel."""
-        return CanConnectionConfig(
-            channel=self.resource if resource is None else resource,
-            interface=self.can_interface,
-            arbitration_id=self.can_arbitration_id,
-            extended_id=self.can_extended_id,
-            fd=self.backend.strip().lower() == "can-fd",
-            timeout_ms=self.timeout_ms,
-            bitrate=self.can_bitrate,
-            data_bitrate=self.can_data_bitrate,
-            sample_point=self.can_sample_point,
-            data_sample_point=self.can_data_sample_point,
         )
 
 @dataclass(frozen=True)
@@ -199,22 +174,6 @@ class SerialConnectionConfig:
     xonxoff: bool = False
     rtscts: bool = False
     dsrdtr: bool = False
-
-
-@dataclass(frozen=True)
-class CanConnectionConfig:
-    """CAN bus parameters. The optional ``python-can`` dependency is opened only by the CAN backend."""
-
-    channel: str | None = None
-    interface: str = "socketcan"
-    arbitration_id: int = 0x100
-    extended_id: bool = False
-    fd: bool = False
-    timeout_ms: int = 1000
-    bitrate: int | None = None
-    data_bitrate: int | None = None
-    sample_point: float | None = None
-    data_sample_point: float | None = None
 
 @dataclass(frozen=True)
 class DmmConfig:
@@ -568,43 +527,6 @@ def _validate_serial_connection(connection: SerialConnectionConfig, *, path: str
     if connection.timeout_ms <= 0:
         raise ConfigError(f"{path}.timeout_ms must be > 0")
 
-
-def _validate_can_connection(connection: CanConnectionConfig, *, path: str) -> None:
-    if not isinstance(connection.channel, str) or not connection.channel.strip():
-        raise ConfigError(f"{path}.resource must be a non-empty CAN channel when the backend is CAN")
-    if not isinstance(connection.interface, str) or not connection.interface.strip():
-        raise ConfigError(f"{path}.can_interface must be a non-empty python-can interface name")
-    if isinstance(connection.arbitration_id, bool) or not isinstance(connection.arbitration_id, int):
-        raise ConfigError(f"{path}.can_arbitration_id must be an integer")
-    maximum = 0x1FFFFFFF if connection.extended_id else 0x7FF
-    if not 0 <= connection.arbitration_id <= maximum:
-        raise ConfigError(f"{path}.can_arbitration_id must be within 0..{maximum:#x}")
-    if not isinstance(connection.fd, bool):
-        raise ConfigError(f"{path}.CAN-FD flag must be a boolean")
-    for setting_name, value in (
-        ("can_bitrate", connection.bitrate),
-        ("can_data_bitrate", connection.data_bitrate),
-    ):
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
-            raise ConfigError(f"{path}.{setting_name} must be a positive integer when set")
-    if connection.data_bitrate is not None and not connection.fd:
-        raise ConfigError(f"{path}.can_data_bitrate requires the can-fd backend")
-    for setting_name, value in (
-        ("can_sample_point", connection.sample_point),
-        ("can_data_sample_point", connection.data_sample_point),
-    ):
-        if value is not None and (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not isfinite(value)
-            or not 0 < value <= 1
-        ):
-            raise ConfigError(f"{path}.{setting_name} must be a finite value in (0, 1] when set")
-    if connection.data_sample_point is not None and not connection.fd:
-        raise ConfigError(f"{path}.can_data_sample_point requires the can-fd backend")
-    if connection.timeout_ms <= 0:
-        raise ConfigError(f"{path}.timeout_ms must be > 0")
-
 @dataclass(frozen=True)
 class WaveBenchConfig:
     connection: ConnectionConfig
@@ -866,13 +788,6 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
                 xonxoff=_strict_bool(c, "xonxoff", False, path="connection"),
                 rtscts=_strict_bool(c, "rtscts", False, path="connection"),
                 dsrdtr=_strict_bool(c, "dsrdtr", False, path="connection"),
-                can_interface=c.get("can_interface", "socketcan"),
-                can_arbitration_id=c.get("can_arbitration_id", 0x100),
-                can_extended_id=_strict_bool(c, "can_extended_id", False, path="connection"),
-                can_bitrate=c.get("can_bitrate"),
-                can_data_bitrate=c.get("can_data_bitrate"),
-                can_sample_point=c.get("can_sample_point"),
-                can_data_sample_point=c.get("can_data_sample_point"),
             ),
             scope=ScopeConfig(
                 driver=str(s.get("driver", "rtm2032")),
@@ -954,8 +869,6 @@ def load_config(path: str | Path = "wavebench.toml") -> WaveBenchConfig:
     if config.connection.backend.lower() == "serial":
         _validate_serial_connection(config.connection.serial_connection(), path="connection")
         _validate_serial_resource(config.connection.serial_connection(), path="connection")
-    if config.connection.backend.lower() in {"can", "can-fd"}:
-        _validate_can_connection(config.connection.can_connection(), path="connection")
     from wavebench.instruments.registry import validate_instrument_reference
 
     validate_instrument_reference(config.scope.driver, expected_kind="scope")

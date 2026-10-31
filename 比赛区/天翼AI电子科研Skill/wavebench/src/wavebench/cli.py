@@ -15,9 +15,9 @@ import numpy as np
 
 from .config import load_advisor_config, load_config, vertical_scale_from_vpp
 from .data.packages import load_capture_package, load_run_package
-from .discovery import discover_instruments
+from .discovery import discover_instruments, discover_local_devices
 from .doctor import doctor_records, has_doctor_errors as has_config_doctor_errors
-from .report.html import write_run_report_html, write_run_report_pdf
+from .report.html import write_run_report
 from .report.index import write_report_index
 from .errors import ConfigError, WaveBenchError, error_envelope
 from .cli_parser import build_parser
@@ -115,6 +115,7 @@ from .plugins.lifecycle import PluginLifecycle
 from .plugins.package_inspect import inspect_plugin_package
 from .plugins.api import PluginDoctorRecord
 from .plugins.registry import (
+    advisor_dependency_doctor_records,
     advisor_doctor_records,
     build_advisor_registry,
     build_plugin_registry,
@@ -123,7 +124,11 @@ from .plugins.registry import (
     plugin_doctor_records,
 )
 from .plugins.scpi import has_scpi_doctor_errors, load_scpi_plugin, probe_scpi_plugin, scpi_plugin_doctor_records
-from .plugins.protocol import has_protocol_doctor_errors, load_protocol_plugin, protocol_plugin_doctor_records
+from .plugins.protocol import (
+    has_protocol_doctor_errors,
+    load_protocol_plugin,
+    protocol_plugin_doctor_records,
+)
 from .services.scope_service import ScopeService
 from .services.source_service import SourceService
 from .services.rf_source_service import RfSourceService
@@ -929,7 +934,15 @@ def _run_advisor_ask(args: argparse.Namespace) -> int:
         if target is not None
         else None
     )
-    _print_advisor_result(artifact, written)
+    if args.json:
+        payload = artifact.as_dict()
+        # The CLI envelope owns the schema; the on-disk decision stays unchanged.
+        payload.pop("schema")
+        payload.update(payload.pop("advisory"))
+        payload["artifact_path"] = str(written) if written is not None else None
+        _emit_json_result(payload)
+    else:
+        _print_advisor_result(artifact, written)
     return 0
 
 
@@ -987,6 +1000,7 @@ def _main(argv: list[str] | None = None) -> int:
                 records = advisor_doctor_records(
                     advisor_result.registry, load_errors=advisor_result.load_errors
                 )
+                records.extend(advisor_dependency_doctor_records())
                 _print_plugin_doctor(records)
                 return 2 if has_advisor_doctor_errors(records) else 0
             lifecycle_commands = {
@@ -1118,23 +1132,33 @@ def _main(argv: list[str] | None = None) -> int:
                     return 0 if result.matched else 2
         if args.domain == "net":
             if args.command == "discover":
+                max_hosts = args.max_hosts
+                if getattr(args, "force", False):
+                    max_hosts = 2**31 - 1
                 results = discover_instruments(
                     subnet=args.subnet,
                     ports=args.ports,
                     timeout_ms=args.timeout_ms,
                     workers=args.workers,
-                    max_hosts=args.max_hosts,
+                    max_hosts=max_hosts,
                     query_idn=not args.no_idn,
                     idn_only=args.idn_only,
                     include_visa=not args.no_visa,
-                    include_serial=args.serial,
-                    include_can=args.can,
-                    include_mdns=args.mdns,
                 )
+                if getattr(args, "serials", False) or getattr(args, "can", False):
+                    local_results = discover_local_devices(
+                        include_serial=bool(getattr(args, "serials", False)),
+                        include_can=bool(getattr(args, "can", False)),
+                    )
+                    results = results + local_results
                 if args.json:
                     _emit_json_result(_json_payload(results))
                 else:
                     _print_discovery_results(results)
+                    if getattr(args, "summary", False):
+                        from .cli_output import _print_discovery_summary
+
+                        _print_discovery_summary(results)
                 return 0
         if args.domain == "capability":
             if args.command == "explain":
@@ -1220,8 +1244,6 @@ def _main(argv: list[str] | None = None) -> int:
                 discover_workers=args.discover_workers,
                 discover_max_hosts=args.discover_max_hosts,
                 include_visa=not args.no_visa,
-                discover_serial=args.discover_serial,
-                discover_can=args.discover_can,
             )
             failed = has_config_doctor_errors(records)
             if args.json:
@@ -1418,17 +1440,18 @@ def _main(argv: list[str] | None = None) -> int:
                     raise ConfigError(
                         "run report --pdf-output is a PDF path and must not use an HTML suffix"
                     )
+                analysis_limits = None
                 if args.analysis_resources:
                     from .data.analysis_resources import load_resource_limits
 
-                    output = write_run_report_html(package, output_path=output,
-                                                   analysis_limits=load_resource_limits(args.analysis_resources))
-                else:
-                    output = write_run_report_html(package, output_path=output)
-                print(f"report={output}")
-                if args.pdf:
-                    pdf = write_run_report_pdf(package, output_path=pdf_output)
-                    print(f"pdf={pdf}")
+                    analysis_limits = load_resource_limits(args.analysis_resources)
+                outputs = write_run_report(
+                    package, output_path=output, pdf_output_path=pdf_output if args.pdf else None,
+                    analysis_limits=analysis_limits,
+                )
+                print(f"report={outputs.html}")
+                if outputs.pdf is not None:
+                    print(f"pdf={outputs.pdf}")
                 return 0
             if args.command == "report-index":
                 result = write_report_index(args.paths, args.output)
@@ -1502,6 +1525,10 @@ def _main(argv: list[str] | None = None) -> int:
                 else:
                     result = service.run(plan, execution_intent=expected_intent)
                 failed = any(step.status == "failed" for step in result.steps)
+                # Session close failures mark run.json failed; the CLI exit code
+                # and JSON envelope must follow that terminal status, not steps.
+                close_failed = bool(result.close_errors)
+                failed = failed or close_failed
                 if args.json:
                     _emit_json_result(
                         {
@@ -1509,6 +1536,7 @@ def _main(argv: list[str] | None = None) -> int:
                             "run_json": str(result.run_json_path),
                             "summary": str(result.summary_csv_path),
                             "steps": _json_payload(result.steps),
+                            "close_errors": result.close_errors,
                         },
                         status="failed" if failed else "ok",
                         exit_code=2 if failed else 0,
@@ -1518,6 +1546,8 @@ def _main(argv: list[str] | None = None) -> int:
                     print(f"run_json={result.run_json_path}")
                     print(f"summary={result.summary_csv_path}")
                     print(f"steps={len(result.steps)}")
+                    if close_failed:
+                        print(f"session_close_errors={len(result.close_errors)}")
                 return 2 if failed else 0
         if args.domain == "dmm":
             service = _load_dmm_service(args)
@@ -2465,12 +2495,6 @@ def _main(argv: list[str] | None = None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI, optionally wrapping every non-interactive result as JSON."""
-
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
-        except (AttributeError, OSError, ValueError):
-            pass
 
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if "--json" not in raw_argv:

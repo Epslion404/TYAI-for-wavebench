@@ -61,6 +61,186 @@ _SENSITIVE_TEXT = re.compile(
     # an unquoted value. Quoted strings keep their own closing-quote boundary.
     r"\S+)"
 )
+# Interpretation limits apply to each string, not the surrounding trusted Python
+# mapping. Check bytes and lexical structure BEFORE json.loads allocates a tree.
+_JSON_INPUT_BYTES = 64 * 1024
+_JSON_OUTPUT_BYTES = 64 * 1024
+_JSON_WORK_BYTES = 256 * 1024
+_JSON_MAX_DEPTH = 32
+_JSON_MAX_TOKENS = 4096
+_JSON_MAX_DECODES = 8
+_JSON_LIMIT = "[REDACTED_JSON_LIMIT]"
+_ENCODED_TEXT = "[REDACTED_ENCODED_TEXT]"
+_COLLISION_KEY = "[REDACTED_KEY_COLLISION]"
+_REDACTION_MARKERS = frozenset({
+    "[REDACTED]", _JSON_LIMIT, _ENCODED_TEXT, _COLLISION_KEY, "[REDACTED_UNTRUSTED_TEXT]",
+})
+# Embedded escaped JSON is not a complete document we can safely interpret.
+# Unicode escapes also allow a field name to evade the plain-text key matcher.
+_ENCODED_FRAGMENT = re.compile(r'(?<!\\)\\+"\s*:|\\u[0-9a-fA-F]{4}')
+
+
+class _JsonLimit(ValueError):
+    pass
+
+
+class _JsonKeyCollision(ValueError):
+    pass
+
+
+@dataclass
+class _JsonBudget:
+    bytes_left: int = _JSON_WORK_BYTES
+    tokens_left: int = _JSON_MAX_TOKENS
+    decodes_left: int = _JSON_MAX_DECODES
+
+    def before_decode(self, text: str, depth: int) -> None:
+        # len bounds the temporary UTF-8 allocation too; surrogatepass makes this
+        # safe for lone surrogates accepted by the standard JSON string decoder.
+        if len(text) > _JSON_INPUT_BYTES:
+            raise _JsonLimit
+        size = len(text.encode("utf-8", errors="surrogatepass"))
+        if size > _JSON_INPUT_BYTES or size > self.bytes_left or self.decodes_left <= 0:
+            raise _JsonLimit
+        self.bytes_left -= size
+        self.decodes_left -= 1
+        quoted = escaped = atom = False
+        nesting = depth
+        for char in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+                continue
+            if char in " \t\r\n,:}]":
+                atom = False
+                if char in "}]":
+                    nesting -= 1
+                continue
+            if char in '{["' or not atom:
+                self.tokens_left -= 1
+                if self.tokens_left < 0:
+                    raise _JsonLimit
+            if char in "{[":
+                nesting += 1
+                if nesting > _JSON_MAX_DEPTH:
+                    raise _JsonLimit
+                atom = False
+            elif char == '"':
+                quoted = True
+                atom = False
+            else:
+                atom = True
+
+
+def _redact_json_value(value: Any, budget: _JsonBudget, depth: int) -> Any:
+    """Only walk freshly decoded JSON; its tree was bounded before allocation."""
+    if depth > _JSON_MAX_DEPTH:
+        raise _JsonLimit
+    if isinstance(value, dict):
+        safe = {}
+        for key, item in value.items():
+            # JSON field names are untrusted text too. Inspect the original key
+            # when deciding whether to omit its entire value, then sanitize the
+            # name with the same shared interpretation budget as other strings.
+            safe_key = _redact_encoded_text(key, budget, depth + 1)
+            if safe_key in safe:
+                # Distinct field names can become the same redaction marker.
+                # Never pick one value or silently discard another field.
+                raise _JsonKeyCollision
+            safe[safe_key] = (
+                "[REDACTED]" if _is_sensitive_key(key)
+                else _redact_json_value(item, budget, depth + 1)
+            )
+        return safe
+    if isinstance(value, list):
+        return [_redact_json_value(item, budget, depth + 1) for item in value]
+    if isinstance(value, str):
+        return _redact_encoded_text(value, budget, depth + 1)
+    return value
+
+
+def _bounded_json_encode(value: Any, suffix: str) -> str:
+    """Bound the joined output, including its UTF-8 suffix, before returning it.
+
+    Encoder chunks come from the already bounded JSON tree; a string chunk can
+    expand its bounded scalar, but we never assemble an over-limit document.
+    """
+    if len(suffix) > _JSON_OUTPUT_BYTES:
+        raise _JsonLimit
+    remaining = _JSON_OUTPUT_BYTES - len(suffix.encode("utf-8", errors="surrogatepass"))
+    if remaining < 0:
+        raise _JsonLimit
+    chunks = []
+    for chunk in json.JSONEncoder(ensure_ascii=True).iterencode(value):
+        # ensure_ascii=True means every encoder chunk is ASCII, so len is bytes.
+        remaining -= len(chunk)
+        if remaining < 0:
+            raise _JsonLimit
+        chunks.append(chunk)
+    return "".join(chunks) + suffix
+
+
+def _redact_encoded_text(value: str, budget: _JsonBudget, depth: int) -> str:
+    if value in _REDACTION_MARKERS:
+        return value
+    # Index without strip(): oversized inputs must not create another large copy.
+    start = 0
+    while start < len(value) and value[start] in " \t\r\n":
+        start += 1
+    # Known fixed marker tokens followed by whitespace are ordinary text, not
+    # JSON containers. Still run the text redactor on the entire suffix below;
+    # this is not a bypass for marker-like strings or appended credentials.
+    marker_text = any(
+        value.startswith(marker, start)
+        and (start + len(marker) == len(value) or value[start + len(marker)].isspace())
+        for marker in _REDACTION_MARKERS
+    )
+    if start < len(value) and value[start] in '{["' and not marker_text:
+        if depth > _JSON_MAX_DEPTH:
+            raise _JsonLimit
+        budget.before_decode(value, depth)
+        # A leading JSON string token can carry a plain diagnostic suffix.
+        # Locate its closing quote lexically; json.loads still validates every
+        # escape. The complete input was budgeted before making this slice.
+        end = len(value)
+        if value[start] == '"':
+            escaped = False
+            for index in range(start + 1, len(value)):
+                char = value[index]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    end = index + 1
+                    break
+        try:
+            decoded = json.loads(value[:end])
+        except RecursionError:
+            raise _JsonLimit from None
+        except ValueError:
+            # Preserve the existing line/quote rules for malformed plain JSON.
+            # Escaped fragments cannot safely fall back to the plain key regex.
+            if value[start] == '"':
+                return _ENCODED_TEXT
+        else:
+            safe = _redact_json_value(decoded, budget, depth)
+            suffix = value[end:]
+            safe_suffix = _redact_encoded_text(suffix, budget, depth) if suffix else suffix
+            if safe_suffix == _ENCODED_TEXT:
+                return _ENCODED_TEXT
+            if safe == decoded and safe_suffix == suffix:
+                return value
+            # A string input always stays a string, including each outer wrapper.
+            return _bounded_json_encode(safe, safe_suffix)
+    safe_text = _SENSITIVE_TEXT.sub("[REDACTED]", value)
+    if _ENCODED_FRAGMENT.search(safe_text):
+        return _ENCODED_TEXT
+    return safe_text
 
 
 class _FrozenDict(dict):
@@ -85,15 +265,41 @@ def _is_sensitive_key(key: object) -> bool:
 
 
 def _redact_sensitive_text(value: str) -> str:
-    return _SENSITIVE_TEXT.sub("[REDACTED]", value)
+    try:
+        safe = _redact_encoded_text(value, _JsonBudget(), 0)
+        if safe != value and safe not in _REDACTION_MARKERS:
+            # Exactly one bounded validation pass, never a retry-to-convergence
+            # loop. The output must be accepted unchanged by the same contract,
+            # including cumulative work/tokens/depth, before crossing a boundary.
+            if _redact_encoded_text(safe, _JsonBudget(), 0) != safe:
+                return _JSON_LIMIT
+        return safe
+    except _JsonLimit:
+        # Discard the original string, never a partially processed prefix/suffix.
+        return _JSON_LIMIT
+    except _JsonKeyCollision:
+        return _ENCODED_TEXT
 
 
 def redact_sensitive(value: Any) -> Any:
+    """递归脱敏结构化值；Mapping 的字段名与值使用同一文本规则。
+
+    字段名本身也是不可信文本：先按 ``_redact_sensitive_text`` 处理，再判断是否
+    遮蔽整个值（仍由原字段名决定）。不同原字段名脱敏后撞名时，该层 mapping
+    替换为单条 ``{[REDACTED_KEY_COLLISION]: [REDACTED_ENCODED_TEXT]}``，保持
+    mapping 类型，避免 preview/client/artifact 的结构字段退化成字符串；不覆盖、
+    不择一，也不与既有 marker 键合并，外层同级的普通字段保留。
+    """
     if isinstance(value, Mapping):
-        return {
-            str(key): "[REDACTED]" if _is_sensitive_key(key) else redact_sensitive(item)
-            for key, item in value.items()
-        }
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            safe_key = _redact_sensitive_text(str(key))
+            if safe_key in safe:
+                return {_COLLISION_KEY: _ENCODED_TEXT}
+            safe[safe_key] = (
+                "[REDACTED]" if _is_sensitive_key(key) else redact_sensitive(item)
+            )
+        return safe
     if isinstance(value, (list, tuple)):
         return [redact_sensitive(item) for item in value]
     if isinstance(value, str):

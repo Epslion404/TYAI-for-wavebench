@@ -1,0 +1,37 @@
+# 声明式非 SCPI 帧协议示例
+#
+# 这个文件是本地协议插件的离线描述，`wavebench plugin protocol check <path>`
+# 会校验它而不打开任何传输。示例展示 delimiter framing + 单字节转义 +
+# CRC16/Modbus + 命名请求映射的常见组合。真实型号请替换 magic、字段和 CRC。
+
+driver_id = "example.bus-sensor"
+kind = "scope"
+display_name = "Example Raw-Bus Sensor"
+manufacturer = "Example"
+models = ["BUS-SENSOR-1"]
+capabilities = ["scope.idn"]
+summary = "Offline declarative non-SCPI frame protocol example."
+
+[protocol]
+framing = "delimiter"
+magic_hex = "A5"
+header_bytes = 1
+max_frame_bytes = 64
+sample_type = "u16"
+endian = "little"
+checksum = "crc16_modbus"
+delimiter_hex = "0A"
+escape_hex = "5C"
+response_timeout_ms = 500
+inter_frame_gap_ms = 0
+
+# 命名请求映射：request_hex 是固定请求帧；response_timeout_ms 可覆盖全局帧超时。
+[[protocol.requests]]
+name = "read_status"
+request_hex = "A501"
+response_timeout_ms = 250
+
+[[protocol.requests]]
+name = "read_measurement"
+request_hex = "A502"
+response_timeout_ms = 500

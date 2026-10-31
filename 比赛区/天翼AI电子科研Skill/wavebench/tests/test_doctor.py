@@ -92,28 +92,6 @@ def test_doctor_suggests_windows_serial_resources():
         assert "串口" in _resource_suggestion(resource)
 
 
-def test_doctor_does_not_send_an_implicit_scpi_probe_on_can():
-    config = make_config()
-    object.__setattr__(
-        config,
-        "connection",
-        ConnectionConfig(
-            backend="can",
-            resource="can0",
-            timeout_ms=1000,
-            opc_timeout_ms=30000,
-        ),
-    )
-
-    records = doctor_records(
-        config,
-        idn_probe=lambda *_args: (_ for _ in ()).throw(AssertionError("must not probe CAN as SCPI")),
-    )
-
-    assert all(record.severity == "warning" for record in records)
-    assert all("no implicit SCPI" in record.message for record in records)
-
-
 def test_doctor_appends_candidate_for_unreachable_matching_idn():
     def discoverer(**kwargs):
         assert kwargs["subnet"] == "192.0.2.0/24"
@@ -171,28 +149,6 @@ def test_doctor_does_not_suggest_candidate_for_healthy_target():
     )
 
     assert not [record for record in records if record.severity == "candidate"]
-
-
-def test_doctor_forwards_local_serial_and_can_enumeration_flags():
-    captured = {}
-
-    def discoverer(**kwargs):
-        captured.update(kwargs)
-        return []
-
-    doctor_records(
-        make_config(),
-        idn_probe=lambda resource, timeout_ms: "Rohde&Schwarz,RTM2032,123,06.010",
-        discover_serial=True,
-        discover_can=True,
-        include_visa=False,
-        discoverer=discoverer,
-    )
-
-    assert captured["subnet"] is None
-    assert captured["include_serial"] is True
-    assert captured["include_can"] is True
-    assert captured["include_visa"] is False
 
 
 def test_doctor_uses_serial_transport_for_serial_dmm(monkeypatch):
