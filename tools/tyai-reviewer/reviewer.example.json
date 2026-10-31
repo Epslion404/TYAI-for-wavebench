@@ -1,0 +1,15 @@
+{
+  "repository": "Epslion404/TYAI-for-wavebench",
+  "repository_path": "<path to a local WaveBench checkout>",
+  "policy_path": "<path to the local reviewer policy file>",
+  "state_dir": "<path to a writable local state directory>",
+  "opencode": "<path to the OpenCode executable>",
+  "model": "krill/gpt-6.1-sol",
+  "hardware_python": "<path to Python with hardware dependencies, if used>",
+  "gh": "gh",
+  "proxy": "http://127.0.0.1:7897",
+  "poll_seconds": 120,
+  "workers": 1,
+  "review_timeout_seconds": 1800,
+  "auto_permissions": false
+}
