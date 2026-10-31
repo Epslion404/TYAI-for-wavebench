@@ -26,8 +26,8 @@ V2 entry point 名必须与 canonical `driver_id` 一致。可执行插件不能
 
 ## 声明式二进制帧
 
-本节描述开发线的离线校验切片，尚未随正式版本发布。完整协议接入合同见
-[自定义设备与协议 RFC](../../project/rfcs/WaveBench_自定义设备与协议支持RFC.md)。
+本节描述开发线的离线校验切片，尚未随正式版本发布。完整协议接入提案的状态见
+[RFC 索引](../../rfcs/index.md)。
 
 `plugin protocol check` 和 `plugin protocol info` 通过
 位置参数 `path` 读取本地 TOML，不打开 transport。字段与默认值由
@@ -45,7 +45,7 @@ header 和精确长度；分隔符 framing 以首次分隔符结束，拒绝内�
 
 `plugin list` 与 `plugin doctor` 用 `--category {instrument|advisor}` 选择类别（默认 `instrument`）。`--include-entry-points` 在 advisor 类别下加载 `wavebench.advisor` 入口点；`--kind` 与 `--load` 只对仪器插件有效，advisor 类别下会报错。
 
-实现状态：开发线已实现，未随正式版本发布；包内安装与生命周期路径尚未覆盖。合同与裁决见 [advisor 插件类别 RFC](../../project/rfcs/WaveBench_advisor插件RFC.md)，实现流程见[advisor 插件开发](../../development/advisor-plugin-development.md)。
+实现状态：开发线已实现，未随正式版本发布；包内安装与生命周期路径尚未覆盖。合同状态见 [RFC 索引](../../rfcs/index.md)，实现流程见[advisor 插件开发](../../development/advisor-plugin-development.md)。
 
 ## 相关页面
 
