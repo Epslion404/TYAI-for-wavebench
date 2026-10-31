@@ -941,6 +941,19 @@ def _print_discovery_results(results: list[Any]) -> None:
         )
 
 
+def _print_discovery_summary(results: list[Any]) -> None:
+    from collections import Counter
+
+    total = len(results)
+    by_source = Counter(getattr(item, "source", "unknown") for item in results)
+    by_protocol = Counter(getattr(item, "protocol", "unknown") for item in results)
+    source_text = ", ".join(f"{source}={count}" for source, count in sorted(by_source.items()))
+    protocol_text = ", ".join(
+        f"{protocol}={count}" for protocol, count in sorted(by_protocol.items())
+    )
+    print(f"summary_total={total} sources=({source_text}) protocols=({protocol_text})")
+
+
 def _print_doctor_records(records: list[Any]) -> None:
     print("severity\ttarget\tdriver\tresource\tidn\tmessage\tsuggestion")
     for item in records:

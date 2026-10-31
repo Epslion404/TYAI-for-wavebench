@@ -13,6 +13,7 @@ from wavebench.services.access_policy import AccessMode, normalize_access_mode
 from wavebench.services.resource_lease import ResourceLease, resource_fingerprint
 from wavebench.transport.base import InstrumentTransport
 from wavebench.transport.binary import visa_binary_contract_supported
+from wavebench.transport.can_transport import CanTransport
 from wavebench.transport.guarded import GuardedAuditedTransport
 from wavebench.transport.pyvisa_transport import PyVisaTransport
 from wavebench.transport.rsinstrument_transport import RsInstrumentTransport
@@ -86,8 +87,22 @@ def open_instrument_driver(
     construction_latched = bounded_binary_profile_opt_in or strict_v2_capability_opt_in
     backend = _select_backend(configured_backend, descriptor.backends)
     _validate_resource_scheme(resource, descriptor.resource_schemes)
+    # Core-owned transport parameters (``can_*``) are not descriptor business
+    # options; set them aside before the driver-level option validation so a CAN
+    # descriptor does not have to re-declare bitrate/fd/termination settings.
+    transport_options = {
+        key: value
+        for key, value in (options or {}).items()
+        if key.startswith("can_")
+    }
     try:
-        validated_options = descriptor.validate_options(options or {})
+        validated_options = descriptor.validate_options(
+            {
+                key: value
+                for key, value in (options or {}).items()
+                if key not in transport_options
+            }
+        )
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"invalid options for instrument driver {descriptor.driver_id!r}: {exc}") from exc
 
@@ -116,6 +131,9 @@ def open_instrument_driver(
                 read_retry_delay_ms=read_retry_delay_ms,
                 logger=logger,
                 serial_config=serial_config,
+                # Core-owned transport parameters (``can_*``) bypass the
+                # descriptor business-option validator.
+                options=transport_options,
             )
             session_state = InstrumentSessionState()
             transport = GuardedAuditedTransport(
@@ -261,6 +279,7 @@ class TransportRequest:
     read_retry_delay_ms: int
     logger: CommandLogger
     serial_config: SerialConnectionConfig | None = None
+    options: Mapping[str, object] | None = None
 
 
 TransportFactory = Callable[[TransportRequest], InstrumentTransport]
@@ -294,6 +313,30 @@ def _open_rsinstrument_visa(request: TransportRequest) -> InstrumentTransport:
     )
 
 
+def _open_can(request: TransportRequest) -> InstrumentTransport:
+    """Open a CAN/CAN-FD bus through python-can.
+
+    CAN configuration is carried by the resource string (``can://<channel>``)
+    and optional CORE options declared by the descriptor.  ``python-can`` is an
+    optional extra, so a missing adapter fails before instrument I/O.
+    """
+    options = dict(request.options or {})
+    is_fd = bool(options.get("can_fd", False))
+    return CanTransport.open(
+        request.serial_config,
+        logger=request.logger,
+        resource=request.resource,
+        channel=options.get("can_channel"),
+        bitrate=int(options.get("can_bitrate", 500_000)),
+        arbitration_id=int(options.get("can_arbitration_id", 0x100)),
+        is_extended_id=bool(options.get("can_extended_id", False)),
+        is_fd=is_fd,
+        read_timeout_ms=int(options.get("can_read_timeout_ms", 500)),
+        max_frame_bytes=int(options.get("can_max_frame_bytes", 64 if is_fd else 8)),
+        options=options,
+    )
+
+
 _SELECT_VISA_BACKENDS = {
     "rsinstrument-socket": "socketio",
     "rsinstrument-rsvisa": "rs",
@@ -309,6 +352,7 @@ TRANSPORT_FACTORIES: dict[str, TransportFactory] = {
     "rsinstrument-socket": _open_rsinstrument_visa,
     "rsinstrument-rsvisa": _open_rsinstrument_visa,
     "rsinstrument-pyvisa-py": _open_rsinstrument_visa,
+    "can": _open_can,
 }
 
 
@@ -322,6 +366,7 @@ def _open_transport(
     read_retry_delay_ms: int,
     logger: CommandLogger,
     serial_config: SerialConnectionConfig | None,
+    options: Mapping[str, object] | None = None,
 ) -> InstrumentTransport:
     factory = TRANSPORT_FACTORIES.get(backend)
     if factory is None:
@@ -345,6 +390,7 @@ def _open_transport(
         read_retry_delay_ms=read_retry_delay_ms,
         logger=logger,
         serial_config=serial_config,
+        options=options,
     )
     return factory(request)
 

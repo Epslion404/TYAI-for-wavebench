@@ -74,7 +74,43 @@ class FrameDefinition:
 
     def __post_init__(self) -> None:
         if self.escape is not None:
-            raise ConfigError("protocol.escape_hex is unsupported; byte-stuffing encoding is not defined")
+            _validate_escape(self.escape, self.delimiter, self.framing)
+
+    def _unescape_wire(self, frame: bytes) -> bytes:
+        """Decode a wire frame to its logical payload with byte stuffing.
+
+        Every escape byte must be followed by exactly one literal byte; a
+        trailing or isolated escape is a structured framing failure.
+        """
+        assert self.escape is not None
+        escape = self.escape
+        assert len(escape) == 1
+        escape_byte = escape[0]
+        decoded = bytearray()
+        index = 0
+        while index < len(frame):
+            byte = frame[index]
+            if byte == escape_byte:
+                if index + 1 >= len(frame):
+                    raise _frame_error("frame_escape_isolated", len(frame))
+                decoded.append(frame[index + 1])
+                index += 2
+            else:
+                decoded.append(byte)
+                index += 1
+        return bytes(decoded)
+
+    def _encode_escape(self, payload: bytes) -> bytes:
+        """Byte-stuff a logical payload so embedded delimiters are escaped."""
+        assert self.escape is not None
+        escape = self.escape[0]
+        delimiter = self.delimiter or b""
+        encoded = bytearray()
+        for byte in payload:
+            if byte == escape or (delimiter and byte == delimiter[0]):
+                encoded.append(escape)
+            encoded.append(byte)
+        return bytes(encoded)
 
     def validate_frame(self, frame: bytes) -> bytes:
         """Validate exactly one complete wire frame without allocating from its length."""
@@ -111,20 +147,133 @@ class FrameDefinition:
         if self.delimiter is not None:
             if not frame.endswith(self.delimiter):
                 raise _frame_error("frame_delimiter_missing", size)
-            if self.framing == "delimiter" and frame.find(self.delimiter) != size - trailer:
-                raise _frame_error("frame_multiple_delimiters", size)
+            if self.framing == "delimiter":
+                self._check_single_delimiter(frame, size, trailer)
         if crc_bytes:
             payload_end = size - trailer - crc_bytes
             expected_crc = int.from_bytes(frame[payload_end:payload_end + 2], "little")
-            if _crc16_modbus(frame[:payload_end]) != expected_crc:
+            crc_source = frame[:payload_end]
+            if self.escape is not None:
+                crc_source = self._unescape_crc_source(frame[:payload_end])
+            if _crc16_modbus(crc_source) != expected_crc:
                 raise _frame_error("frame_checksum_failed", size)
         return frame
+
+    def _check_single_delimiter(self, frame: bytes, size: int, trailer: int) -> None:
+        """Delimiter framing must contain exactly one unescaped trailing delimiter."""
+        if self.escape is None:
+            if frame.find(self.delimiter) != size - trailer:
+                raise _frame_error("frame_multiple_delimiters", size)
+            return
+        escape_byte = self.escape[0]
+        assert self.delimiter is not None
+        delimiter_byte = self.delimiter[0]
+        index = 0
+        body_end = size - trailer
+        while index < body_end:
+            byte = frame[index]
+            if byte == escape_byte:
+                if index + 1 >= body_end:
+                    raise _frame_error("frame_escape_isolated", size)
+                index += 2
+                continue
+            if byte == delimiter_byte:
+                raise _frame_error("frame_multiple_delimiters", size)
+            index += 1
+
+    def _unescape_crc_source(self, data: bytes) -> bytes:
+        """Decode the CRC-covered region for checksum validation."""
+        if self.escape is None:
+            return data
+        if self.framing == "delimiter":
+            return self._unescape_wire(data)
+        return data
+
+    def extract_stream_frame(self, buffer: bytes) -> tuple[bytes | None, bytes]:
+        """Extract the first complete frame from a stream buffer.
+
+        Returns ``(frame, remaining)`` when a full wire frame is available, or
+        ``(None, buffer)`` when more bytes are needed.  A malformed frame raises
+        a structured TransportIOError instead of being silently consumed.
+        """
+        if not isinstance(buffer, bytes):
+            raise ConfigError("protocol stream buffer must be bytes")
+        if not buffer:
+            return None, b""
+        if self.framing == "delimiter":
+            return self._extract_delimited(buffer)
+        if self.framing == "fixed":
+            assert self.fixed_length is not None
+            if len(buffer) < self.fixed_length:
+                return None, buffer
+            candidate, remaining = buffer[: self.fixed_length], buffer[self.fixed_length :]
+            self.validate_frame(candidate)
+            return candidate, remaining
+        assert self.framing == "length_prefixed"
+        assert self.length_offset is not None and self.length_bytes is not None
+        assert self.length_endian is not None
+        if len(buffer) < self.header_bytes:
+            return None, buffer
+        end = self.length_offset + self.length_bytes
+        declared = int.from_bytes(buffer[self.length_offset:end], self.length_endian)
+        body = declared if self.length_includes_header else self.header_bytes + declared
+        trailer = len(self.delimiter or b"")
+        crc_bytes = 2 if self.checksum == "crc16_modbus" else 0
+        expected = body + crc_bytes + trailer
+        if expected > self.max_frame_bytes:
+            raise _frame_error("frame_too_large", len(buffer))
+        if len(buffer) < expected:
+            return None, buffer
+        candidate, remaining = buffer[:expected], buffer[expected:]
+        self.validate_frame(candidate)
+        return candidate, remaining
+
+    def _extract_delimited(self, buffer: bytes) -> tuple[bytes | None, bytes]:
+        delimiter = self.delimiter
+        assert delimiter is not None
+        escape = self.escape[0] if self.escape is not None else None
+        index = 0
+        while index < len(buffer):
+            byte = buffer[index]
+            if escape is not None and byte == escape:
+                if index + 1 >= len(buffer):
+                    return None, buffer
+                index += 2
+                continue
+            if buffer.startswith(delimiter, index):
+                candidate = buffer[: index + len(delimiter)]
+                if len(candidate) > self.max_frame_bytes:
+                    raise _frame_error("frame_too_large", len(candidate))
+                self.validate_frame(candidate)
+                return candidate, buffer[index + len(delimiter) :]
+            index += 1
+        return None, buffer
+
+    def encode_request(self, payload: bytes) -> bytes:
+        """Build a wire frame from a logical payload (escape-aware)."""
+        if not isinstance(payload, bytes):
+            raise ConfigError("protocol request payload must be bytes")
+        if self.escape is not None and self.framing == "delimiter":
+            payload = self._encode_escape(payload)
+        # Reuse the validation path so a payload that cannot form a legal frame
+        # (wrong length, oversized, magic absent) fails before transmission.
+        return self.validate_frame(payload)
+
+
+@dataclass(frozen=True)
+class RequestDefinition:
+    """One named request mapping: a fixed request frame and its response budget."""
+
+    name: str
+    request_hex: bytes
+    response_timeout_ms: int | None = None
 
 
 @dataclass(frozen=True)
 class DeclarativeProtocolPlugin:
     plugin: InstrumentPlugin
     frame: FrameDefinition
+    requests: tuple[RequestDefinition, ...] = ()
 
 
 def load_protocol_plugin(path: str | Path) -> DeclarativeProtocolPlugin:
@@ -181,7 +330,8 @@ def _parse_protocol_plugin(raw: Any) -> DeclarativeProtocolPlugin:
         raise ConfigError(f"unsupported kind {plugin.kind!r}")
     if plugin.api_version != SUPPORTED_PLUGIN_API_VERSION:
         raise ConfigError(f"unsupported api_version {plugin.api_version!r}")
-    return DeclarativeProtocolPlugin(plugin, frame)
+    requests = _parse_requests(raw["protocol"])
+    return DeclarativeProtocolPlugin(plugin, frame, requests=requests)
 
 
 def _parse_frame_definition(raw: dict[str, Any]) -> FrameDefinition:
@@ -195,8 +345,7 @@ def _parse_frame_definition(raw: dict[str, Any]) -> FrameDefinition:
     assert magic is not None
     if not len(magic) <= header <= maximum:
         raise ConfigError("protocol.header_bytes must be within magic length..max_frame_bytes")
-    if "escape_hex" in raw:
-        raise ConfigError("protocol.escape_hex is unsupported; byte-stuffing encoding is not defined")
+    escape = _hex(raw, "escape_hex")
     fixed = _optional_integer(raw, "fixed_length", 1, maximum)
     offset = _optional_integer(raw, "length_offset", 0, header)
     width = _optional_integer(raw, "length_bytes", 1, 4)
@@ -229,14 +378,73 @@ def _parse_frame_definition(raw: dict[str, Any]) -> FrameDefinition:
             raise ConfigError("delimiter framing requires delimiter_hex")
         if fixed is not None or length_keys.intersection(raw) or includes:
             raise ConfigError("delimiter framing must not declare fixed or length fields")
+    _validate_escape(escape, delimiter, framing)
     return FrameDefinition(
         framing=framing, magic=magic, header_bytes=header, max_frame_bytes=maximum,
         response_timeout_ms=_integer(raw, "response_timeout_ms", 1, MAX_PROTOCOL_TIME_MS, 1000),
         inter_frame_gap_ms=_integer(raw, "inter_frame_gap_ms", 0, MAX_PROTOCOL_TIME_MS, 0),
         sample_type=sample_type, endian=endian, checksum=checksum, fixed_length=fixed,
         length_offset=offset, length_bytes=width, length_endian=length_endian,
-        length_includes_header=includes, delimiter=delimiter,
+        length_includes_header=includes, delimiter=delimiter, escape=escape,
     )
+
+
+def _validate_escape(escape: bytes | None, delimiter: bytes | None, framing: str) -> None:
+    """Escape byte stuffing is only meaningful for single-byte delimiter framing."""
+    if escape is None:
+        return
+    if not isinstance(escape, bytes) or len(escape) != 1:
+        raise ConfigError("protocol.escape_hex must be exactly one byte")
+    if framing != "delimiter":
+        raise ConfigError("protocol.escape_hex is only supported for delimiter framing")
+    if delimiter is None:
+        raise ConfigError("protocol.escape_hex requires delimiter_hex")
+    if len(delimiter) != 1:
+        raise ConfigError("protocol.escape_hex requires a single-byte delimiter_hex")
+    if escape == delimiter:
+        raise ConfigError("protocol.escape_hex must differ from delimiter_hex")
+
+
+def _parse_requests(raw: dict[str, Any]) -> tuple[RequestDefinition, ...]:
+    values = raw.get("requests", [])
+    if not isinstance(values, list):
+        raise ConfigError("protocol.requests must be an array of tables")
+    parsed: list[RequestDefinition] = []
+    for index, value in enumerate(values):
+        path = f"protocol.requests[{index}]"
+        if not isinstance(value, dict):
+            raise ConfigError(f"{path} must be a TOML table")
+        name = value.get("name")
+        if not isinstance(name, str) or not name.strip() or name.strip() != name:
+            raise ConfigError(f"{path}.name must be a non-empty trimmed string")
+        request_hex = value.get("request_hex")
+        if not isinstance(request_hex, str) or not request_hex or len(request_hex) % 2:
+            raise ConfigError(f"{path}.request_hex must be a non-empty even-length hex string")
+        try:
+            request = bytes.fromhex(request_hex)
+        except ValueError as exc:
+            raise ConfigError(f"{path}.request_hex must be hexadecimal") from exc
+        if not request:
+            raise ConfigError(f"{path}.request_hex must be non-empty")
+        timeout = None
+        if "response_timeout_ms" in value:
+            timeout = _integer(
+                value,
+                "response_timeout_ms",
+                1,
+                MAX_PROTOCOL_TIME_MS,
+            )
+        normalized_name = name.strip()
+        if any(item.name == normalized_name for item in parsed):
+            raise ConfigError("protocol.requests names must be unique")
+        parsed.append(
+            RequestDefinition(
+                name=normalized_name,
+                request_hex=request,
+                response_timeout_ms=timeout,
+            )
+        )
+    return tuple(parsed)
 
 
 def _integer(raw: dict[str, Any], key: str, minimum: int, maximum: int,
@@ -309,6 +517,6 @@ def _crc16_modbus(data: bytes) -> int:
 
 __all__ = [
     "DeclarativeProtocolPlugin", "FrameDefinition", "MAX_DECLARED_FRAME_BYTES",
-    "MAX_PROTOCOL_MANIFEST_BYTES", "MAX_PROTOCOL_TIME_MS", "load_protocol_plugin",
-    "protocol_plugin_doctor_records", "has_protocol_doctor_errors",
+    "MAX_PROTOCOL_MANIFEST_BYTES", "MAX_PROTOCOL_TIME_MS", "RequestDefinition",
+    "load_protocol_plugin", "protocol_plugin_doctor_records", "has_protocol_doctor_errors",
 ]

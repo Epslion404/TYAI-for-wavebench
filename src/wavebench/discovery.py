@@ -1,3 +1,11 @@
+"""Device discovery: LAN/VISA plus serial ports and CAN adapters.
+
+The LAN scanner keeps its historical output shape.  Local device enumeration
+adds serial ports (pyserial ``list_ports``) and CAN adapters (python-can
+``interfaces``) as separate ``source`` values so downstream tools can tell
+network resources from locally connected buses.
+"""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +21,7 @@ from wavebench.services.resource_lease import ResourceLease
 
 DEFAULT_DISCOVERY_PORTS = (5025, 5555, 111)
 SCPI_SOCKET_PORTS = {5025, 5555}
+MODBUS_TCP_PORTS = {502}
 
 
 @dataclass(frozen=True)
@@ -269,14 +278,148 @@ def _open_port_result(address: str, port: int) -> DiscoveryResult:
             status="open",
             note="VXI-11 RPC port open; verify with idn",
         )
+    if port in MODBUS_TCP_PORTS:
+        return DiscoveryResult(
+            address=address,
+            port=port,
+            protocol="modbus-tcp",
+            resource=f"TCPIP::{address}::{port}::SOCKET",
+            source="network",
+            status="open",
+            note="Modbus/TCP port open; not treated as a SCPI instrument",
+        )
     return DiscoveryResult(
         address=address,
         port=port,
-        protocol="tcp",
+        protocol="unknown",
         resource=f"TCPIP::{address}::{port}::SOCKET",
         source="network",
         status="open",
+        note="unsupported protocol; not treated as an instrument",
     )
+
+
+def discover_serial_ports(
+    *,
+    list_ports: Callable[[], Iterable[object]] | None = None,
+) -> list[DiscoveryResult]:
+    """Enumerate local serial ports (COM/tty) as discovery results.
+
+    Missing or unauthorized enumeration surfaces a structured ConfigError
+    instead of silently returning an empty list.  A fake ``list_ports`` is used
+    by offline tests.
+    """
+    try:
+        from serial.tools import list_ports as serial_list_ports
+    except ImportError as exc:
+        raise ConfigError(
+            "serial enumeration requires pyserial; run: python -m pip install pyserial"
+        ) from exc
+    enumerator = list_ports or serial_list_ports.comports
+    try:
+        ports = list(enumerator())
+    except Exception as exc:
+        raise ConfigError(f"unable to enumerate serial ports: {exc}") from exc
+    results: list[DiscoveryResult] = []
+    for port in ports:
+        device = getattr(port, "device", None)
+        if not device:
+            continue
+        description = str(getattr(port, "description", "") or "")
+        hwid = str(getattr(port, "hwid", "") or "")
+        results.append(
+            DiscoveryResult(
+                address=device,
+                port=None,
+                protocol="serial",
+                resource=device,
+                source="serial",
+                status="listed",
+                idn=None,
+                note=_serial_protocol_note(hwid, description),
+            )
+        )
+    return sorted(results, key=_result_sort_key)
+
+
+def discover_can_adapters(
+    *,
+    can_module: object | None = None,
+    list_interfaces: Callable[[], Iterable[str]] | None = None,
+) -> list[DiscoveryResult]:
+    """Enumerate python-can interfaces available on this host.
+
+    ``can_module`` lets offline tests inject a fake python-can package.  The
+    default path lists the python-can ``BACKENDS`` registry (interfaces that
+    can be imported by this install); it never opens or claims a bus.
+    """
+    try:
+        import can
+    except ImportError as exc:
+        raise ConfigError(
+            "CAN enumeration requires python-can; run: python -m pip install wavebench[can]"
+        ) from exc
+    module = can_module or can
+    interfaces: Iterable[str]
+    if list_interfaces is not None:
+        interfaces = list_interfaces()
+    else:
+        interface_module = getattr(module, "interface", None)
+        backends = getattr(interface_module, "BACKENDS", None)
+        if isinstance(backends, dict):
+            interfaces = [str(name) for name in backends]
+        elif isinstance(backends, (list, tuple, set, frozenset)):
+            interfaces = [str(name) for name in backends]
+        else:
+            interfaces = [
+                name
+                for name in dir(interface_module)
+                if not name.startswith("_") and not callable(getattr(interface_module, name, None))
+            ]
+    results = [
+        DiscoveryResult(
+            address=name,
+            port=None,
+            protocol="can",
+            resource=f"can://{name}",
+            source="can",
+            status="listed",
+            idn=None,
+            note="CAN interface available (python-can)",
+        )
+        for name in interfaces
+    ]
+    return sorted(results, key=_result_sort_key)
+
+
+def _serial_protocol_note(hwid: str, description: str) -> str:
+    normalized = f"{hwid} {description}".upper()
+    if "USB" in normalized:
+        return "USB serial adapter"
+    if "PCI" in normalized:
+        return "PCI serial port"
+    return "serial port"
+
+
+def discover_local_devices(
+    *,
+    include_serial: bool = True,
+    include_can: bool = True,
+    list_ports: Callable[[], Iterable[object]] | None = None,
+    list_can_interfaces: Callable[[], Iterable[str]] | None = None,
+) -> list[DiscoveryResult]:
+    """Enumerate locally connected serial ports and CAN interfaces.
+
+    Returns an empty list only when both enumeration paths are disabled; any
+    enumeration that fails (missing dependency, no permission) raises a
+    structured ConfigError rather than returning an empty list.
+    """
+    results: list[DiscoveryResult] = []
+    if include_serial:
+        results.extend(discover_serial_ports(list_ports=list_ports))
+    if include_can:
+        results.extend(discover_can_adapters(list_interfaces=list_can_interfaces))
+    return _dedupe_results(results)
 
 
 def _query_visa_idn(manager: object, resource: str, timeout_ms: int) -> str | None:

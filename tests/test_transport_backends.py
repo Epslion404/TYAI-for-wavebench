@@ -77,6 +77,7 @@ class TransportBackendDispatchTests(unittest.TestCase):
         self.assertEqual(
             sorted(TRANSPORT_FACTORIES),
             [
+                "can",
                 "pyvisa",
                 "rsinstrument",
                 "rsinstrument-pyvisa-py",
@@ -87,10 +88,10 @@ class TransportBackendDispatchTests(unittest.TestCase):
         )
 
     def test_unknown_backend_fails_before_any_io(self):
-        with self.assertRaisesRegex(ConfigError, "unsupported instrument transport backend: can"):
+        with self.assertRaisesRegex(ConfigError, "unsupported instrument transport backend: udp"):
             _open_transport(
-                backend="can",
-                resource="can://can0",
+                backend="udp",
+                resource="udp://192.0.2.1:5025",
                 timeout_ms=1000,
                 opc_timeout_ms=1000,
                 read_retry_attempts=1,
@@ -168,6 +169,55 @@ class TransportBackendDispatchTests(unittest.TestCase):
         self.assertEqual(opened.driver.idn(), "EXAMPLE,SERIAL")
         self.assertIs(opened.transport.inner, concrete)
         self.assertEqual(captured["serial_config"].baudrate, 115200)
+
+    def test_declared_can_scope_opens_through_core_factory_with_virtual_bus(self):
+        """A descriptor declaring ``can`` backend opens a real python-can virtual bus."""
+
+        class Driver:
+            def idn(self):
+                return "EXAMPLE,CAN"
+
+            def close(self):
+                pass
+
+        descriptor = InstrumentDescriptor(
+            driver_id="example.can.scope",
+            kind="scope",
+            display_name="Example CAN scope",
+            manufacturer="Example",
+            models=("CAN",),
+            aliases=(),
+            capabilities=("scope.idn",),
+            idn_patterns=("EXAMPLE,CAN",),
+            backends=("can",),
+            resource_schemes=("can",),
+            option_specs=(),
+            permissions=("instrument.io",),
+            factory=lambda context: (context.open_transport(), Driver())[1],
+        )
+
+        with patch(
+            "wavebench.instruments.factory.resolve_instrument_descriptor",
+            return_value=descriptor,
+        ):
+            opened = open_instrument_driver(
+                driver_reference="example.can.scope",
+                expected_kind="scope",
+                resource="can://offline-factory-can",
+                configured_backend="can",
+                timeout_ms=1000,
+                opc_timeout_ms=1000,
+                read_retry_attempts=1,
+                read_retry_delay_ms=0,
+                logger=CommandLogger(),
+                options={"can_interface": "virtual"},
+                access="read_write",
+            )
+
+        self.assertEqual(opened.driver.idn(), "EXAMPLE,CAN")
+        self.assertEqual(opened.transport.resource, "can://offline-factory-can")
+        opened.transport.close()
+        opened.transport.close()  # guarded close is idempotent
 
 
 if __name__ == "__main__":

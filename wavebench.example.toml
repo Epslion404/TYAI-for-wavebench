@@ -23,6 +23,13 @@ backend = "lan"
 # rtscts = false
 # dsrdtr = false
 
+# Use "can" only when the selected descriptor declares that backend (dev line).
+# Requires `pip install wavebench[can]`.  The resource must be `can://<channel>`.
+# CAN options come from the descriptor's [options] table (can_bitrate, can_fd,
+# can_arbitration_id, can_extended_id, can_max_frame_bytes, can_read_timeout_ms).
+# backend = "can"
+# resource = "can://can0"
+
 # VISA resource string for the oscilloscope.
 # Replace the IP address with your oscilloscope LAN address. For the external
 # RTM2000 SocketIO path, this INSTR form is opened as TCPIP::<host>::5025::SOCKET.

@@ -5,7 +5,6 @@ the implementation. No transport, executable plugin, pip or hardware is used.
 """
 
 import json
-from dataclasses import replace
 
 import pytest
 
@@ -169,22 +168,59 @@ def test_multibyte_overlapping_delimiter_is_not_a_single_frame():
                        b"AxxABABA", "frame_multiple_delimiters")
 
 
-@pytest.mark.parametrize("framing", SHAPES)
-def test_escape_declaration_fails_closed_including_escaped_example(tmp_path, capsys, framing):
-    # A1\\\n2\n would need an agreed byte-stuffing decoder before frame splitting.
+@pytest.mark.parametrize("framing", ["fixed", "length_prefixed"])
+def test_escape_declaration_fails_for_non_delimiter_framing(tmp_path, capsys, framing):
     raw = raw_declaration(framing, escape_hex="5C")
     path = write_declaration(tmp_path / "escaped.toml", raw)
-    with pytest.raises(ConfigError, match="escape_hex is unsupported.*byte-stuffing"):
+    with pytest.raises(ConfigError, match="escape_hex is only supported for delimiter"):
         load_protocol_plugin(path)
     assert protocol_plugin_doctor_records(path)[0][0] == "error"
     assert main(["plugin", "protocol", "info", str(path), "--json"]) == 2
     assert json.loads(capsys.readouterr().out)["code"] == "config_error"
 
 
-def test_backslash_does_not_silently_escape_a_delimiter():
+def test_escape_declaration_is_supported_for_delimiter_framing(tmp_path):
+    path = write_declaration(tmp_path / "escaped.toml", raw_declaration(
+        "delimiter", escape_hex="5C",
+    ))
+    declaration = load_protocol_plugin(path)
+    assert declaration.frame.escape == b"\\"
+    assert declaration.frame.validate_frame(b"A1\\\n2\n") == b"A1\\\n2\n"
+
+
+def test_escape_requires_single_byte_delimiter(tmp_path):
+    raw = raw_declaration("delimiter", delimiter_hex="0D0A", escape_hex="5C")
+    path = write_declaration(tmp_path / "multibyte-delim-escape.toml", raw)
+    with pytest.raises(ConfigError, match="single-byte delimiter"):
+        load_protocol_plugin(path)
+
+
+def test_backslash_escape_is_not_silent_for_unescaped_delimiter():
     assert_frame_error(definition("delimiter"), b"A1\\\n2\n", "frame_multiple_delimiters")
-    with pytest.raises(ConfigError, match="escape_hex is unsupported"):
-        replace(definition("delimiter"), escape=b"\\")
+
+
+@pytest.mark.parametrize("wire,expected", [
+    (b"A1\\\n2\n", b"A1\n2\n"),
+    (b"A123\\\n", b"A123\n"),
+])
+def test_escape_unescape_wire(wire, expected):
+    contract = definition("delimiter", escape_hex="5C")
+    assert contract._unescape_wire(wire) == expected
+
+
+def test_escape_rejects_isolated_escape_byte():
+    contract = definition("delimiter", escape_hex="5C")
+    with pytest.raises(TransportIOError) as raised:
+        contract._unescape_wire(b"A1\\")
+    payload = error_envelope(raised.value)
+    assert payload["details"]["reason_code"] == "frame_escape_isolated"
+
+
+def test_escape_encode_stuffs_delimiter_and_escape_bytes():
+    contract = definition("delimiter", delimiter_hex="0A", escape_hex="5C")
+    # Payload bytes A1 0A 5C 32 0A become wire A1 5C0A 5C5C 32 5C0A.
+    encoded = contract._encode_escape(b"A1\n\\2\n")
+    assert encoded == b"A1\x5c\x0a\x5c\x5c2\x5c\x0a"
 
 
 @pytest.mark.parametrize("framing,changes,wire", [

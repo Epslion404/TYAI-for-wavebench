@@ -27,7 +27,7 @@
 - 分段读取只使用剩余预算，超过截止时间才返回完整帧也会报 `frame_read_timeout`；成功、超时和底层异常都会恢复原始连接超时。读取失败沿用现有会话健康规则，guarded 层会将失同步的会话标为 `poisoned`，阻止后续普通读取；不会自动重放帧。
 - 整帧读取必须有有限正数预算。手工构造的串口会话若缺少 `timeout`，或其值为 `None`、非有限值或非正数，须显式传入有效的 `timeout_ms`；否则在读取前以 `frame_timeout_invalid` 拒绝。通过正常配置打开的串口继承 `connection.timeout_ms`（DMM 使用 `dmm.timeout_ms`），不会走无限等待路径。
 - 超限、非法定界符、错误的重放策略都在**传输前**被拒绝（`attempts=0`）。
-- **原始帧目前只有串口后端实现**；其它后端调用时会得到 `raw_frame_unsupported`，而不是 `AttributeError`。
+- 串口后端实现完整的 `send_frame`／`read_exact`／`read_until`；CAN/CAN-FD 后端（`wavebench[can]`，`can://<channel>`）实现 `send_frame` 与 `read_exact`，`read_exact(size)` 要求单个 CAN 帧 payload 恰好为 `size` 字节，不匹配则结构化失败；`read_until` 在原始 CAN 总线上没有字节定界符语义，报 `raw_frame_unsupported`。其它后端调用原始帧接口时同样得到 `raw_frame_unsupported`，而不是 `AttributeError`。
 
 ## 不变量
 
