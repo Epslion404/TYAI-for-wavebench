@@ -2,7 +2,7 @@
 
 本页适用于为 WaveBench 提供 **advisor** 实现的开发者。advisor 接收应用状态与封闭问题集，输出 typed judgment（选项、分数、概率），供操作者参考；它不做仪器 I/O，也不决定任何安全或质量结论。
 
-> 实施状态：`advisor` 类别已在开发线实现（类别与注册表、内置确定性基线、`advisor ask`），**未随正式版本发布**；包内安装与生命周期路径尚未实现（[#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19) 单独跟踪）。合同与裁决见 [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)（`Draft`）。
+> 实施状态：`advisor` 类别已在开发线实现（类别与注册表、内置确定性基线、`advisor ask`，以及包内安装与生命周期，[#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19)），**未随正式版本发布**。合同状态见 [RFC 索引](../rfcs/index.md)（`Draft`）。
 
 ## 类别边界
 
@@ -132,4 +132,4 @@ python -m wavebench advisor ask --state state.json --config wavebench.toml --pre
 - [插件模型](../concepts/plugin-model.md)
 - [插件 Reference](../reference/plugins/index.md)
 - [配置 Reference](../reference/configuration.md)
-- [advisor 插件类别 RFC](../project/rfcs/WaveBench_advisor插件RFC.md)
+- [RFC 索引](../rfcs/index.md)
