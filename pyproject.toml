@@ -37,8 +37,8 @@ packages = ["src/wavebench"]
 exclude = ["/data", "/docs/instruments"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
+pythonpath = ["src", "tools/tyai-reviewer"]
+testpaths = ["tests", "tools/tyai-reviewer/tests"]
 
 [tool.ruff]
 line-length = 100
