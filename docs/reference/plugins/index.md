@@ -7,7 +7,7 @@ WaveBench 支持下列彼此独立的插件路径。它们的共同边界是：C
 | V1 metadata | `wavebench.drivers` / `wavebench.instrument.v1` | 否。用于展示 metadata。 |
 | V2 executable plugin | `wavebench.instruments` / `wavebench.instrument.v2` | 仅在配置选中 driver 后。 |
 | 声明式 SCPI TOML | 本地 TOML | 否；只允许显式只读 IDN probe。 |
-| 声明式二进制帧 TOML | `plugin protocol check/info` | 否；离线校验描述和单帧。 |
+| 声明式二进制帧 TOML | `plugin protocol check/info`、`DeclarativeProtocolRuntime` | 否；CLI 仅离线校验，运行时 API 需调用方提供 transport。 |
 | advisor 类别 | `wavebench.advisor` / `wavebench.advisor.v1` | 否；只产出建议，不连接仪器。 |
 
 ## 加载与信任边界
@@ -35,12 +35,27 @@ V2 entry point 名必须与 canonical `driver_id` 一致。可执行插件不能
 插件 metadata 和必填帧字段必须完整，非法描述统一返回配置错误。
 
 支持定长、长度字段和分隔符三种 framing，以及可选 CRC16/Modbus。单帧校验要求完整
-header 和精确长度；分隔符 framing 以首次分隔符结束，拒绝内部提前分隔符和拼接帧。
+header 和精确长度；分隔符 framing 以首个未转义分隔符结束，拒绝内部未转义分隔符和
+拼接帧。
 `escape_hex` 可为分隔符 framing 声明一个单字节转义（escape 转义自身与分隔符字节），
 未转义分隔符仍表示帧尾。帧校验返回原始字节。开发线还提供流拆帧
 （`extract_stream_frame`，跨分包累积并校验完整帧）、请求映射
 （`[[protocol.requests]]`：命名请求的固定帧与响应超时）与解码原语。
-采样解码、真实驱动执行仍由后续协议合同定义。
+`DeclarativeProtocolRuntime` 是请求映射的执行入口：它用 `encode_request` 构造
+请求帧，经 `send_frame` 以 `NO_REPLAY` 发出，再按声明的 framing 拆分响应，
+并应用请求级/帧级响应超时与 `inter_frame_gap_ms`。未知请求、无法编码的请求帧
+和非 `NO_REPLAY` 策略在 I/O 前拒绝；传输失败保持结构化 `TransportIOError`，
+由 guarded session 按同步状态污染连接；响应拆帧失败同样污染 guarded session。
+采样解码以及 CLI/驱动对运行时的接入仍由后续协议合同定义。
+
+```python
+from wavebench.plugins.protocol import load_protocol_plugin
+from wavebench.plugins.protocol_runtime import DeclarativeProtocolRuntime
+
+declaration = load_protocol_plugin("sensor.toml")
+runtime = DeclarativeProtocolRuntime(declaration, guarded_transport)
+response = runtime.request("read_status")
+```
 
 ## advisor 类别
 

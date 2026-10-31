@@ -70,6 +70,7 @@
   - 验收：帧格式非法／超长／校验失败必须结构化失败，不得当作有效响应。
 - [x] 声明式协议描述（TOML），形状参考现有声明式 SCPI 插件。
   - 进展（2026-10-31）：`[[protocol.requests]]` 命名请求映射（固定 `request_hex` + 可选 `response_timeout_ms`），解析唯一性/合法性离线校验；`plugin protocol check/info` 输出新增 requests 信息；文档入口见 `docs/reference/plugins/index.md`。
+  - 进展（2026-10-31）：`DeclarativeProtocolRuntime` 执行入口：请求映射 → `encode_request` → `send_frame(NO_REPLAY)` → 按 framing 拆帧；应用请求级/帧级响应超时与 `inter_frame_gap_ms`；未知请求、不可编码请求帧和非 `NO_REPLAY` 策略在 I/O 前拒绝；传输失败保持结构化错误，拆帧失败污染 guarded session。离线覆盖见 `tests/test_protocol_execution.py`。
   - 触点：`src/wavebench/plugins/protocol.py`、`docs/project/reference/plugins/scpi-plugin.example.toml`。
 - [x] 重试与重放策略分类：合同已在 RFC §2.5 冻结（幂等只读 `SAFE_TO_REPLAY`、写／触发 `NO_REPLAY`、二进制采集 `READ_CONTINUATION_ONLY`）；代码落地随阶段 2。
   - 触点：`src/wavebench/transport/contracts.py`、`docs/project/rfcs/WaveBench_transport重放与session健康RFC.md`。

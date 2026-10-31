@@ -25,13 +25,14 @@ escape_hex = "5C"
 response_timeout_ms = 500
 inter_frame_gap_ms = 0
 
-# 命名请求映射：request_hex 是固定请求帧；response_timeout_ms 可覆盖全局帧超时。
+# 命名请求映射：request_hex 是完整固定请求帧（含 magic、payload 与 CRC，分隔符由
+# framing 补齐）；response_timeout_ms 可覆盖全局帧超时。
 [[protocol.requests]]
 name = "read_status"
-request_hex = "A501"
+request_hex = "A501BB20"
 response_timeout_ms = 250
 
 [[protocol.requests]]
 name = "read_measurement"
-request_hex = "A502"
+request_hex = "A502FB21"
 response_timeout_ms = 500
