@@ -36,8 +36,11 @@ V2 entry point 名必须与 canonical `driver_id` 一致。可执行插件不能
 
 支持定长、长度字段和分隔符三种 framing，以及可选 CRC16/Modbus。单帧校验要求完整
 header 和精确长度；分隔符 framing 以首次分隔符结束，拒绝内部提前分隔符和拼接帧。
-`escape_hex` 当前没有约定字节填充编码，声明后会报错。帧校验返回原始字节；请求映射、
-采样解码、流拆帧与真实驱动执行由后续协议合同定义。
+`escape_hex` 可为分隔符 framing 声明一个单字节转义（escape 转义自身与分隔符字节），
+未转义分隔符仍表示帧尾。帧校验返回原始字节。开发线还提供流拆帧
+（`extract_stream_frame`，跨分包累积并校验完整帧）、请求映射
+（`[[protocol.requests]]`：命名请求的固定帧与响应超时）与解码原语。
+采样解码、真实驱动执行仍由后续协议合同定义。
 
 ## advisor 类别
 
@@ -45,7 +48,7 @@ header 和精确长度；分隔符 framing 以首次分隔符结束，拒绝内�
 
 `plugin list` 与 `plugin doctor` 用 `--category {instrument|advisor}` 选择类别（默认 `instrument`）。`--include-entry-points` 在 advisor 类别下加载 `wavebench.advisor` 入口点；`--kind` 与 `--load` 只对仪器插件有效，advisor 类别下会报错。
 
-实现状态：开发线已实现，未随正式版本发布；包内安装与生命周期路径尚未覆盖。合同与裁决见 [RFC 索引](../../rfcs/index.md)，实现流程见[advisor 插件开发](../../development/advisor-plugin-development.md)。
+实现状态：开发线已实现，未随正式版本发布；包内安装、升级、降级、卸载与恢复已覆盖，postflight 走 `validate_advisor`。`plugin doctor --category advisor` 会从 `Requires-Dist` 报告缺失依赖，不联网。合同状态见 [RFC 索引](../../rfcs/index.md)，实现流程见[advisor 插件开发](../../development/advisor-plugin-development.md)。
 
 ## 相关页面
 

@@ -2,7 +2,7 @@
 
 本页适用于为 WaveBench 提供 **advisor** 实现的开发者。advisor 接收应用状态与封闭问题集，输出 typed judgment（选项、分数、概率），供操作者参考；它不做仪器 I/O，也不决定任何安全或质量结论。
 
-> 实施状态：`advisor` 类别已在开发线实现（类别与注册表、内置确定性基线、`advisor ask`），**未随正式版本发布**；包内安装与生命周期路径尚未实现（[#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19) 单独跟踪）。合同状态见 [RFC 索引](../rfcs/index.md)（`Draft`）。
+> 实施状态：`advisor` 类别已在开发线实现（类别与注册表、内置确定性基线、`advisor ask`，以及包内安装与生命周期，[#19](https://github.com/Epslion404/TYAI-for-wavebench/issues/19)），**未随正式版本发布**。合同状态见 [RFC 索引](../rfcs/index.md)（`Draft`）。
 
 ## 类别边界
 
@@ -67,6 +67,7 @@ plugin = AdvisorPlugin(
 
 - 组名：`wavebench.advisor`；加载对象必须是 `AdvisorPlugin`，或其可调用结果。
 - entry point 名必须等于 `advisor_id`，否则记 `PluginLoadError`，不进入注册表。
+- 注册前校验 API 版本、capability 词表与外发声明；不符合合同的插件记入加载错误。
 - 第三方 entry point 默认不导入：`plugin list --category advisor --include-entry-points` 才加载。
 - 加载失败只记 doctor 记录，不抛异常；`plugin doctor --category advisor` 会输出 `error` 行。
 
@@ -76,6 +77,20 @@ python -m wavebench plugin doctor --category advisor --include-entry-points
 ```
 
 `--category` 默认 `instrument`；advisor 类别下 `--kind` 与 `--load` 会报错，因为它们只对仪器插件有意义。
+
+## 打包与安装
+
+advisor 包与仪器插件共用受管生命周期：`plugin package check`、`install`、`installed`、`upgrade`、`downgrade`、`remove`、`recover`。类别由包声明的 entry point 组决定，不需要额外参数；同时声明 `wavebench.instruments` 与 `wavebench.advisor` 的包会被拒绝。
+
+- 安装保持离线 `--no-deps`，不会联网下载 advisor 的运行时依赖。
+- postflight 按类别调用 `validate_advisor`；非法 API 版本、capability 或 egress 声明会让安装失败并回滚。
+- `plugin doctor --category advisor` 从打包元数据 `Requires-Dist` 读取依赖，报告缺失或版本不匹配，不联网。
+
+```bash
+python -m wavebench plugin package check dist/wavebench_example_advisor-0.1.0-py3-none-any.whl
+python -m wavebench plugin install dist/wavebench_example_advisor-0.1.0-py3-none-any.whl
+python -m wavebench plugin doctor --category advisor --include-entry-points
+```
 
 ## Core 拥有的部分
 
@@ -97,6 +112,41 @@ python -m wavebench plugin doctor --category advisor --include-entry-points
 | 响应结构非法或选项 id 不在代码持有的选项集内 | `invalid`，不采用任何结论 |
 
 以上四种都不改变退出码，也不参与 `run.json.status`、质量门、`auto_recover` 或 capability 判定。
+
+响应中的概率、非空 `confidence` 与 `noul` 必须是 0 到 1 之间的有限数字，布尔值和数字字符串会被拒绝；`score` 必须是有限数字。`confidence` 缺失或为 `null` 表示未提供。Choice 必须提供字符串选项 id 及其概率，路由概率表中的选项也必须属于代码持有的 catalog。非法响应产出 `invalid` artifact，建议集为空。
+
+Decision artifact 的 `reason`、requested model 与 reported model 在构造时统一采用同意门的敏感文本脱敏规则，CLI 诊断与 JSON 落盘读取同一份结果。未知选项和答案类型的错误只保存固定诊断，不回显响应原文。
+
+### 敏感文本与编码 JSON 的边界
+
+Python mapping 中的敏感键（忽略大小写，`-` 归一为 `_`，包含 `api_key`、`apikey`、`authorization`、`credential`、`password`、`secret` 或 `token`）对应的**整个值**替换为 `[REDACTED]`，不解析该值。普通文本继续识别 `token=...` 等标签、带引号的 Bearer 值和转义引号；未闭合的值只遮蔽本行，无引号的值以空白为界，逗号或花括号不会结束凭据。
+
+mapping 的**字段名本身**也按同一文本规则脱敏，并递归覆盖嵌套 mapping 与数组；是否遮蔽整个值仍由**原字段名**判定。例如 `{"token=AUDIT_DUMMY": "private"}` 的键和值都会变为 `[REDACTED]`。不同原字段名（包括非字符串键的 `str()` 结果）脱敏后撞名，或与已有固定 marker 键撞名时，该层 mapping 替换为单条 `{"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"}`，保持 mapping 类型，不覆盖、不择一，也不与 marker 键合并；外层同级的普通字段保留。未触发文本脱敏的普通字段名保持原样。
+
+完整 JSON 文本（去掉前导 JSON 空白后以 `"`、`{` 或 `[` 开始）在预算内通过标准 JSON 解码、敏感键脱敏再编码；例如 key 的 `\u0061uthorization` 会按 `authorization` 处理。每一层 JSON string 的类型与编码层数保持不变，输入 `str` 不会变成 Python dict。预算内没有脱敏变化的合法 JSON 保留原始字节；发生变化的 JSON 用标准 `json.dumps(..., ensure_ascii=True)` 重编码，所以空白和 Unicode 转义形式可能改变，非敏感字段的内容保留。
+
+解码后的 JSON key 本身也是文本，使用同一共享预算与脱敏规则；例如 `{"token=dummy": "private"}` 的字段名和值都会变为 `[REDACTED]`。是否遮蔽整个值仍由原字段名判定。若两个不同 key 脱敏后成为同名，整个原始字符串替换为 `[REDACTED_ENCODED_TEXT]`，不选择其中一个值或静默丢弃字段；同字符串中的普通诊断也会被省略。
+
+开头的完整 JSON string token 后还可以追加普通诊断，例如 `json.dumps(json.dumps({"token": "dummy"})) + " diagnosis=keep"`：先按转义引号边界识别 token，解码并脱敏后重编码，再独立脱敏并保留后缀。token 与后缀共享原字符串的预算，候选输入的字节统计包含后缀；任一部分超限仍省略整个字符串。
+
+每个待处理字符串单独拥有以下解释预算，包含其解码出的嵌套字符串，共享而不在子节点重置：
+
+| 限制 | 上限 |
+| --- | --- |
+| 每次 JSON 解码的输入 | 65,536 UTF-8 字节（孤立 surrogate 按 `surrogatepass` 计数） |
+| 重编码 JSON 输出（包含普通后缀） | 65,536 UTF-8 字节；按有界 JSON 树的编码 chunk 计数，超限前不拼接完整输出 |
+| 每轮累计待解码文本工作量 | 262,144 字节 |
+| 每轮 JSON 解码尝试次数（包括失败尝试） | 8；小对象最多支持 7 层外部 JSON string 包装加一次对象解码 |
+| 结构深度 | 32；同时限制解码树遍历与当前路径上的容器/编码字符串 |
+| 每轮累计词法 token 数 | 4,096；容器开头、key/value 字符串和原子值均计数，字符串内的标点不计数 |
+
+字节、次数、容器深度和 token 检查发生在 `json.loads` **之前**，不先分配无限制 JSON 树再统计。重编码只遍历已经有界的 JSON 树；单个字符串编码 chunk 可能展开有界 scalar，但不会拼接超过输出预算的文档。改变后的结果还必须通过**一次**同样有界的稳定性校验，确认下一次脱敏会原样接受它；校验不是反复重置预算直到收敛的循环。每个原始字符串最多两轮，共 16 次 JSON 解码尝试、524,288 字节解码工作量、8,192 个词法 token。原样返回的输入和固定 marker 不需要第二轮。这样即使输出低于单次字节上限，但多层解码累计工作量超限，也会在首轮调用返回 marker，保持 preview、client 和 artifact 再次脱敏的一致性。
+
+任一输入、输出或稳定性校验预算耗尽（或复验结果发生变化），整个原始字符串替换为 `[REDACTED_JSON_LIMIT]`，不会回退到旧文本正则或保留已处理前缀/未处理后缀；此时该字符串中的诊断也会丢失。超过预算的 JSON 候选即使没有凭据也会被省略。普通非 JSON 长诊断没有该长度截断，继续进行与输入长度成比例的文本匹配。
+
+`[REDACTED]`、`[REDACTED_JSON_LIMIT]`、`[REDACTED_ENCODED_TEXT]`、`[REDACTED_KEY_COLLISION]`、`[REDACTED_UNTRUSTED_TEXT]` 五个固定 marker 原样保留，不花费 JSON 解码次数。已知 marker token 后接空白与普通后缀（例如 `[REDACTED] diagnosis=keep`）按普通文本规则处理，后缀中的凭据仍需脱敏；不会因为数组中有多个这样的脱敏值而在下一轮多消耗 JSON 尝试。其它以 `[` 开头的字符串和 marker 相似文本仍使用原来的候选与保守规则，不能借用 marker 前缀跳过凭据检查。
+
+除上述开头 token 加后缀外，自由文本中嵌入的转义 JSON 片段不提供通用还原保证。无法解析的完整 JSON string 候选、或回退文本按普通标签规则脱敏后仍出现「反斜杠转义引号 + 空白 + 冒号」/`\uXXXX` 标记时，整个字符串保守替换为 `[REDACTED_ENCODED_TEXT]`，同样会丢失其中的普通诊断。没有这些编码标记的普通文本、单引号字段和非完整普通 JSON 继续使用上述按行/引号规则。插件应优先用结构化 mapping 表达凭据，不能将这些有限规则解释为任意编码、自由文本或任意 payload 的安全保证。
 
 ## 实现流程
 
@@ -121,11 +171,22 @@ python -m wavebench advisor ask --state state.json --config wavebench.toml --pre
 
 `advisor ask` 读取本地 state fixture 与 `[advisor]` 配置，默认只打印脱敏预览，不发起外发；`--accept-external-state` 才可能在通过同意门后外发，`--run-dir` 决定 decision artifact 的落点。
 
+自动化调用使用 `advisor ask --json`，输出沿用 `wavebench.cli.result.v1` 包络。
+`result` 为结构化对象，包含 `status`、`reason`、`requested_model`、`reported_model`、
+`duration_ms`、`thresholds`、`consent`、`recommendations`、`artifact_path`，以及
+`target`、`state`、`questions`、`answers` 和 `advisory_only`。
+`consent` 保留 `payload_sha256`、`payload_bytes` 和 `accepted_data_leaves_machine`；
+无产物写入时 `artifact_path` 为 `null`，无建议时 `recommendations` 为 `[]`。
+`preview_only`、`refused`、`unavailable` 和 `invalid` 同样使用该形状。
+包络的 `status`／`exit_code` 表示 CLI 执行结果；advisor 的判断状态位于 `result.status`。
+有效调用得到拒绝或无可用判断时，既有 CLI 退出码仍为 `0`；配置或参数错误仍使用既有错误包络。
+不带 `--json` 的文本输出保持原样；落盘产物仍使用 `wavebench.decision.v1`，同意门与产物行为不变。
+
 ## 兼容策略
 
 - `advisor` 使用独立版本门 `wavebench.advisor.v1`；调整契约时提升该门，不动 `wavebench.instrument.*`。
-- 现有仪器插件契约、entry point 组与账本记录不受 advisor 类别影响；`plugin list` 不带 `--category` 时行为与输出保持仪器语义。
-- 包内安装、依赖校验与漂移检测尚未覆盖 advisor 包，因此本阶段的 advisor 实现以开发线加载与内置基线验证为准，不能据此声明生产支持。
+- 仪器插件的 entry point 组、安装路径与 CLI 输出保持不变；账本记录新增可选的 `category` 字段，旧记录按 `instrument` 读取。`plugin list` 不带 `--category` 时行为与输出保持仪器语义。
+- 包内安装、postflight（`validate_advisor`）、账本/漂移检测与依赖 doctor 已覆盖 advisor 包；仍应逐包验证真实 advisor 的运行时依赖与外部服务，不能据此声明所有第三方 advisor 的生产支持。
 
 ## 相关页面
 
