@@ -157,10 +157,20 @@ def test_postflight_requires_prior_record_digest_except_during_rollback(rollback
     monkeypatch.setattr(manager, "_run_json", run_json)
 
     manager._postflight(record)
-    # The trailing arguments are installed_record_sha256, wheel_path, category.
-    assert run_json.call_args.args[0][-3] == "old-record"
+    assert run_json.call_args.args[0][-2] == "old-record"
     manager._postflight(record, rollback_reinstall=True)
-    assert run_json.call_args.args[0][-3] == ""
+    assert run_json.call_args.args[0][-2] == ""
+
+
+def test_installer_api_that_emits_no_launcher_fails_closed(tmp_path, monkeypatch):
+    from pip._internal.operations.install.wheel import PipScriptMaker
+
+    wheel = _plugin_wheel(tmp_path, version="0.1.0", script_entries=(
+        "\n[console_scripts]\nexample-tool = wavebench_example_scope:descriptor\n"
+    ))
+    monkeypatch.setattr(PipScriptMaker, "make", lambda *args, **kwargs: [])
+    with pytest.raises(ConfigError, match="did not generate"):
+        lifecycle_module._verify_generated_launchers(wheel, str(tmp_path), str(tmp_path), set())
 
 
 @pytest.mark.parametrize("damage", ["omitted", "rehashed"])

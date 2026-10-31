@@ -114,15 +114,7 @@ Core 拥有这些名字与各自答案契约（Choice / Score / Noul 形状）�
 - 内容：target（run 身份）、advisory（requested/reported model、duration）、consent、state、
   questions、answers（含概率与 confidence）、thresholds、recommendations；
 - "概率 → 动作"的阈值策略由 Core 配置拥有（`[advisor] accept/review`），不交给插件；
-- 文件名含 UTC 时间戳与 advisor id，完整正文独占发布，不覆盖已有证据；
-- #53 开发分支的待审命名为 `<ts>-<advisor>-<uuid>.json`；采集与 run 目录为
-  `<YYYYMMDD_HHMMSS>_<uuid>_<label>`，失败包保留 `_failed` 后缀。正文 schema 不变。
-  `artifact_path` 仅提供逻辑基础路径；实际文件路径以 `write_artifact` 返回值为准。
-- 待审发布合同：decision、采集 metadata、截图及失败诊断文件在同目录临时文件完成写入、
-  flush/fsync 和关闭后，通过硬链接独占发布；输出文件系统须支持硬链接，不支持时明确失败。
-  失败诊断发布失败须保留原始采集异常，并附加诊断错误；已完成波形保留在失败包内。
-  临时文件清理失败记录警告或异常 note，进程崩溃也可能残留隐藏 `.tmp` 文件。
-  此合同不承诺整包目录一次性可见或断电持久性，尚未构成已发布能力。
+- 写盘沿用既有 Windows 原子替换与重试约定；文件名含 UTC 时间戳与 advisor id，独占创建；
 - 本次不并入 `run report`。
 
 ### 内置确定性 advisor

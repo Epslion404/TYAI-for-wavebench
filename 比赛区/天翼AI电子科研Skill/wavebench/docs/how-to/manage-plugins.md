@@ -22,12 +22,6 @@ python -m wavebench plugin install <plugin-path>
 
 wheel 的 `.data/purelib` 和 `.data/platlib` 普通文件按目标环境的安装目录检查，其他 `.data` 重定位仍会拒绝。安装后的 RECORD 必须包含缓存 wheel 的全部普通文件、dist-info 文件及生成的启动器；缺少普通模块条目时，即使模块仍可导入，也不会接受安装或回滚结果。
 
-## advisor 类别
-
-advisor 包使用同一组命令；类别由包声明的 entry point 组（`wavebench.advisor`）决定，不需要额外参数。一个包首版只允许声明一个类别，同时声明 `wavebench.instruments` 与 `wavebench.advisor` 的包会被拒绝。
-
-advisor 的 postflight 按类别调用 `validate_advisor`；`plugin doctor --category advisor` 从打包元数据 `Requires-Dist` 报告缺失或版本不匹配的依赖，不联网。安装仍保持离线 `--no-deps`，不会替 advisor 下载运行时依赖。`plugin installed` 在存在 advisor 包时会增加 `category` 列；纯仪器安装的输出保持不变。
-
 ## 查看已安装插件
 
 ```bash
@@ -49,7 +43,9 @@ python -m wavebench plugin recover
 
 在安装、替换或卸载中断后，先运行 `plugin recover`。如果工具无法证明环境处于已知旧态或目标态，应保留环境和诊断信息，进行人工检查；不要通过手工删除记录来掩盖未知状态。
 
-失败回滚重装同一 wheel 时，安装器生成的 Windows 启动器可能因时间戳而改变摘要。工具会重新验证缓存 wheel、metadata、descriptor 和安装文件的 RECORD 哈希，再将验证后的摘要写入事务记录和账本；普通外部重装或篡改仍会标记为 drifted。
+待恢复的事务也会阻止 dry-run。失败回滚执行 pip 前，会重新检查当前失败版本的全部安装文件归属；发现跨分发共享或无法确定归属时，保留原账本与事务记录。
+
+失败回滚重装同一 wheel 时，安装器生成的 Windows 启动器可能因时间戳而改变摘要。工具会重新验证缓存 wheel、metadata、descriptor 和安装文件的 RECORD 哈希，并用目标环境安装器从 wheel 入口重建启动器、比较完整字节；Windows 只允许 ZIP 时间戳变化。验证成功后先更新事务记录，再写入验证后的账本摘要；启动器不符或安装器无法完成校验时保留恢复证据。普通外部重装或篡改仍会标记为 drifted。
 
 卸载、替换和失败回滚前，工具会从目标环境的 pip 获取当前版本的完整卸载路径，包括 RECORD 未列出的派生启动器路径。若这些路径上的现有文件属于其他分发或未受管文件，操作会在调用 pip 前拒绝；失败回滚会保留事务记录，并同时报告原始故障与回滚拒绝原因。
 

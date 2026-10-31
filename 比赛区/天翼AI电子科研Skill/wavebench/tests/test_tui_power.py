@@ -499,83 +499,6 @@ class TuiPowerTests(unittest.TestCase):
         state = adapter.refresh()
         self.assertEqual(state.channels[0].channel, 1)
 
-    def test_persistent_session_set_output_enforces_protection_prechecks(self):
-        from wavebench.errors import ConfigError
-        from wavebench.services.power_service import PowerService
-
-        real = PowerService(config=make_config(), logger=CommandLogger())
-
-        class FakePersistentPower:
-            def __init__(self, protection):
-                self.protection = protection
-                self.output_calls = []
-                self.closed = False
-
-            def idn(self):
-                return "RIGOL,DP832A,SN,FW"
-
-            def get_status(self, channel: int):
-                output = "ON" if self.output_calls else "OFF"
-                return make_status(channel=channel, output=output, voltage=5.0, current=0.1)
-
-            def get_protection_status(self, channel: int):
-                return self.protection
-
-            def set_output(self, channel, enabled, *, check_errors=True, settle_ms_after_output=0):
-                self.output_calls.append((channel, enabled))
-                return make_status(channel=channel, output="ON" if enabled else "OFF",
-                                   voltage=5.0, current=0.1)
-
-            def close(self):
-                self.closed = True
-
-        class PersistentService:
-            def __init__(self, driver):
-                self.config = make_config()
-                self.logger = CommandLogger()
-                self.driver = driver
-
-            def open_session(self):
-                return self.driver
-
-            def _power_config(self):
-                return self.config.power
-
-            def _check_power_limits(self, *, voltage_v, current_limit_a):
-                return real._check_power_limits(voltage_v=voltage_v, current_limit_a=current_limit_a)
-
-            def _check_protection_relationship(self, **kwargs):
-                return real._check_protection_relationship(**kwargs)
-
-            def _check_protection_tripped(self, protection):
-                return real._check_protection_tripped(protection)
-
-        reject_cases = [
-            ("ovp threshold < set voltage", make_protection(channel=1, ovp_threshold=4.0)),
-            ("ocp threshold < current limit", make_protection(channel=1, ocp_threshold=0.05)),
-            ("ovp tripped", make_protection(channel=1, ovp_tripped="YES")),
-            ("ocp tripped", make_protection(channel=1, ocp_tripped="YES")),
-        ]
-        for label, protection in reject_cases:
-            driver = FakePersistentPower(protection)
-            adapter = PowerServicePanelAdapter(
-                service=PersistentService(driver), channels=(1,)  # type: ignore[arg-type]
-            )
-            adapter.refresh()
-            with self.assertRaises(ConfigError, msg=label):
-                adapter.set_output(channel=1, enabled=True)
-            self.assertEqual(driver.output_calls, [], label)
-            self.assertEqual(adapter._statuses[1].output, "OFF", label)
-
-        driver = FakePersistentPower(make_protection(channel=1))
-        adapter = PowerServicePanelAdapter(
-            service=PersistentService(driver), channels=(1,)  # type: ignore[arg-type]
-        )
-        adapter.refresh()
-        state = adapter.set_output(channel=1, enabled=True)
-        self.assertEqual(driver.output_calls, [(1, True)])
-        self.assertEqual(state.channels[0].output, "开 / ON")
-
     @unittest.skipIf(tui_app._TEXTUAL_IMPORT_ERROR is not None, "Textual extra is not installed")
     def test_textual_app_builds_against_fake_adapter(self):
         app = tui_app.build_app(fake=True, refresh_interval_s=10.0)
@@ -605,52 +528,8 @@ class TuiPowerTests(unittest.TestCase):
                 self.assertTrue(app.waited)
 
 
-class GatedPowerReadAdapter(FakePowerPanelAdapter):
-    """Hold measurement reads until the test has inspected the busy state."""
-
-    def __init__(self):
-        super().__init__()
-        self.measurement_refresh_calls = 0
-        self.measurement_started = asyncio.Event()
-        self.release_measurements = Event()
-        self.loop = asyncio.get_running_loop()
-
-    def refresh_measurements(self):  # type: ignore[override]
-        self.measurement_refresh_calls += 1
-        self.loop.call_soon_threadsafe(self.measurement_started.set)
-        self.release_measurements.wait()
-        return super().refresh_measurements()
-
-
 @unittest.skipIf(tui_app._TEXTUAL_IMPORT_ERROR is not None, "Textual extra is not installed")
 class TuiPowerBusyBehaviorTests(unittest.IsolatedAsyncioTestCase):
-    def _make_gated_read_app(self):
-        power = GatedPowerReadAdapter()
-
-        class ObservedApp(tui_app.WaveBenchTuiApp):
-            def __init__(self):
-                super().__init__(
-                    power_adapter=power,
-                    dmm_adapter=FakeDmmPanelAdapter(),
-                    source_adapter=FakeSourcePanelAdapter(),
-                    refresh_interval_s=60.0,
-                )
-                self.pending_reads_done = asyncio.Event()
-
-            def _run_pending_power_read_if_needed(self):
-                super()._run_pending_power_read_if_needed()
-                # Observe completion after the UI has handled the worker result,
-                # including starting any queued read, rather than thread return.
-                if not self._power_read_in_flight and self._pending_power_read_kind is None:
-                    self.pending_reads_done.set()
-
-        return power, ObservedApp()
-
-    async def _wait_for_read_event(self, event):
-        # This bounds a broken synchronization protocol; it does not select the
-        # instant at which busy/completion assertions run.
-        await asyncio.wait_for(event.wait(), timeout=5.0)
-
     async def test_tui_persists_debug_log(self):
         from tempfile import TemporaryDirectory
 
@@ -824,48 +703,52 @@ class TuiPowerBusyBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.query_one(selector), Button)
 
     async def test_measurement_refresh_does_not_disable_write_controls(self):
-        power, app = self._make_gated_read_app()
-        async with app.run_test():
-            await self._wait_for_read_event(app.pending_reads_done)
-            app.pending_reads_done.clear()
-            try:
-                app.action_auto_refresh()
-                await self._wait_for_read_event(power.measurement_started)
-                self.assertTrue(app._power_read_in_flight)
-                self.assertFalse(power.release_measurements.is_set())
-                self.assertTrue(app.query_one("#refresh", Button).disabled)
-                self.assertTrue(app.query_one("#protection-refresh", Button).disabled)
-                self.assertFalse(app.query_one("#toggle-1", Button).disabled)
-                self.assertFalse(app.query_one("#set-limits", Button).disabled)
-                self.assertFalse(app.query_one("#set-protection", Button).disabled)
-            finally:
-                power.release_measurements.set()
-            await self._wait_for_read_event(app.pending_reads_done)
-            self.assertFalse(app._power_read_in_flight)
-            self.assertFalse(app.query_one("#refresh", Button).disabled)
-            self.assertFalse(app.query_one("#protection-refresh", Button).disabled)
+        class SlowReadAdapter(FakePowerPanelAdapter):
+            def refresh_measurements(self):  # type: ignore[override]
+                time.sleep(0.2)
+                return super().refresh_measurements()
+
+        app = tui_app.WaveBenchTuiApp(
+            power_adapter=SlowReadAdapter(),
+            dmm_adapter=FakeDmmPanelAdapter(),
+            source_adapter=FakeSourcePanelAdapter(),
+            refresh_interval_s=60.0,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause(0.25)
+            app.action_auto_refresh()
+            await pilot.pause(0.02)
+            self.assertTrue(app.query_one("#refresh", Button).disabled)
+            self.assertTrue(app.query_one("#protection-refresh", Button).disabled)
+            self.assertFalse(app.query_one("#toggle-1", Button).disabled)
+            self.assertFalse(app.query_one("#set-limits", Button).disabled)
+            self.assertFalse(app.query_one("#set-protection", Button).disabled)
 
     async def test_measurement_refresh_coalesces_pending_reads(self):
-        power, app = self._make_gated_read_app()
-        async with app.run_test():
-            await self._wait_for_read_event(app.pending_reads_done)
-            app.pending_reads_done.clear()
-            try:
-                app.action_auto_refresh()
-                await self._wait_for_read_event(power.measurement_started)
-                self.assertTrue(app._power_read_in_flight)
-                self.assertFalse(power.release_measurements.is_set())
-                self.assertEqual(power.measurement_refresh_calls, 1)
-                app.action_auto_refresh()
-                app.action_auto_refresh()
-                self.assertEqual(app._pending_power_read_kind, "measurement-refresh")
-                self.assertEqual(power.measurement_refresh_calls, 1)
-            finally:
-                power.release_measurements.set()
-            await self._wait_for_read_event(app.pending_reads_done)
+        class SlowReadAdapter(FakePowerPanelAdapter):
+            def __init__(self):
+                super().__init__()
+                self.measurement_refresh_calls = 0
+
+            def refresh_measurements(self):  # type: ignore[override]
+                self.measurement_refresh_calls += 1
+                time.sleep(0.2)
+                return super().refresh_measurements()
+
+        power = SlowReadAdapter()
+        app = tui_app.WaveBenchTuiApp(
+            power_adapter=power,
+            dmm_adapter=FakeDmmPanelAdapter(),
+            source_adapter=FakeSourcePanelAdapter(),
+            refresh_interval_s=60.0,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause(0.25)
+            app.action_auto_refresh()
+            app.action_auto_refresh()
+            app.action_auto_refresh()
+            await pilot.pause(0.6)
             self.assertEqual(power.measurement_refresh_calls, 2)
-            self.assertFalse(app._power_read_in_flight)
-            self.assertIsNone(app._pending_power_read_kind)
 
     async def test_toggle_write_reentry_is_blocked_for_same_channel(self):
         class SlowWriteAdapter(FakePowerPanelAdapter):

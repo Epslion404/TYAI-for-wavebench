@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 
 import pytest
 
@@ -394,10 +393,7 @@ def test_advisor_ask_accepts_external_state_and_writes_an_artifact(tmp_path, cap
     assert "artifact=" in output
     artifacts = sorted((run_dir / DECISIONS_DIRNAME).glob("*.json"))
     assert len(artifacts) == 1
-    assert re.fullmatch(
-        r"\d{8}T\d{6}Z-builtin\.rule_advisor-[0-9a-f]{32}\.json", artifacts[0].name
-    )
-    assert f"artifact={artifacts[0]}" in output
+    assert artifacts[0].name.endswith("-builtin.rule_advisor.json")
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert payload["schema"] == "wavebench.decision.v1"
     assert payload["advisory_only"] is True
@@ -472,132 +468,3 @@ def test_advisor_ask_requires_a_config_file(tmp_path, capsys):
 
     assert code == 2
     assert "config file not found" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("json_position", ["first", "last"])
-@pytest.mark.parametrize("mode", ["ok", "preview_only", "refused"])
-def test_advisor_ask_json_structures_real_decision(tmp_path, capsys, tty, mode, json_position):
-    config = write_advisor_config(tmp_path / "wavebench.toml", enabled=mode != "refused")
-    state = write_state(tmp_path / "state.json")
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    run_json = run_dir / "run.json"
-    run_json.write_bytes(b'{"status":"partial"}')
-    args = ["advisor", "ask", "--state", str(state), "--config", str(config),
-            "--run-dir", str(run_dir)]
-    if mode == "ok":
-        args.append("--accept-external-state")
-    args = ["--json", *args] if json_position == "first" else [*args, "--json"]
-
-    assert main(args) == 0
-    captured = capsys.readouterr()
-    envelope = json.loads(captured.out)
-    assert captured.err == ""
-    assert envelope["schema"] == "wavebench.cli.result.v1"
-    assert envelope["status"] == "ok"
-    assert envelope["exit_code"] == 0
-    result = envelope["result"]
-    assert isinstance(result, dict)
-    assert "schema" not in result
-    assert result["status"] == mode
-    assert result["reason"] is None if mode == "ok" else isinstance(result["reason"], str)
-    assert isinstance(result["requested_model"], str)
-    assert result["reported_model"] is None if mode != "ok" else isinstance(result["reported_model"], str)
-    assert result["thresholds"] == {"accept": 0.6, "review": 0.35}
-    assert isinstance(result["consent"]["payload_bytes"], int)
-    assert re.fullmatch(r"[a-f0-9]{64}", result["consent"]["payload_sha256"])
-    assert result["consent"]["accepted_data_leaves_machine"] is (mode == "ok")
-    assert isinstance(result["recommendations"], list)
-    assert bool(result["recommendations"]) is (mode == "ok")
-    if mode == "ok":
-        assert result["recommendations"][0]["command"] == "wavebench capture --help"
-        assert result["recommendations"][0]["mutates_instrument_if_applied"] is False
-    artifacts = list((run_dir / DECISIONS_DIRNAME).glob("*.json"))
-    assert len(artifacts) == 1
-    assert result["artifact_path"] == str(artifacts[0])
-    artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
-    assert artifact["schema"] == "wavebench.decision.v1"
-    for field in ("status", "reason", "consent", "thresholds", "recommendations",
-                  "state", "questions", "answers", "target", "advisory_only"):
-        assert result[field] == artifact[field]
-    assert result["requested_model"] == artifact["advisory"]["requested_model"]
-    assert result["reported_model"] == artifact["advisory"]["reported_model"]
-    assert run_json.read_bytes() == b'{"status":"partial"}'
-
-
-@pytest.mark.parametrize("response, expected", [
-    (RuntimeError("offline failure"), "unavailable"), ({"answers": {}}, "invalid")
-])
-def test_advisor_ask_json_client_failure_without_run_directory(
-    tmp_path, capsys, tty, monkeypatch, response, expected
-):
-    config = write_advisor_config(tmp_path / "wavebench.toml")
-    state = write_state(tmp_path / "state.json")
-    client = CountingClient(response)
-    monkeypatch.setattr("wavebench.cli.advisor_client_for", lambda _: client)
-    assert main(["advisor", "ask", "--state", str(state), "--config", str(config),
-                 "--accept-external-state", "--json"]) == 0
-    result = json.loads(capsys.readouterr().out)["result"]
-    assert result["status"] == expected
-    assert isinstance(result["reason"], str)
-    assert result["artifact_path"] is None
-    assert result["recommendations"] == []
-    assert client.calls == 1
-    assert not (tmp_path / DECISIONS_DIRNAME).exists()
-
-
-@pytest.mark.parametrize("enabled, accepted, expected", [
-    (True, False, "preview_only"), (False, False, "refused"), (True, True, "refused")
-])
-def test_advisor_ask_json_consent_denial_never_calls_client(
-    tmp_path, capsys, monkeypatch, enabled, accepted, expected
-):
-    config = write_advisor_config(tmp_path / "wavebench.toml", enabled=enabled)
-    state = write_state(tmp_path / "state.json")
-    client = CountingClient(choice_response("scope", 0.9))
-    monkeypatch.setattr("wavebench.cli.advisor_client_for", lambda _: client)
-    monkeypatch.setattr("sys.stdin", io.StringIO())
-    args = ["advisor", "ask", "--state", str(state), "--config", str(config), "--json"]
-    if accepted:
-        args.append("--accept-external-state")
-    assert main(args) == 0
-    result = json.loads(capsys.readouterr().out)["result"]
-    assert result["status"] == expected
-    assert result["artifact_path"] is None
-    assert result["consent"]["accepted_data_leaves_machine"] is False
-    assert client.calls == 0
-
-
-def test_advisor_ask_json_keeps_error_envelope(tmp_path, capsys):
-    state = write_state(tmp_path / "state.json")
-    assert main(["advisor", "ask", "--state", str(state),
-                 "--config", str(tmp_path / "missing.toml"), "--json"]) == 2
-    assert json.loads(capsys.readouterr().out)["schema"] == "wavebench.error.v1"
-
-
-def test_advisor_ask_json_ok_without_recommendations(tmp_path, capsys, tty, monkeypatch):
-    config = write_advisor_config(tmp_path / "wavebench.toml")
-    state = write_state(tmp_path / "state.json")
-    client = CountingClient(choice_response("scope", 0.1))
-    monkeypatch.setattr("wavebench.cli.advisor_client_for", lambda _: client)
-    assert main(["advisor", "ask", "--state", str(state), "--config", str(config),
-                 "--accept-external-state", "--json"]) == 0
-    result = json.loads(capsys.readouterr().out)["result"]
-    assert result["status"] == "ok"
-    assert result["recommendations"] == []
-    assert result["artifact_path"] is None
-    assert client.calls == 1
-
-
-def test_advisor_ask_json_retains_existing_diagnostic_redaction(tmp_path, capsys, tty, monkeypatch):
-    config = write_advisor_config(tmp_path / "wavebench.toml")
-    state = write_state(tmp_path / "state.json")
-    client = CountingClient(RuntimeError('failure {"api_key":"JSON_DUMMY_SECRET"}'))
-    monkeypatch.setattr("wavebench.cli.advisor_client_for", lambda _: client)
-    assert main(["advisor", "ask", "--state", str(state), "--config", str(config),
-                 "--accept-external-state", "--json"]) == 0
-    output = capsys.readouterr().out
-    result = json.loads(output)["result"]
-    assert result["status"] == "unavailable"
-    assert "JSON_DUMMY_SECRET" not in output
-    assert result["reason"] == "advisor_call_failed: RuntimeError"

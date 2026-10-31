@@ -10,15 +10,6 @@ from typing import Any
 PLOTLY_ASSET_RELATIVE = Path("report-assets") / "plotly.min.js"
 
 
-def plotly_asset_available() -> bool:
-    """Determine whether the optional asset writer can emit Plotly.js."""
-    try:
-        from plotly.offline import get_plotlyjs
-    except (ImportError, ModuleNotFoundError):
-        return False
-    return callable(get_plotlyjs)
-
-
 def write_plotly_asset(output_dir: Path) -> Path | None:
     """Write Plotly.js beside the report when the optional dependency is installed."""
     try:

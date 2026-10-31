@@ -77,6 +77,11 @@ class PowerService(SessionStateAliasMixin):
                 if self.config.connection.backend.strip().lower() == "serial"
                 else None
             ),
+            can_config=(
+                self.config.connection.can_connection(resource=power.resource)
+                if self.config.connection.backend.strip().lower() in {"can", "can-fd"}
+                else None
+            ),
             access=getattr(power, "access", "read_write"),
             lease=self.lease,
         )
@@ -249,13 +254,6 @@ class PowerService(SessionStateAliasMixin):
                 f"< current limit {set_current_a:.12g} A"
             )
 
-    def _check_protection_tripped(self, protection: PowerProtectionStatus) -> None:
-        if protection.ovp_tripped != "NO" or protection.ocp_tripped != "NO":
-            raise ConfigError(
-                "power output ON rejected: protection trip is active / "
-                "电源输出开启被拒绝：保护已触发"
-            )
-
     def set_output(self, channel: int | None, enabled: bool) -> PowerStatus:
         power_cfg = self._power_config()
         channel = power_cfg.default_channel if channel is None else channel
@@ -283,7 +281,11 @@ class PowerService(SessionStateAliasMixin):
                     ovp_threshold_v=protection.ovp_threshold_v,
                     ocp_threshold_a=protection.ocp_threshold_a,
                 )
-                self._check_protection_tripped(protection)
+                if protection.ovp_tripped != "NO" or protection.ocp_tripped != "NO":
+                    raise ConfigError(
+                        "power output ON rejected: protection trip is active / "
+                        "电源输出开启被拒绝：保护已触发"
+                    )
             result = power.set_output(
                 channel,
                 enabled,

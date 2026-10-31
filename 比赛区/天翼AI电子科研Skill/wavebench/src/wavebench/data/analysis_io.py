@@ -25,18 +25,12 @@ def file_identity(stat):
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def read_json_bounded(path: Path, limits: AnalysisLimits, *, retained_bytes: int = 0):
+def read_json_bounded(path: Path, limits: AnalysisLimits):
     with path.open("rb") as file:
-        size = os.fstat(file.fileno()).st_size
-        limits.check("max_metadata_bytes", size, "metadata")
-        limits.check("max_working_bytes", retained_bytes + size * 32 + 65536, "metadata parsing")
-        # BufferedReader may allocate the requested size even for a tiny file.
-        # Request only the admitted payload, with one byte to detect growth.
-        raw = file.read(size + 1)
+        limits.check("max_metadata_bytes", os.fstat(file.fileno()).st_size, "metadata")
+        limits.check("max_working_bytes", os.fstat(file.fileno()).st_size * 32 + 65536, "metadata parsing")
+        raw = file.read(limits.max_metadata_bytes + 1)
         limits.check("max_metadata_bytes", len(raw), "metadata")
-        limits.check("max_working_bytes", retained_bytes + len(raw) * 32 + 65536, "metadata parsing")
-        if len(raw) > size:
-            raise DataError("metadata changed while being read")
     return json.loads(raw)
 
 

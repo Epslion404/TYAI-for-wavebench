@@ -46,5 +46,5 @@ def test_one_shot_source_service_passes_owned_lease_to_factory(tmp_path, monkeyp
 
     lease = factory.call_args.kwargs["lease"]
     assert isinstance(lease, ResourceLease)
-    assert lease.resource == "tcpip::192.0.2.10::inst0::instr"
+    assert lease.resource == "tcpip::192.0.2.10::instr"
     assert not lease.acquired

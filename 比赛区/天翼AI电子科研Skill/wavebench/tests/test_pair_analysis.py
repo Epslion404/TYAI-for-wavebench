@@ -39,13 +39,13 @@ def pair_package(tmp_path, n=2048):
     np.save(capture/'ch2.npy', np.column_stack((t, 2*x)))
     metadata = {'channels': {'1': {}, '2': {}}, 'files': {'1': {'npy': 'ch1.npy'}, '2': {'npy': 'ch2.npy'}},
                 'synchronization': sync_evidence(n, 1/1024)}
-    (capture/'metadata.json').write_text(json.dumps(metadata), encoding="utf-8")
+    (capture/'metadata.json').write_text(json.dumps(metadata))
     operations = [DELAY, TRANSFER, {'op': 'export', 'name': 'transfer', 'formats': ['npy','csv']}]
     def table(op):
         return '{'+', '.join(f'{key}={json.dumps(value)}' for key,value in op.items())+'}'
     recipe = tmp_path/'pair.toml'
     recipe.write_text('schema="wavebench.analysis_pair_recipe.v1"\nreference_channel=1\nresponse_channel=2\noperations=['
-                      + ','.join(table(op) for op in operations)+']\n[expect]\nsystem_mean_coherence={min=0.99}\n', encoding="utf-8")
+                      + ','.join(table(op) for op in operations)+']\n[expect]\nsystem_mean_coherence={min=0.99}\n')
     return capture, recipe
 
 
@@ -113,7 +113,7 @@ def test_pair_source_export_report_and_spawn(tmp_path):
     assert result['artifact']['metrics']['timing_response_delay_samples']==0
     array=np.load(tmp_path/'result/exports/transfer.npy')
     np.testing.assert_allclose(array[:,3],20*np.log10(2),atol=1e-12)
-    html=write_analysis_report([tmp_path/'result'],tmp_path/'report.html').read_text(encoding="utf-8")
+    html=write_analysis_report([tmp_path/'result'],tmp_path/'report.html').read_text()
     assert 'Pair analysis' in html and 'Gain (dB)' in html and 'Coherence' in html
     assert (capture/'ch1.npy').read_bytes()==original
 
@@ -127,11 +127,11 @@ def test_pair_invalid_masks_and_source_gate(tmp_path):
     assert result['status']=='failed'  # expectation unavailable
     array=np.load(tmp_path/'masked/exports/transfer.npy')
     assert not array[:,6:].any() and np.isnan(array[:,1:6]).all()
-    text=(tmp_path/'masked/exports/transfer.csv').read_text(encoding="utf-8")
+    text=(tmp_path/'masked/exports/transfer.csv').read_text()
     assert ',,,,,,' in text
-    metadata=json.loads((capture/'metadata.json').read_text(encoding="utf-8"))
+    metadata=json.loads((capture/'metadata.json').read_text())
     metadata.pop('synchronization')
-    (capture/'metadata.json').write_text(json.dumps(metadata), encoding="utf-8")
+    (capture/'metadata.json').write_text(json.dumps(metadata))
     with pytest.raises(DataError, match='synchronization'):
         pair_check(capture,recipe)
 
@@ -146,11 +146,11 @@ def test_pair_runplan_schema_and_offline_intent(tmp_path):
     operations='['+','.join('{'+','.join(f'{k}={json.dumps(v)}' for k,v in op.items())+'}' for op in fields['operations'])+']'
     path=tmp_path/'plan.toml'
     path.write_text('[[steps]]\nid="capture"\nkind="scope.capture"\nsave_npy=true\n[[steps]]\nkind="analysis.pair"\n'
-                    'source={step="capture"}\nreference_channel=1\nresponse_channel=2\noperations='+operations, encoding="utf-8")
+                    'source={step="capture"}\nreference_channel=1\nresponse_channel=2\noperations='+operations)
     plan=load_run_plan(path)
     intent=build_execution_intent(plan,make_config(str(tmp_path)))
     assert intent.operations[-1]['effect']=='offline' and intent.operations[-1]['lease_mode']=='none'
-    path.write_text(path.read_text(encoding="utf-8")+'\nsafety_gate={}\n', encoding="utf-8")
+    path.write_text(path.read_text()+'\nsafety_gate={}\n')
     with pytest.raises(ConfigError):
         load_run_plan(path)
 
@@ -167,7 +167,7 @@ def test_pair_runplan_executes_after_hardware_close(tmp_path):
     operations='['+','.join('{'+','.join(f'{k}={json.dumps(v)}' for k,v in op.items())+'}' for op in fields['operations'])+']'
     path=tmp_path/'plan.toml'
     path.write_text('[[steps]]\nid="capture_main"\nkind="scope.capture"\nsave_npy=true\n[[steps]]\nid="pair_main"\nkind="analysis.pair"\n'
-                    'source={step="capture_main"}\nreference_channel=1\nresponse_channel=2\noperations='+operations, encoding="utf-8")
+                    'source={step="capture_main"}\nreference_channel=1\nresponse_channel=2\noperations='+operations)
     record=RunStepRecord(index=0,kind='scope.capture',status='ok',fields={},artifact={'package':str(capture),'metadata':str(capture/'metadata.json')})
     events=[]
     service=PhaseRunService(config=make_config(str(tmp_path)),logger=CommandLogger(),capture_record=record,events=events,
@@ -182,7 +182,7 @@ def test_pair_runplan_executes_after_hardware_close(tmp_path):
     assert result.steps[-1].status=='ok'
     from wavebench.data.packages import load_run_package
     from wavebench.report.html import write_run_report_html
-    html=write_run_report_html(load_run_package(result.run_dir)).read_text(encoding="utf-8")
+    html=write_run_report_html(load_run_package(result.run_dir)).read_text()
     assert 'Pair analysis' in html and 'Gain (dB)' in html
 
 

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from wavebench.errors import ConfigError
-from wavebench.data.confined_metadata import read_confined_metadata
 
 
 @dataclass(frozen=True)
@@ -116,25 +115,14 @@ def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return value
 
 
-def load_capture_package(
-    path: str | Path, *, allowed_root: Path | None = None
-) -> CapturePackage:
+def load_capture_package(path: str | Path) -> CapturePackage:
     package_dir = Path(path)
     if not package_dir.exists():
         raise ConfigError(f"capture package not found: {package_dir}")
     if not package_dir.is_dir():
         raise ConfigError(f"capture package must be a directory: {package_dir}")
     metadata_path = package_dir / "metadata.json"
-    if allowed_root is None:
-        metadata = _read_json_object(metadata_path, label="capture metadata")
-    else:
-        text = read_confined_metadata(package_dir, allowed_root)
-        try:
-            metadata = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ConfigError("capture metadata is not valid JSON") from exc
-        if not isinstance(metadata, dict):
-            raise ConfigError("capture metadata must be a JSON object")
+    metadata = _read_json_object(metadata_path, label="capture metadata")
     channels = _capture_channels(metadata)
     if not channels:
         raise ConfigError(f"capture metadata has no waveform channels: {metadata_path}")
