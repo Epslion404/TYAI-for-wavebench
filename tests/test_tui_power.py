@@ -582,6 +582,28 @@ class TuiPowerTests(unittest.TestCase):
         self.assertEqual(type(app).__name__, "WaveBenchTuiApp")
         self.assertTrue(hasattr(app, "action_auto_refresh"))
 
+    def test_run_waits_for_shutdown_cleanup_before_returning(self):
+        class ClosingApp:
+            def __init__(self, cleanup_result: bool):
+                self.cleanup_result = cleanup_result
+                self.ran = False
+                self.waited = False
+
+            def run(self):
+                self.ran = True
+
+            def wait_for_shutdown_cleanup(self):
+                self.waited = True
+                return self.cleanup_result
+
+        for cleanup_result, expected_code in ((True, 0), (False, 1)):
+            with self.subTest(cleanup_result=cleanup_result):
+                app = ClosingApp(cleanup_result)
+                with patch.object(tui_app, "build_app", return_value=app):
+                    self.assertEqual(tui_app.run(fake=True), expected_code)
+                self.assertTrue(app.ran)
+                self.assertTrue(app.waited)
+
 
 class GatedPowerReadAdapter(FakePowerPanelAdapter):
     """Hold measurement reads until the test has inspected the busy state."""
@@ -713,6 +735,67 @@ class TuiPowerBusyBehaviorTests(unittest.IsolatedAsyncioTestCase):
             power.release_read.set()
             self.assertTrue(await asyncio.to_thread(power.closed.wait, 1))
             self.assertFalse(power.write_started.is_set())
+
+    async def test_shutdown_cleanup_waits_after_ui_exit_and_reports_close_error(self):
+        class SlowFailingPowerAdapter(FakePowerPanelAdapter):
+            def __init__(self):
+                super().__init__()
+                self.close_started = Event()
+
+            def close(self):
+                self.close_started.set()
+                time.sleep(0.05)
+                raise OSError("close failed")
+
+        power = SlowFailingPowerAdapter()
+        with TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "tui.log"
+            app = tui_app.WaveBenchTuiApp(
+                power_adapter=power,
+                dmm_adapter=FakeDmmPanelAdapter(),
+                source_adapter=FakeSourcePanelAdapter(),
+                refresh_interval_s=60.0,
+                log_path=log_path,
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause(0.25)
+                with patch.object(app, "exit"):
+                    await app.action_quit()
+                self.assertTrue(await asyncio.to_thread(power.close_started.wait, 1))
+                self.assertFalse(app.wait_for_shutdown_cleanup(timeout_s=1))
+
+            self.assertIn(
+                "TUI shutdown cleanup failed for power adapter: close failed",
+                log_path.read_text(encoding="utf-8"),
+            )
+
+    async def test_shutdown_cleanup_times_out_without_blocking_ui_exit(self):
+        class BlockingClosePowerAdapter(FakePowerPanelAdapter):
+            def __init__(self):
+                super().__init__()
+                self.close_started = Event()
+                self.release_close = Event()
+
+            def close(self):
+                self.close_started.set()
+                self.release_close.wait(timeout=1)
+
+        power = BlockingClosePowerAdapter()
+        app = tui_app.WaveBenchTuiApp(
+            power_adapter=power,
+            dmm_adapter=FakeDmmPanelAdapter(),
+            source_adapter=FakeSourcePanelAdapter(),
+            refresh_interval_s=60.0,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause(0.25)
+            with patch.object(app, "exit") as exit_app:
+                await app.action_quit()
+            exit_app.assert_called_once()
+            self.assertTrue(await asyncio.to_thread(power.close_started.wait, 1))
+            self.assertFalse(app.wait_for_shutdown_cleanup(timeout_s=0.01))
+            power.release_close.set()
+            self.assertTrue(await asyncio.to_thread(app.wait_for_shutdown_cleanup, timeout_s=1))
 
     async def test_layout_keeps_user_input_controls_in_scroll_area(self):
         app = tui_app.build_app(fake=True, refresh_interval_s=60.0)
