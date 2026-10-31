@@ -38,8 +38,9 @@
 
 ## M1 传输层
 
-- [~] `_open_transport` 支持新后端与分派：`can`，串口通用化；如 RFC 通过再加 `udp`／裸 `socket`。
+- [x] `_open_transport` 支持新后端与分派：`can`，串口通用化；如 RFC 通过再加 `udp`／裸 `socket`。
   - 进展（2026-10-02）：**查表分派已落地**（`TRANSPORT_FACTORIES` + `TransportRequest`，RFC 阶段 1）；未声明的后端仍在 I/O 前抛 `ConfigError`（有测试锁定）。`can` 后端待阶段 4。
+  - 进展（2026-10-31）：**`can` 传输后端已落地**——`transport/can_transport.py`（`CanTransport`），python-can 走可选 extra（`wavebench[can]`），经 `TRANSPORT_FACTORIES` 注册；离线 virtual 总线测试覆盖打不开、超时、长度不符、总线错误、SCPI 操作 `raw_frame_unsupported`、`close()` 幂等与会话污染。
   - 触点：`src/wavebench/instruments/factory.py::_open_transport`、`_select_backend`、`descriptor.backends`。
   - 验收：未声明的后端仍必须在真实 I/O 前抛 `ConfigError`；既有后端行为零变化。
 - [x] 串口配置去 DMM 专用化：`serial_config: DmmConfig` 改为通用串口配置。
@@ -47,12 +48,15 @@
   - 已决（2026-10-02，追认实现）：scope／source／power 通过 `[connection]` 声明串口；`connection.backend = "serial"` 时由 Core 工厂把 `ConnectionConfig.serial_connection(resource=...)` 交给描述符声明的 driver（RFC §7 第 2 项，实现见 [#4](https://github.com/Epslion404/TYAI-for-wavebench/issues/4) 对应的合并 `a0a2b28`）。
   - 触点：`src/wavebench/instruments/factory.py`、`src/wavebench/transport/serial_transport.py`、`src/wavebench/config.py`。
   - 验收：DMM 串口路径回归通过；scope／source／power 在 descriptor 声明 `serial` 后可打开串口。
-- [ ] CAN／CAN-FD 传输实现，依赖进可选 extra（默认安装不引入）。
-  - 触点：`src/wavebench/transport/`（新文件）、`pyproject.toml`（optional-dependencies）、`src/wavebench/instruments/factory.py`。
+- [x] CAN／CAN-FD 传输实现，依赖进可选 extra（默认安装不引入）。
+  - 进展（2026-10-31）：`CanTransport` 已实现；`python-can>=4.0` 进 `wavebench[can]` optional-dependencies；离线用 virtual 后端，无适配器时 `CanInterfaceNotImplementedError` 包装为 `ConnectionError`；比特率／最大帧长非法在 I/O 前失败；`read_exact(size)` 要求 payload 恰好 `size`，长度不符结构化失败。
+  - 触点：`src/wavebench/transport/can_transport.py`、`pyproject.toml`、`src/wavebench/instruments/factory.py`。
   - 验收：无适配器时给出结构化错误；用 `python-can` 的 virtual 后端可跑通离线测试；比特率／采样点／FD 标志非法时在 I/O 前失败。
-- [ ] 设备枚举与发现：串口枚举、CAN 适配器枚举，并明确与 `discovery.py` 现有 TCP 扫描边界的关系。
-  - 触点：`src/wavebench/discovery.py`、`src/wavebench/doctor.py`、CLI `discover`。
-- [ ] 测试矩阵：打不开、超时、半帧、校验失败、总线错误、会话污染、close 幂等。
+- [x] 设备枚举与发现：串口枚举、CAN 适配器枚举，并明确与 `discovery.py` 现有 TCP 扫描边界的关系。
+  - 进展（2026-10-31）：`discovery.py` 新增 `discover_serial_ports()`（pyserial `list_ports`）、`discover_can_adapters()`（python-can `interface`）、`discover_local_devices()`（合并入口）；端口协议标注把 Modbus/TCP（502）标 `modbus-tcp`、未知端口标 `unknown`，非 SCPI 端口只提示不当作仪器；CLI `net discover --serials/--can/--force/--summary` 接入。缺失依赖或无权限枚举给结构化 `ConfigError`。
+  - 触点：`src/wavebench/discovery.py`、`cli.py`、`cli_parser.py`、`cli_output.py`。
+- [x] 测试矩阵：打不开、超时、半帧、校验失败、总线错误、会话污染、close 幂等。
+  - 进展（2026-10-31）：`tests/test_can_transport.py`（CAN 矩阵）、`tests/test_device_discovery.py`（枚举与协议标注）、`tests/test_transport_backends.py`（演进：`can` 已注册、未知后端用 `udp`）。
   - 触点：`tests/`（参考 `test_transport_replay_matrix.py`、`test_transport_contracts.py`、`test_serial_transport.py`）。
 
 ## M2 协议层
@@ -61,10 +65,12 @@
   - 串口实现离线覆盖拆包、定界符、超限、部分超时与重放分类；只读模式下由 guarded 层在后端 I/O 前拦下；其它后端调用时报 `raw_frame_unsupported`。
   - 合并后待补的文档与校验见 [#28](https://github.com/Epslion404/TYAI-for-wavebench/issues/28)。
   - 触点：`src/wavebench/transport/base.py`、`transport/contracts.py`、`transport/guarded.py`、`transport/session.py`。
-- [ ] 自定义帧定义：定长、长度字段、分隔符、转义、校验和（CRC16 等）、最大帧长、帧间隔与响应超时。
+- [x] 自定义帧定义：定长、长度字段、分隔符、转义、校验和（CRC16 等）、最大帧长、帧间隔与响应超时。
+  - 进展（2026-10-31）：`FrameDefinition` 已支持三种 framing + CRC16/Modbus + 最大帧长 + 帧间隔 + 响应超时；`escape_hex` 已实现为 delimiter framing 的单字节转义（escape 转义自身与分隔符字节），孤立 escape 结构化失败。新增 `extract_stream_frame(buffer)` 做流拆帧：跨分包累积、拒绝内部未转义分隔符、声明长度超预算立即失败；`encode_request` 提供 escape 感知的请求编码。
   - 验收：帧格式非法／超长／校验失败必须结构化失败，不得当作有效响应。
-- [ ] 声明式协议描述（TOML），形状参考现有声明式 SCPI 插件。
-  - 触点：`src/wavebench/plugins/scpi.py`、`docs/project/reference/plugins/scpi-plugin.example.toml`。
+- [x] 声明式协议描述（TOML），形状参考现有声明式 SCPI 插件。
+  - 进展（2026-10-31）：`[[protocol.requests]]` 命名请求映射（固定 `request_hex` + 可选 `response_timeout_ms`），解析唯一性/合法性离线校验；`plugin protocol check/info` 输出新增 requests 信息；文档入口见 `docs/reference/plugins/index.md`。
+  - 触点：`src/wavebench/plugins/protocol.py`、`docs/project/reference/plugins/scpi-plugin.example.toml`。
 - [x] 重试与重放策略分类：合同已在 RFC §2.5 冻结（幂等只读 `SAFE_TO_REPLAY`、写／触发 `NO_REPLAY`、二进制采集 `READ_CONTINUATION_ONLY`）；代码落地随阶段 2。
   - 触点：`src/wavebench/transport/contracts.py`、`docs/project/rfcs/WaveBench_transport重放与session健康RFC.md`。
 

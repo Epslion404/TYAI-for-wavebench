@@ -15,7 +15,7 @@ import numpy as np
 
 from .config import load_advisor_config, load_config, vertical_scale_from_vpp
 from .data.packages import load_capture_package, load_run_package
-from .discovery import discover_instruments
+from .discovery import discover_instruments, discover_local_devices
 from .doctor import doctor_records, has_doctor_errors as has_config_doctor_errors
 from .report.html import write_run_report
 from .report.index import write_report_index
@@ -1132,20 +1132,33 @@ def _main(argv: list[str] | None = None) -> int:
                     return 0 if result.matched else 2
         if args.domain == "net":
             if args.command == "discover":
+                max_hosts = args.max_hosts
+                if getattr(args, "force", False):
+                    max_hosts = 2**31 - 1
                 results = discover_instruments(
                     subnet=args.subnet,
                     ports=args.ports,
                     timeout_ms=args.timeout_ms,
                     workers=args.workers,
-                    max_hosts=args.max_hosts,
+                    max_hosts=max_hosts,
                     query_idn=not args.no_idn,
                     idn_only=args.idn_only,
                     include_visa=not args.no_visa,
                 )
+                if getattr(args, "serials", False) or getattr(args, "can", False):
+                    local_results = discover_local_devices(
+                        include_serial=bool(getattr(args, "serials", False)),
+                        include_can=bool(getattr(args, "can", False)),
+                    )
+                    results = results + local_results
                 if args.json:
                     _emit_json_result(_json_payload(results))
                 else:
                     _print_discovery_results(results)
+                    if getattr(args, "summary", False):
+                        from .cli_output import _print_discovery_summary
+
+                        _print_discovery_summary(results)
                 return 0
         if args.domain == "capability":
             if args.command == "explain":

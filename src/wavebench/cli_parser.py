@@ -471,6 +471,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip PyVISA resource-manager discovery / 跳过 PyVISA 资源枚举",
     )
+    net_discover.add_argument(
+        "--serials",
+        action="store_true",
+        help="Also enumerate local serial ports / 同时枚举本地串口",
+    )
+    net_discover.add_argument(
+        "--can",
+        action="store_true",
+        dest="can",
+        help="Also enumerate python-can interfaces / 同时枚举 CAN 适配器",
+    )
+    net_discover.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the host-count confirmation threshold / 跳过主机数确认阈值",
+    )
+    net_discover.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print a one-line summary of enumerated results / 输出枚举结果摘要",
+    )
 
     run_sub = run_parser.add_subparsers(dest="command", required=True)
     run_check = run_sub.add_parser(

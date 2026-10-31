@@ -1494,6 +1494,10 @@ max_source_vpp = 2.0
             "--no-idn",
             "--idn-only",
             "--no-visa",
+            "--serials",
+            "--can",
+            "--force",
+            "--summary",
         ])
         self.assertEqual(args.domain, "net")
         self.assertEqual(args.command, "discover")
@@ -1505,6 +1509,60 @@ max_source_vpp = 2.0
         self.assertTrue(args.no_idn)
         self.assertTrue(args.idn_only)
         self.assertTrue(args.no_visa)
+        self.assertTrue(args.serials)
+        self.assertTrue(args.can)
+        self.assertTrue(args.force)
+        self.assertTrue(args.summary)
+
+    def test_net_discover_prints_local_serial_and_can_results(self):
+        class NetworkResult:
+            address = "192.0.2.161"
+            port = 5025
+            status = "idn"
+            protocol = "scpi-socket"
+            source = "network"
+            resource = "TCPIP::192.0.2.161::5025::SOCKET"
+            idn = "RIGOL TECHNOLOGIES,DP832,DP8A000000000,00.01.16"
+            note = ""
+
+        class SerialResult:
+            address = "COM3"
+            port = None
+            status = "listed"
+            protocol = "serial"
+            source = "serial"
+            resource = "COM3"
+            idn = None
+            note = "USB serial adapter"
+
+        class CanResult:
+            address = "virtual"
+            port = None
+            status = "listed"
+            protocol = "can"
+            source = "can"
+            resource = "can://virtual"
+            idn = None
+            note = "CAN interface available (python-can)"
+
+        stdout = io.StringIO()
+        with (
+            patch("wavebench.cli.discover_instruments", return_value=[NetworkResult()]),
+            patch(
+                "wavebench.cli.discover_local_devices",
+                return_value=[SerialResult(), CanResult()],
+            ),
+        ):
+            with redirect_stdout(stdout):
+                code = main([
+                    "net", "discover", "--subnet", "192.0.2.0/24",
+                    "--timeout-ms", "10", "--no-visa", "--serials", "--can",
+                ])
+        self.assertEqual(code, 0)
+        output = stdout.getvalue()
+        self.assertIn("192.0.2.161", output)
+        self.assertIn("COM3", output)
+        self.assertIn("can://virtual", output)
 
     def test_net_discover_prints_results(self):
         class StubResult:
