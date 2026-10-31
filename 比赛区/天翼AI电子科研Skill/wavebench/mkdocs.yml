@@ -8,11 +8,7 @@ exclude_docs: |
   README.md
   README_EN.md
   archive/**
-  project/README.md
-  project/contributing/**
-  project/design/**
-  project/guides/**
-  project/reference/**
+  project/**
 
 theme:
   name: material
