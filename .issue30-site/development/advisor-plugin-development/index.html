@@ -1,0 +1,2200 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="可审计的 Python 仪器测量台文档">
+      
+      
+      
+      
+        <link rel="prev" href="../plugin-development/">
+      
+      
+        <link rel="next" href="../instrument-drivers/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>advisor 插件开发 - WaveBench</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#advisor" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../.." title="WaveBench" class="md-header__button md-logo" aria-label="WaveBench" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            WaveBench
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              advisor 插件开发
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Scaxlibur/wavebench" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Scaxlibur/wavebench
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="WaveBench" class="md-nav__button md-logo" aria-label="WaveBench" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    WaveBench
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Scaxlibur/wavebench" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Scaxlibur/wavebench
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开始使用
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开始使用
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    无硬件快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/configure-bench/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    配置实验台
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    教程
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    教程
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/from-template-to-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    从模板到报告
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How-to
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How-to
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/run-an-experiment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    执行一次实验
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/signal-processing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    使用信号处理流水线
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/frequency-response-and-calibration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    频率响应与校准
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/use-rf-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    使用 RF 信号源
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/manage-plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    管理仪器插件
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/use-tui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    使用 TUI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/serve-mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    启动只读 MCP 服务
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    排错
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    配置
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/run-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    run plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/generated/run-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    生成的 run plan schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/artifacts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    运行产物
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    错误
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    插件
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构与职责
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/device-abstraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    设备抽象
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/capability-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capability 模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/safety-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/sessions-and-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    会话与恢复
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/plugin-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    插件模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开发
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开发
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    贡献
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    测试
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../documentation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    文档工作流
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugin-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    插件开发
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    advisor 插件开发
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    advisor 插件开发
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        类别边界
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        插件契约
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        外发声明
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#entry-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        entry point 与加载
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        打包与安装
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core 拥有的部分
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core 拥有的部分">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#json" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        敏感文本与编码 JSON 的边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        实现流程
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        验证
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        兼容策略
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        相关页面
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../instrument-drivers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    新增仪器驱动
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rfcs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RFC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/Scaxlibur/wavebench/blob/master/CHANGELOG.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    更新日志
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        类别边界
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        插件契约
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        外发声明
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#entry-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        entry point 与加载
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        打包与安装
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core 拥有的部分
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core 拥有的部分">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#json" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        敏感文本与编码 JSON 的边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        实现流程
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        验证
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        兼容策略
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        相关页面
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="advisor">advisor 插件开发</h1>
+<p>本页适用于为 WaveBench 提供 <strong>advisor</strong> 实现的开发者。advisor 接收应用状态与封闭问题集，输出 typed judgment（选项、分数、概率），供操作者参考；它不做仪器 I/O，也不决定任何安全或质量结论。</p>
+<blockquote>
+<p>实施状态：<code>advisor</code> 类别已在开发线实现（类别与注册表、内置确定性基线、<code>advisor ask</code>，以及包内安装与生命周期，<a href="https://github.com/Epslion404/TYAI-for-wavebench/issues/19">#19</a>），<strong>未随正式版本发布</strong>。合同状态见 <a href="../../rfcs/">RFC 索引</a>（<code>Draft</code>）。</p>
+</blockquote>
+<h2 id="_1">类别边界</h2>
+<p>插件按<strong>类别</strong>分区：<code>instrument</code> 与 <code>advisor</code> 各有独立的 entry point 组和 API 版本门，能力命名规则互不借用。</p>
+<ul>
+<li><code>instrument</code>：提供 descriptor 与 driver，选中后进入真实仪器执行。</li>
+<li><code>advisor</code>：只产出建议，<strong>不参与写路径、安全门、质量门与 capability 判定</strong>。</li>
+<li>一个包首版只允许声明一个类别：同时声明 <code>wavebench.instruments</code> 与 <code>wavebench.advisor</code> 的包会被拒绝。</li>
+</ul>
+<h2 id="_2">插件契约</h2>
+<p><code>AdvisorPlugin</code> 定义在 <code>wavebench.plugins.api</code>，字段与约束如下。</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>advisor_id</code></td>
+<td>必填、去空格；必须与 entry point 名一致</td>
+</tr>
+<tr>
+<td><code>display_name</code>、<code>provider</code></td>
+<td>必填、去空格</td>
+</tr>
+<tr>
+<td><code>capabilities</code></td>
+<td>非空且不重复；取值来自固定词表（见下）</td>
+</tr>
+<tr>
+<td><code>summary</code></td>
+<td>面向人的一句话说明</td>
+</tr>
+<tr>
+<td><code>egress</code></td>
+<td><code>EgressDeclaration</code>，声明数据会不会离开本机</td>
+</tr>
+<tr>
+<td><code>api_version</code></td>
+<td>默认 <code>wavebench.advisor.v1</code>；其它值在加载期被拒</td>
+</tr>
+<tr>
+<td><code>package</code>、<code>origin</code></td>
+<td>由加载路径填写</td>
+</tr>
+</tbody>
+</table>
+<p>advisor 不要求 <code>kind</code>、<code>models</code> 或 <code>manufacturer</code>。</p>
+<p>固定词表由 Core 拥有：<code>advisor.route</code>、<code>advisor.triage</code>、<code>advisor.cause</code>、<code>advisor.rank</code>、<code>advisor.external_state</code>。出现词表之外的 capability 会在加载期被拒。</p>
+<h2 id="_3">外发声明</h2>
+<p><code>EgressDeclaration</code> 只描述事实，<strong>不判断是否已获得授权</strong>——同意门归 Core。</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>transmits_off_machine</code></td>
+<td>是否会把状态发出本机</td>
+</tr>
+<tr>
+<td><code>purpose</code></td>
+<td>必填、去空格；说明外发目的</td>
+</tr>
+<tr>
+<td><code>endpoint_hosts</code></td>
+<td>外发目标主机；<code>transmits_off_machine = false</code> 时必须为空</td>
+</tr>
+<tr>
+<td><code>allowed_state_fields</code></td>
+<td>允许出现在外发状态里的字段名；传输型必须非空</td>
+</tr>
+</tbody>
+</table>
+<p>传输型 advisor 必须同时声明 <code>advisor.external_state</code> capability；非传输型不得声明它。</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">wavebench.plugins.api</span><span class="w"> </span><span class="kn">import</span> <span class="n">AdvisorPlugin</span><span class="p">,</span> <span class="n">EgressDeclaration</span>
+
+<span class="n">plugin</span> <span class="o">=</span> <span class="n">AdvisorPlugin</span><span class="p">(</span>
+    <span class="n">advisor_id</span><span class="o">=</span><span class="s2">"example.jev_router"</span><span class="p">,</span>
+    <span class="n">display_name</span><span class="o">=</span><span class="s2">"Example Jev router"</span><span class="p">,</span>
+    <span class="n">provider</span><span class="o">=</span><span class="s2">"example"</span><span class="p">,</span>
+    <span class="n">capabilities</span><span class="o">=</span><span class="p">(</span><span class="s2">"advisor.route"</span><span class="p">,</span> <span class="s2">"advisor.external_state"</span><span class="p">),</span>
+    <span class="n">summary</span><span class="o">=</span><span class="s2">"Route a request to one WaveBench entry point."</span><span class="p">,</span>
+    <span class="n">egress</span><span class="o">=</span><span class="n">EgressDeclaration</span><span class="p">(</span>
+        <span class="n">transmits_off_machine</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">purpose</span><span class="o">=</span><span class="s2">"Send the whitelisted run state to the configured Jev endpoint."</span><span class="p">,</span>
+        <span class="n">endpoint_hosts</span><span class="o">=</span><span class="p">(</span><span class="s2">"api.example.com"</span><span class="p">,),</span>
+        <span class="n">allowed_state_fields</span><span class="o">=</span><span class="p">(</span><span class="s2">"request"</span><span class="p">,</span> <span class="s2">"run_status"</span><span class="p">),</span>
+    <span class="p">),</span>
+<span class="p">)</span>
+</code></pre></div>
+<p>本地确定性实现把 <code>transmits_off_machine</code> 设为 <code>false</code>，并省略两个白名单字段。</p>
+<h2 id="entry-point">entry point 与加载</h2>
+<ul>
+<li>组名：<code>wavebench.advisor</code>；加载对象必须是 <code>AdvisorPlugin</code>，或其可调用结果。</li>
+<li>entry point 名必须等于 <code>advisor_id</code>，否则记 <code>PluginLoadError</code>，不进入注册表。</li>
+<li>注册前校验 API 版本、capability 词表与外发声明；不符合合同的插件记入加载错误。</li>
+<li>第三方 entry point 默认不导入：<code>plugin list --category advisor --include-entry-points</code> 才加载。</li>
+<li>加载失败只记 doctor 记录，不抛异常；<code>plugin doctor --category advisor</code> 会输出 <code>error</code> 行。</li>
+</ul>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>plugin<span class="w"> </span>list<span class="w"> </span>--category<span class="w"> </span>advisor
+python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>plugin<span class="w"> </span>doctor<span class="w"> </span>--category<span class="w"> </span>advisor<span class="w"> </span>--include-entry-points
+</code></pre></div>
+<p><code>--category</code> 默认 <code>instrument</code>；advisor 类别下 <code>--kind</code> 与 <code>--load</code> 会报错，因为它们只对仪器插件有意义。</p>
+<h2 id="_4">打包与安装</h2>
+<p>advisor 包与仪器插件共用受管生命周期：<code>plugin package check</code>、<code>install</code>、<code>installed</code>、<code>upgrade</code>、<code>downgrade</code>、<code>remove</code>、<code>recover</code>。类别由包声明的 entry point 组决定，不需要额外参数；同时声明 <code>wavebench.instruments</code> 与 <code>wavebench.advisor</code> 的包会被拒绝。</p>
+<ul>
+<li>安装保持离线 <code>--no-deps</code>，不会联网下载 advisor 的运行时依赖。</li>
+<li>postflight 按类别调用 <code>validate_advisor</code>；非法 API 版本、capability 或 egress 声明会让安装失败并回滚。</li>
+<li><code>plugin doctor --category advisor</code> 从打包元数据 <code>Requires-Dist</code> 读取依赖，报告缺失或版本不匹配，不联网。</li>
+</ul>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>plugin<span class="w"> </span>package<span class="w"> </span>check<span class="w"> </span>dist/wavebench_example_advisor-0.1.0-py3-none-any.whl
+python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>dist/wavebench_example_advisor-0.1.0-py3-none-any.whl
+python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>plugin<span class="w"> </span>doctor<span class="w"> </span>--category<span class="w"> </span>advisor<span class="w"> </span>--include-entry-points
+</code></pre></div>
+<h2 id="core">Core 拥有的部分</h2>
+<p>以下环节由 Core 实现，插件不得自己实现或绕过：</p>
+<table>
+<thead>
+<tr>
+<th>环节</th>
+<th>由谁实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>外发同意门（默认关闭、显式 opt-in、非交互拒绝）</td>
+<td><code>wavebench.services.advisor_consent</code></td>
+</tr>
+<tr>
+<td>发送前预览（脱敏、字节数、sha256、逐条不可信来源）</td>
+<td>同上；预览不联网，且<strong>预览内容就是实际外发内容</strong></td>
+</tr>
+<tr>
+<td>「概率 → 动作」阈值</td>
+<td><code>[advisor] accept</code>／<code>review</code>，插件不得自带阈值</td>
+</tr>
+<tr>
+<td>decision artifact 落盘</td>
+<td><code>wavebench.services.decision_artifacts</code>，schema <code>wavebench.decision.v1</code></td>
+</tr>
+<tr>
+<td>拒绝与失败语义</td>
+<td>见下表</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>情形</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>未开启、未同意、非交互、字段或 endpoint 未注册</td>
+<td><code>refused</code>，<strong>不发起任何外发</strong></td>
+</tr>
+<tr>
+<td>仅预览</td>
+<td><code>preview_only</code>，不发起外发</td>
+</tr>
+<tr>
+<td>没有可用实现或调用失败</td>
+<td><code>unavailable</code></td>
+</tr>
+<tr>
+<td>响应结构非法或选项 id 不在代码持有的选项集内</td>
+<td><code>invalid</code>，不采用任何结论</td>
+</tr>
+</tbody>
+</table>
+<p>以上四种都不改变退出码，也不参与 <code>run.json.status</code>、质量门、<code>auto_recover</code> 或 capability 判定。</p>
+<p>响应中的概率、非空 <code>confidence</code> 与 <code>noul</code> 必须是 0 到 1 之间的有限数字，布尔值和数字字符串会被拒绝；<code>score</code> 必须是有限数字。<code>confidence</code> 缺失或为 <code>null</code> 表示未提供。Choice 必须提供字符串选项 id 及其概率，路由概率表中的选项也必须属于代码持有的 catalog。非法响应产出 <code>invalid</code> artifact，建议集为空。</p>
+<p>Decision artifact 的 <code>reason</code>、requested model 与 reported model 在构造时统一采用同意门的敏感文本脱敏规则，CLI 诊断与 JSON 落盘读取同一份结果。未知选项和答案类型的错误只保存固定诊断，不回显响应原文。</p>
+<h3 id="json">敏感文本与编码 JSON 的边界</h3>
+<p>Python mapping 中的敏感键（忽略大小写，<code>-</code> 归一为 <code>_</code>，包含 <code>api_key</code>、<code>apikey</code>、<code>authorization</code>、<code>credential</code>、<code>password</code>、<code>secret</code> 或 <code>token</code>）对应的<strong>整个值</strong>替换为 <code>[REDACTED]</code>，不解析该值。普通文本继续识别 <code>token=...</code> 等标签、带引号的 Bearer 值和转义引号；未闭合的值只遮蔽本行，无引号的值以空白为界，逗号或花括号不会结束凭据。</p>
+<p>mapping 的<strong>字段名本身</strong>也按同一文本规则脱敏，并递归覆盖嵌套 mapping 与数组；是否遮蔽整个值仍由<strong>原字段名</strong>判定。例如 <code>{"token=AUDIT_DUMMY": "private"}</code> 的键和值都会变为 <code>[REDACTED]</code>。不同原字段名（包括非字符串键的 <code>str()</code> 结果）脱敏后撞名，或与已有固定 marker 键撞名时，该层 mapping 替换为单条 <code>{"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"}</code>，保持 mapping 类型，不覆盖、不择一，也不与 marker 键合并；外层同级的普通字段保留。未触发文本脱敏的普通字段名保持原样。</p>
+<p>完整 JSON 文本（去掉前导 JSON 空白后以 <code>"</code>、<code>{</code> 或 <code>[</code> 开始）在预算内通过标准 JSON 解码、敏感键脱敏再编码；例如 key 的 <code>\u0061uthorization</code> 会按 <code>authorization</code> 处理。每一层 JSON string 的类型与编码层数保持不变，输入 <code>str</code> 不会变成 Python dict。预算内没有脱敏变化的合法 JSON 保留原始字节；发生变化的 JSON 用标准 <code>json.dumps(..., ensure_ascii=True)</code> 重编码，所以空白和 Unicode 转义形式可能改变，非敏感字段的内容保留。</p>
+<p>解码后的 JSON key 本身也是文本，使用同一共享预算与脱敏规则；例如 <code>{"token=dummy": "private"}</code> 的字段名和值都会变为 <code>[REDACTED]</code>。是否遮蔽整个值仍由原字段名判定。若两个不同 key 脱敏后成为同名，整个原始字符串替换为 <code>[REDACTED_ENCODED_TEXT]</code>，不选择其中一个值或静默丢弃字段；同字符串中的普通诊断也会被省略。</p>
+<p>开头的完整 JSON string token 后还可以追加普通诊断，例如 <code>json.dumps(json.dumps({"token": "dummy"})) + " diagnosis=keep"</code>：先按转义引号边界识别 token，解码并脱敏后重编码，再独立脱敏并保留后缀。token 与后缀共享原字符串的预算，候选输入的字节统计包含后缀；任一部分超限仍省略整个字符串。</p>
+<p>每个待处理字符串单独拥有以下解释预算，包含其解码出的嵌套字符串，共享而不在子节点重置：</p>
+<table>
+<thead>
+<tr>
+<th>限制</th>
+<th>上限</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每次 JSON 解码的输入</td>
+<td>65,536 UTF-8 字节（孤立 surrogate 按 <code>surrogatepass</code> 计数）</td>
+</tr>
+<tr>
+<td>重编码 JSON 输出（包含普通后缀）</td>
+<td>65,536 UTF-8 字节；按有界 JSON 树的编码 chunk 计数，超限前不拼接完整输出</td>
+</tr>
+<tr>
+<td>每轮累计待解码文本工作量</td>
+<td>262,144 字节</td>
+</tr>
+<tr>
+<td>每轮 JSON 解码尝试次数（包括失败尝试）</td>
+<td>8；小对象最多支持 7 层外部 JSON string 包装加一次对象解码</td>
+</tr>
+<tr>
+<td>结构深度</td>
+<td>32；同时限制解码树遍历与当前路径上的容器/编码字符串</td>
+</tr>
+<tr>
+<td>每轮累计词法 token 数</td>
+<td>4,096；容器开头、key/value 字符串和原子值均计数，字符串内的标点不计数</td>
+</tr>
+</tbody>
+</table>
+<p>字节、次数、容器深度和 token 检查发生在 <code>json.loads</code> <strong>之前</strong>，不先分配无限制 JSON 树再统计。重编码只遍历已经有界的 JSON 树；单个字符串编码 chunk 可能展开有界 scalar，但不会拼接超过输出预算的文档。改变后的结果还必须通过<strong>一次</strong>同样有界的稳定性校验，确认下一次脱敏会原样接受它；校验不是反复重置预算直到收敛的循环。每个原始字符串最多两轮，共 16 次 JSON 解码尝试、524,288 字节解码工作量、8,192 个词法 token。原样返回的输入和固定 marker 不需要第二轮。这样即使输出低于单次字节上限，但多层解码累计工作量超限，也会在首轮调用返回 marker，保持 preview、client 和 artifact 再次脱敏的一致性。</p>
+<p>任一输入、输出或稳定性校验预算耗尽（或复验结果发生变化），整个原始字符串替换为 <code>[REDACTED_JSON_LIMIT]</code>，不会回退到旧文本正则或保留已处理前缀/未处理后缀；此时该字符串中的诊断也会丢失。超过预算的 JSON 候选即使没有凭据也会被省略。普通非 JSON 长诊断没有该长度截断，继续进行与输入长度成比例的文本匹配。</p>
+<p><code>[REDACTED]</code>、<code>[REDACTED_JSON_LIMIT]</code>、<code>[REDACTED_ENCODED_TEXT]</code>、<code>[REDACTED_KEY_COLLISION]</code>、<code>[REDACTED_UNTRUSTED_TEXT]</code> 五个固定 marker 原样保留，不花费 JSON 解码次数。已知 marker token 后接空白与普通后缀（例如 <code>[REDACTED] diagnosis=keep</code>）按普通文本规则处理，后缀中的凭据仍需脱敏；不会因为数组中有多个这样的脱敏值而在下一轮多消耗 JSON 尝试。其它以 <code>[</code> 开头的字符串和 marker 相似文本仍使用原来的候选与保守规则，不能借用 marker 前缀跳过凭据检查。</p>
+<p>除上述开头 token 加后缀外，自由文本中嵌入的转义 JSON 片段不提供通用还原保证。无法解析的完整 JSON string 候选、或回退文本按普通标签规则脱敏后仍出现「反斜杠转义引号 + 空白 + 冒号」/<code>\uXXXX</code> 标记时，整个字符串保守替换为 <code>[REDACTED_ENCODED_TEXT]</code>，同样会丢失其中的普通诊断。没有这些编码标记的普通文本、单引号字段和非完整普通 JSON 继续使用上述按行/引号规则。插件应优先用结构化 mapping 表达凭据，不能将这些有限规则解释为任意编码、自由文本或任意 payload 的安全保证。</p>
+<h2 id="_5">实现流程</h2>
+<ol>
+<li>选定 <code>advisor_id</code> 与 capability（必须在词表内），并写清 egress 事实。</li>
+<li>实现与 Core 约定的调用形状：</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">system_one</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">model</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="n">questions</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span> <span class="o">...</span>
+</code></pre></div>
+<p>建议直接对照内置确定性基线 <code>builtin.rule_advisor</code>（<code>wavebench.services.advisor_rule</code>）：它不联网、不依赖 SDK，用来回答「外部 advisor 是否真的打败了确定性基线」。
+3. 选项集与答案契约由 Core 与调用方持有，模型不得产出命令文本；建议里的命令一律来自代码持有的 catalog。
+4. 离线测试至少覆盖：拒绝路径下外部调用次数为 0、响应非法时 fail-closed、相同输入产生相同字节、以及不写 Core 拥有的产物。</p>
+<h2 id="_6">验证</h2>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>plugin<span class="w"> </span>list<span class="w"> </span>--category<span class="w"> </span>advisor
+python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>plugin<span class="w"> </span>doctor<span class="w"> </span>--category<span class="w"> </span>advisor
+python<span class="w"> </span>-m<span class="w"> </span>wavebench<span class="w"> </span>advisor<span class="w"> </span>ask<span class="w"> </span>--state<span class="w"> </span>state.json<span class="w"> </span>--config<span class="w"> </span>wavebench.toml<span class="w"> </span>--preview
+</code></pre></div>
+<p><code>advisor ask</code> 读取本地 state fixture 与 <code>[advisor]</code> 配置，默认只打印脱敏预览，不发起外发；<code>--accept-external-state</code> 才可能在通过同意门后外发，<code>--run-dir</code> 决定 decision artifact 的落点。</p>
+<p>自动化调用使用 <code>advisor ask --json</code>，输出沿用 <code>wavebench.cli.result.v1</code> 包络。
+<code>result</code> 为结构化对象，包含 <code>status</code>、<code>reason</code>、<code>requested_model</code>、<code>reported_model</code>、
+<code>duration_ms</code>、<code>thresholds</code>、<code>consent</code>、<code>recommendations</code>、<code>artifact_path</code>，以及
+<code>target</code>、<code>state</code>、<code>questions</code>、<code>answers</code> 和 <code>advisory_only</code>。
+<code>consent</code> 保留 <code>payload_sha256</code>、<code>payload_bytes</code> 和 <code>accepted_data_leaves_machine</code>；
+无产物写入时 <code>artifact_path</code> 为 <code>null</code>，无建议时 <code>recommendations</code> 为 <code>[]</code>。
+<code>preview_only</code>、<code>refused</code>、<code>unavailable</code> 和 <code>invalid</code> 同样使用该形状。
+包络的 <code>status</code>／<code>exit_code</code> 表示 CLI 执行结果；advisor 的判断状态位于 <code>result.status</code>。
+有效调用得到拒绝或无可用判断时，既有 CLI 退出码仍为 <code>0</code>；配置或参数错误仍使用既有错误包络。
+不带 <code>--json</code> 的文本输出保持原样；落盘产物仍使用 <code>wavebench.decision.v1</code>，同意门与产物行为不变。</p>
+<h2 id="_7">兼容策略</h2>
+<ul>
+<li><code>advisor</code> 使用独立版本门 <code>wavebench.advisor.v1</code>；调整契约时提升该门，不动 <code>wavebench.instrument.*</code>。</li>
+<li>仪器插件的 entry point 组、安装路径与 CLI 输出保持不变；账本记录新增可选的 <code>category</code> 字段，旧记录按 <code>instrument</code> 读取。<code>plugin list</code> 不带 <code>--category</code> 时行为与输出保持仪器语义。</li>
+<li>包内安装、postflight（<code>validate_advisor</code>）、账本/漂移检测与依赖 doctor 已覆盖 advisor 包；仍应逐包验证真实 advisor 的运行时依赖与外部服务，不能据此声明所有第三方 advisor 的生产支持。</li>
+</ul>
+<h2 id="_8">相关页面</h2>
+<ul>
+<li><a href="../../concepts/plugin-model/">插件模型</a></li>
+<li><a href="../../reference/plugins/">插件 Reference</a></li>
+<li><a href="../../reference/configuration/">配置 Reference</a></li>
+<li><a href="../../rfcs/">RFC 索引</a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
