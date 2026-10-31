@@ -2,13 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
-from importlib.metadata import EntryPoint, PackageNotFoundError, distributions, entry_points
-from importlib.metadata import version as distribution_version
+from importlib.metadata import EntryPoint, entry_points
 import re
 from typing import Any
-
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
 
 from wavebench.errors import ConfigError
 
@@ -119,14 +115,10 @@ def plugin_doctor_records(
     load_errors: tuple[PluginLoadError, ...] = (),
 ) -> list[PluginDoctorRecord]:
     records: list[PluginDoctorRecord] = []
-    seen: set[str] = set()
     for error in load_errors:
         records.append(PluginDoctorRecord("error", error.source, error.message))
     for plugin in registry.plugins:
         plugin_errors = _validate_plugin(plugin)
-        if plugin.driver_id in seen:
-            plugin_errors.append(f"duplicate plugin driver_id: {plugin.driver_id}")
-        seen.add(plugin.driver_id)
         if plugin_errors:
             for message in plugin_errors:
                 records.append(PluginDoctorRecord("error", plugin.driver_id, message))
@@ -256,20 +248,12 @@ def build_advisor_registry(*, include_entry_points: bool = False) -> AdvisorRegi
     )
 
 
-def advisor_plugin_from_entry_point(entry_point: EntryPoint) -> AdvisorPlugin:
-    loaded = entry_point.load()
-    plugin = _advisor_from_loaded_entry_point(entry_point, loaded)
-    errors = validate_advisor(plugin)
-    if errors:
-        raise ConfigError("; ".join(errors))
-    return plugin
-
-
 def load_advisor_entry_points() -> list[tuple[AdvisorPlugin | None, PluginLoadError | None]]:
     results: list[tuple[AdvisorPlugin | None, PluginLoadError | None]] = []
     for entry_point in _select_advisor_entry_points():
         try:
-            plugin = advisor_plugin_from_entry_point(entry_point)
+            loaded = entry_point.load()
+            plugin = _advisor_from_loaded_entry_point(entry_point, loaded)
         except Exception as exc:
             results.append((None, PluginLoadError(source=_entry_point_source(entry_point), message=str(exc))))
             continue
@@ -328,57 +312,6 @@ def advisor_doctor_records(
 
 def has_advisor_doctor_errors(records: list[PluginDoctorRecord]) -> bool:
     return any(record.severity == "error" for record in records)
-
-
-def advisor_dependency_doctor_records() -> list[PluginDoctorRecord]:
-    """Report missing advisor Requires-Dist dependencies without network access."""
-    records: list[PluginDoctorRecord] = []
-    seen: set[tuple[str, str, str]] = set()
-
-    def add(severity: str, subject: str, message: str) -> None:
-        key = (severity, subject, message)
-        if key in seen:
-            return
-        seen.add(key)
-        records.append(PluginDoctorRecord(severity, subject, message))
-
-    for dist in distributions():
-        entries = [
-            entry
-            for entry in dist.entry_points
-            if entry.group == ADVISOR_ENTRY_POINT_GROUP
-        ]
-        if not entries:
-            continue
-        subject = entries[0].name or canonicalize_name(str(dist.metadata.get("Name", "")))
-        for requirement_text in dist.metadata.get_all("Requires-Dist") or ():
-            try:
-                requirement = Requirement(requirement_text)
-            except InvalidRequirement:
-                add("error", subject, f"invalid Requires-Dist: {requirement_text}")
-                continue
-            try:
-                if requirement.marker is not None and not requirement.marker.evaluate():
-                    continue
-            except Exception:
-                add("error", subject, f"invalid dependency marker: {requirement_text}")
-                continue
-            if canonicalize_name(requirement.name) == "wavebench":
-                continue
-            try:
-                installed_version = distribution_version(requirement.name)
-            except PackageNotFoundError:
-                add("error", subject, f"missing dependency: {requirement}")
-                continue
-            if requirement.specifier and not requirement.specifier.contains(
-                installed_version, prereleases=True
-            ):
-                add(
-                    "error",
-                    subject,
-                    f"dependency version mismatch: {requirement} (installed {installed_version})",
-                )
-    return records
 
 
 def _select_advisor_entry_points() -> list[EntryPoint]:

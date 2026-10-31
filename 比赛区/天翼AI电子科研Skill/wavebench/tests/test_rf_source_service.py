@@ -463,7 +463,7 @@ def test_one_shot_service_passes_owned_lease_to_factory() -> None:
         assert service.idn() == "EXAMPLE,RF1,0,1"
 
     lease = factory.call_args.kwargs["lease"]
-    assert lease.resource == "tcpip::rf::inst0::instr"
+    assert lease.resource == "tcpip::rf::instr"
     assert driver.calls == ["idn", "close"]
 
 

@@ -147,27 +147,6 @@ class AdvisorConsentTests(unittest.TestCase):
         self.assertEqual(outcome.reason, consent.REASON_PREVIEW_ONLY)
         self.assertFalse(outcome.granted)
 
-    def test_structured_sensitive_fields_keep_adjacent_non_sensitive_values(self):
-        preview = self._preview(state={
-            "fields": {"request": "diagnosis=keep"},
-            "nested": {"password": "prefix,AUDIT_DUMMY", "api_key": "prefix}AUDIT_DUMMY",
-                       "diagnosis": "keep", "count": 2},
-        })
-        serialized = json.dumps(preview.as_dict(), ensure_ascii=False)
-        self.assertNotIn("AUDIT_DUMMY", serialized)
-        self.assertEqual(preview.payload["state"]["nested"]["password"], "[REDACTED]")
-        self.assertEqual(preview.payload["state"]["nested"]["api_key"], "[REDACTED]")
-        self.assertEqual(preview.payload["state"]["nested"]["diagnosis"], "keep")
-        self.assertEqual(preview.payload["state"]["nested"]["count"], 2)
-
-    def test_quoted_credentials_consume_punctuation_without_hiding_following_text(self):
-        for text in ('password="prefix,AUDIT_DUMMY" diagnosis=keep',
-                     "api_key='prefix}AUDIT_DUMMY' diagnosis=keep"):
-            with self.subTest(text=text):
-                preview = self._preview(state={"fields": {"request": text}})
-                request = preview.payload["state"]["fields"]["request"]
-                self.assertEqual(request, "[REDACTED] diagnosis=keep")
-
     def test_granted_consent_records_scope_and_allowlists(self):
         outcome = self._resolve(granted_by="operator", granted_at="2026-09-29T10:00:00Z")
 

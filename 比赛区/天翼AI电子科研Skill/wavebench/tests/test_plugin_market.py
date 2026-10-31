@@ -71,3 +71,14 @@ def test_load_market_index_rejects_unknown_plugin_id(tmp_path):
 
     with pytest.raises(ConfigError, match="unknown market plugin_id"):
         load_market_index(index_path).get("missing")
+
+
+@pytest.mark.parametrize("field, value", [("kind", "nonsense"), ("version", "not-a-version")])
+def test_load_market_index_rejects_invalid_contract_values(tmp_path, field, value):
+    index_path = tmp_path / "market.json"
+    plugin = make_market_plugin()
+    plugin[field] = value
+    write_index(index_path, [plugin])
+
+    with pytest.raises(ConfigError):
+        load_market_index(index_path)

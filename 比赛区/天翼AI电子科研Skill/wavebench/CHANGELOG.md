@@ -2,15 +2,6 @@
 
 这里记录已经打过 Git tag 的版本。内容以 tag 之前已经合入的代码、测试、发布说明和边界记录为事实源；路线图里的候选功能不算已发布能力。没有独立 tag 的 release notes 草稿只并入对应正式版本，不单列为版本。版本号和时间以仓库 tag 为准，当前开发分支的变化不放在历史版本里。
 
-## Unreleased（开发线：自定义设备与协议支持）
-
-以下改动属开发线（RFC `WaveBench_自定义设备与协议支持RFC.md` 的 `Draft` 状态），未随任何正式版本发布；能力以 CLI、Reference 与测试为准，不在作品包外宣称。
-
-- M1 CAN/CAN-FD 传输后端：`transport/can_transport.py`（`CanTransport`），`python-can>=4.0` 进 `wavebench[can]` 可选 extra；经 `TRANSPORT_FACTORIES` 注册；离线 virtual 总线测试覆盖打不开、超时、长度不符、总线错误、SCPI 操作 `raw_frame_unsupported`、`close()` 幂等与会话污染。
-- M1 设备枚举与发现：`discovery.py` 新增串口枚举（pyserial `list_ports`）、CAN 适配器枚举（python-can `interface`）、本地设备合并入口与端口协议标注（Modbus/TCP 502 标 `modbus-tcp`、未知端口标 `unknown`，非 SCPI 端口只提示不当作仪器）；CLI `net discover` 新增 `--serials`／`--can`／`--force`／`--summary`。
-- M2 声明式协议完整化：`FrameDefinition` 支持 `escape_hex`（delimiter 单字节转义，孤立 escape 结构化失败）、流拆帧 `extract_stream_frame`（跨分包累积、拒绝内部未转义分隔符、声明长度超预算立即失败）、`encode_request` 与 `[[protocol.requests]]` 请求映射（命名请求固定帧 + 可选响应超时）。
-- 传输/协议/发现测试矩阵：新增 `tests/test_can_transport.py`、`tests/test_device_discovery.py`、`tests/test_protocol_runtime.py`，演进 `test_transport_backends.py`（`can` 已注册、未知后端用 `udp`）与 `test_plugin_protocol.py`（escape 支持）。
-
 ## v0.8.0 — 2026-07-24
 
 依据：tag `v0.8.0`（提交 `4799b12`）以及从 `v0.7.0` 到该 tag 的提交记录。

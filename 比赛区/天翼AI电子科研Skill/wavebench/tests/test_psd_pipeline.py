@@ -169,7 +169,7 @@ def test_psd_artifacts_report_and_source_immutability(tmp_path):
                                          source_step=source, source_record=record)
     pipeline = artifact["analysis_pipeline"]
     assert pipeline["status"] == "ok"
-    manifest = json.loads((tmp_path / pipeline["manifest"]).read_text(encoding="utf-8"))
+    manifest = json.loads((tmp_path / pipeline["manifest"]).read_text())
     assert manifest["stages"][1]["output_domain"] == "psd"
     assert manifest["psd"]["segment_count"] == 1
     assert manifest["psd"]["discarded_tail_samples"] == 3
@@ -178,7 +178,7 @@ def test_psd_artifacts_report_and_source_immutability(tmp_path):
     assert len(pipeline["warnings"]) == 2
     npy, csv = [tmp_path / item["path"] for item in pipeline["exports"]]
     np.testing.assert_allclose(np.load(npy), np.loadtxt(csv, delimiter=",", skiprows=1))
-    assert csv.read_text(encoding="utf-8").splitlines()[0] == "frequency_hz,psd_v2_per_hz"
+    assert csv.read_text().splitlines()[0] == "frequency_hz,psd_v2_per_hz"
     for item in pipeline["exports"]:
         assert item["columns"] == ["frequency_hz", "psd_v2_per_hz"]
         assert item["sha256"] == sha256((tmp_path / item["path"]).read_bytes()).hexdigest()
@@ -187,8 +187,8 @@ def test_psd_artifacts_report_and_source_immutability(tmp_path):
     assert artifact["metrics"] == {}
     (tmp_path / "run.json").write_text(json.dumps(dict(status="ok", steps=[dict(
         index=1, id="density_main", kind="analysis.pipeline", status="ok", artifact=artifact
-    )])), encoding="utf-8")
-    html = write_run_report_html(load_run_package(tmp_path)).read_text(encoding="utf-8")
+    )])))
+    html = write_run_report_html(load_run_package(tmp_path)).read_text()
     assert "psd(method=welch, window=hann, nperseg=16, noverlap=8" in html
     assert 'href="processing/01_density_main/exports/density.csv"' in html
     assert "PSD discarded 3 trailing samples" in html
@@ -202,7 +202,7 @@ def test_failed_psd_preserves_earlier_export(tmp_path):
     artifact = execute_analysis_pipeline(run_dir=tmp_path, step=plan.steps[1],
                                          source_step=source, source_record=record)
     pipeline = artifact["analysis_pipeline"]
-    manifest = json.loads((tmp_path / pipeline["manifest"]).read_text(encoding="utf-8"))
+    manifest = json.loads((tmp_path / pipeline["manifest"]).read_text())
     assert manifest["partial"] is True
     assert manifest["failed_stage"] == "operations[1]"
     assert "psd" not in manifest

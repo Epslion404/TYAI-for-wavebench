@@ -14,230 +14,35 @@ from wavebench.errors import ConfigError
 from wavebench.report.plot3d import (
     _finite_float,
     build_surface_payload,
-    plotly_asset_available,
     plotly_head_tag,
     plotly_initializer,
     render_surface_card,
     write_plotly_asset,
 )
 from wavebench.report.path_utils import artifact_url
-from wavebench.report.html_budget import (
-    bounded_format, check_text_assembly, escaped_length, retained_size,
-)
-from wavebench.report.output_guard import (
-    report_manifest_paths,
-    validate_report_output_pairs,
-    validate_run_report_paths,
-)
 
 
-def validate_run_report_outputs(run: RunPackage, paths: list[Path], *, analysis_limits=None) -> None:
-    from wavebench.data.analysis_io import read_json_bounded
-    from wavebench.data.analysis_resources import AnalysisLimits
-    from wavebench.data.analysis_control import checkpoint
-    from .analysis import artifact_path
-
-    checkpoint()
-    limits = analysis_limits or AnalysisLimits()
-    capture_dirs = []
-    evidence_files = []
-    # Rendering reads step metadata independently, even when steps share a package.
-    for reference in _capture_references(run, unique_packages=False):
-        checkpoint()
-        package_dir = _resolve_artifact_path(run.path, reference.package)
-        capture_dirs.append(package_dir)
-        explicit, actual = _capture_metadata_paths(package_dir, reference.metadata)
-        evidence_files.extend((explicit, actual))
-        metadata = {}
-        metadata = _read_capture_metadata(
-            package_dir, reference.metadata, limits=limits,
-            retained_bytes=retained_size([capture_dirs, evidence_files]), strict_resources=True,
-        )
-        for file_text in _capture_file_references(metadata.get("files")):
-            # Protect the explicit reference as well as the consumer's fallback:
-            # creating a missing explicit file would change subsequent resolution.
-            evidence_files.append(_resolve_artifact_path(run.path, file_text))
-            evidence_files.append(_resolve_capture_file_path(run.path, package_dir, file_text))
-        screenshot_text = _metadata_screenshot_path(metadata)
-        if screenshot_text:
-            evidence_files.append(_resolve_capture_screenshot_path(run.path, package_dir, screenshot_text))
-        limits.check("max_working_bytes", retained_size([capture_dirs, evidence_files, metadata]),
-                     "report evidence inventory")
-    metadata = {}
-    for step in run.steps:
-        checkpoint()
-        artifact = step.get("artifact", {})
-        if not isinstance(artifact, dict):
-            continue
-        pipeline = artifact.get("analysis_pipeline", {})
-        if not isinstance(pipeline, dict):
-            continue
-        for field in ("manifest", "metrics"):
-            path = _optional_run_artifact_path(run.path, pipeline.get(field))
-            if path is not None:
-                evidence_files.append(path)
-        evidence_files.extend(_analysis_evidence_paths(run.path, pipeline))
-        limits.check("max_working_bytes", retained_size([capture_dirs, evidence_files]),
-                     "report evidence inventory")
-        # The curve renderer reads manifest maps, independently of the run's
-        # copied exports/peaks. Both pipelines and pairs resolve them at run root;
-        # there is no manifest-parent fallback and no recursive manifest chain.
-        raw_manifest = pipeline.get("manifest")
-        if isinstance(raw_manifest, str) and raw_manifest:
-            try:
-                actual_manifest = artifact_path(run.path, raw_manifest)
-            except ValueError:
-                # The confined renderer cannot consume this manifest. Its
-                # explicit reference remains protected by the inventory above.
-                continue
-            evidence_files.append(actual_manifest)
-            if actual_manifest.exists():
-                try:
-                    checkpoint()
-                    manifest = read_json_bounded(
-                        actual_manifest, limits,
-                        retained_bytes=retained_size([capture_dirs, evidence_files]),
-                    )
-                    if not isinstance(manifest, dict):
-                        raise ValueError("analysis manifest must be an object")
-                    evidence_files.extend(_analysis_evidence_paths(run.path, manifest))
-                    limits.check("max_working_bytes", retained_size([
-                        capture_dirs, evidence_files, manifest,
-                    ]), "report evidence inventory")
-                except (OSError, ValueError, TypeError) as exc:
-                    raise ConfigError(f"cannot inventory original run evidence: {actual_manifest}: {exc}") from exc
-                finally:
-                    manifest = None
-        limits.check("max_working_bytes", retained_size([capture_dirs, evidence_files]),
-                     "report evidence inventory")
-    validate_run_report_paths(
-        run, paths, evidence_dirs=capture_dirs, evidence_files=evidence_files, analysis_limits=limits,
-    )
-
-
-def _analysis_evidence_paths(run_path: Path, payload: dict[str, Any]) -> list[Path]:
-    """Enumerate only renderer/link fields, including explicit missing references."""
-    from .analysis import artifact_path
-    from wavebench.data.analysis_control import checkpoint
-
-    paths = []
-    for field in ("manifest", "metrics"):
-        path = _optional_run_artifact_path(run_path, payload.get(field))
-        if path is not None:
-            paths.append(path)
-    for field, key in (("exports", "path"), ("peaks", "json")):
-        items = payload.get(field, [])
-        if not isinstance(items, list):
-            raise ConfigError(f"cannot inventory original run evidence: {field} must be a list")
-        for item in items:
-            checkpoint()
-            if not isinstance(item, dict):
-                raise ConfigError(f"cannot inventory original run evidence: invalid {field} entry")
-            raw = item.get(key)
-            path = _optional_run_artifact_path(run_path, raw)
-            if path is not None:
-                paths.append(path)
-                try:
-                    paths.append(artifact_path(run_path, raw))
-                except ValueError:
-                    pass  # Explicit reference protected; renderer cannot read it.
-    return paths
-
-
-@dataclass(frozen=True)
-class RunReportOutputs:
-    html: Path
-    manifest: Path
-    plotly: Path | None
-    pdf: Path | None
-
-
-def plan_run_report_outputs(
-    run: RunPackage, output_path: str | Path | None = None, *,
-    pdf_output_path: str | Path | None = None, analysis_limits=None,
-) -> RunReportOutputs:
-    """Validate the complete export before creating directories or writing any output."""
-    outputs = _run_report_output_paths(run, output_path, pdf_output_path=pdf_output_path)
-    targets = [outputs.html, outputs.manifest]
-    if outputs.plotly is not None:
-        targets.append(outputs.plotly)
-    if outputs.pdf is not None:
-        targets.append(outputs.pdf)
-    validate_run_report_outputs(run, targets, analysis_limits=analysis_limits)
-    return outputs
-
-
-def _run_report_output_paths(
-    run: RunPackage, output_path: str | Path | None = None, *, pdf_output_path: str | Path | None = None
-) -> RunReportOutputs:
+def write_run_report_html(run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None) -> Path:
     path = Path(output_path) if output_path is not None else run.path / "report.html"
+    path.parent.mkdir(parents=True, exist_ok=True)
     has_surface = any(
         build_surface_payload(response.rows, plot_id="probe", response_label=response.label)
         for response in run.frequency_responses
     )
-    manifest_path = path.parent / "report-assets" / "manifest.json"
-    asset_path = (
-        path.parent / "report-assets" / "plotly.min.js"
-        if has_surface and plotly_asset_available() else None
-    )
-    pdf_path = Path(pdf_output_path) if pdf_output_path is not None else None
-    return RunReportOutputs(path, manifest_path, asset_path, pdf_path)
-
-
-def write_run_report(
-    run: RunPackage, output_path: str | Path | None = None, *,
-    pdf_output_path: str | Path | None = None, analysis_limits=None,
-) -> RunReportOutputs:
-    """Export HTML and optional PDF using one validated output plan."""
-    outputs = plan_run_report_outputs(
-        run, output_path, pdf_output_path=pdf_output_path, analysis_limits=analysis_limits,
-    )
-    _write_run_report_html(run, outputs, analysis_limits=analysis_limits)
-    if outputs.pdf is not None:
-        _write_run_report_pdf(run, outputs.pdf, analysis_limits=analysis_limits)
-    return outputs
-
-
-def write_run_report_html(run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None) -> Path:
-    outputs = plan_run_report_outputs(run, output_path, analysis_limits=analysis_limits)
-    return _write_run_report_html(run, outputs, analysis_limits=analysis_limits)
-
-
-def _write_run_report_html(run: RunPackage, outputs: RunReportOutputs, *, analysis_limits=None) -> Path:
-    path = outputs.html
-    path.parent.mkdir(parents=True, exist_ok=True)
-    plotly_asset = write_plotly_asset(path.parent) if outputs.plotly is not None else None
+    plotly_asset = write_plotly_asset(path.parent) if has_surface else None
     plotly_url = artifact_url(plotly_asset, path.parent) if plotly_asset is not None else None
     path.write_text(
         render_run_report_html(run, output_dir=path.parent, plotly_url=plotly_url, analysis_limits=analysis_limits), encoding="utf-8"
     )
-    _write_run_report_manifest(
-        run, outputs.manifest, report_path=path, interactive_asset_path=plotly_asset,
-        pdf_path=outputs.pdf, analysis_limits=analysis_limits,
+    write_run_report_manifest(
+        run, output_dir=path.parent, report_path=path, interactive_asset_path=plotly_asset
     )
     return path
 
 
-def write_run_report_pdf(
-    run: RunPackage, output_path: str | Path | None = None, *, analysis_limits=None,
-) -> Path:
+def write_run_report_pdf(run: RunPackage, output_path: str | Path | None = None) -> Path:
     """Render the report as a portable PDF with its visible images and SVGs embedded."""
     path = Path(output_path) if output_path is not None else run.path / "report.pdf"
-    validate_run_report_outputs(run, [path], analysis_limits=analysis_limits)
-    output_dir = path.parent
-    if output_dir == output_dir.parent / "report-assets":
-        output_dir = output_dir.parent
-    # A standalone PDF must also leave the associated HTML and sidecars intact.
-    html_path = report_manifest_paths(run, output_dir, analysis_limits=analysis_limits).get("report", output_dir / "report.html")
-    outputs = _run_report_output_paths(run, html_path)
-    related = [path, outputs.html, outputs.manifest]
-    if outputs.plotly is not None:
-        related.append(outputs.plotly)
-    validate_report_output_pairs(related)
-    return _write_run_report_pdf(run, path, analysis_limits=analysis_limits)
-
-
-def _write_run_report_pdf(run: RunPackage, path: Path, *, analysis_limits=None) -> Path:
     try:
         from weasyprint import HTML
     except (ImportError, OSError) as exc:
@@ -248,9 +53,7 @@ def _write_run_report_pdf(run: RunPackage, path: Path, *, analysis_limits=None) 
     # A full HTML report may contain hundreds of independent capture artifacts.
     # Keep the portable PDF focused on its reviewable result: summary, Bode curves,
     # fit, and point table. The run directory remains the authoritative raw evidence.
-    html = render_run_report_html(
-        run, output_dir=path.parent, compact=True, analysis_limits=analysis_limits,
-    )
+    html = render_run_report_html(run, output_dir=path.parent, compact=True)
     try:
         HTML(string=html, base_url=path.parent.resolve().as_uri() + "/").write_pdf(str(path))
     except Exception as exc:  # noqa: BLE001 - surface renderer failures as a user-facing config error
@@ -263,39 +66,16 @@ def write_run_report_manifest(
     output_dir: str | Path | None = None,
     report_path: str | Path | None = None,
     interactive_asset_path: str | Path | None = None,
-    *,
-    analysis_limits=None,
 ) -> Path:
     report_output_dir = Path(output_dir) if output_dir is not None else run.path
     manifest_path = report_output_dir / "report-assets" / "manifest.json"
-    report = Path(report_path) if report_path is not None else report_output_dir / "report.html"
-    targets = [manifest_path, report]
-    if interactive_asset_path is not None:
-        targets.append(Path(interactive_asset_path))
-    # The referenced report/asset are not written by this standalone operation.
-    validate_report_output_pairs(targets)
-    validate_run_report_outputs(run, [manifest_path], analysis_limits=analysis_limits)
-    return _write_run_report_manifest(
-        run, manifest_path, report_path=report, interactive_asset_path=interactive_asset_path,
-        analysis_limits=analysis_limits,
-    )
-
-
-def _write_run_report_manifest(
-    run: RunPackage, manifest_path: Path, *, report_path: Path,
-    interactive_asset_path: str | Path | None = None, pdf_path: Path | None = None,
-    analysis_limits=None,
-) -> Path:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = _build_report_manifest(
         run,
-        output_dir=manifest_path.parent.parent,
-        report_path=report_path,
+        output_dir=report_output_dir,
+        report_path=Path(report_path) if report_path is not None else report_output_dir / "report.html",
         interactive_asset_path=(Path(interactive_asset_path) if interactive_asset_path is not None else None),
-        analysis_limits=analysis_limits,
     )
-    if pdf_path is not None:
-        manifest["pdf"] = artifact_url(pdf_path, manifest_path.parent.parent)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest_path
 
@@ -428,22 +208,14 @@ def render_run_report_html(
     restore = run.run.get("restore", {}) if isinstance(run.run.get("restore"), dict) else {}
     error = run.run.get("error", {}) if isinstance(run.run.get("error"), dict) else {}
     report_output_dir = Path(output_dir) if output_dir is not None else run.path
-    metadata_warnings: list[str] = []
-    screenshots = [] if compact else _collect_screenshots(
-        run, report_output_dir, analysis_limits=analysis_limits, warnings=metadata_warnings
-    )
-    signals = [] if compact else _collect_signal_summaries(
-        run, analysis_limits=analysis_limits, warnings=metadata_warnings,
-        retained_bytes=retained_size(screenshots),
-    )
+    screenshots = [] if compact else _collect_screenshots(run, report_output_dir)
+    signals = [] if compact else _collect_signal_summaries(run)
     expectations = [] if compact else _collect_expectation_rows(run)
     dmm_readings = [] if compact else _collect_dmm_readings(run)
     sweep_rows = [] if compact else _collect_sweep_rows(run)
-    artifact_links = [] if compact else _collect_artifact_links(
-        run, report_output_dir, screenshots,
-        analysis_limits=analysis_limits, warnings=metadata_warnings,
-        retained_bytes=retained_size([screenshots, signals]),
-    )
+    waveform_previews = [] if compact else _collect_waveform_previews(run)
+    evidence = _build_evidence_summary(run, expectations, dmm_readings, screenshots, waveform_previews)
+    artifact_links = [] if compact else _collect_artifact_links(run, report_output_dir, screenshots)
     summary = _build_report_summary(run, screenshots, signals)
     screenshots_by_step = {item.step_index: item for item in screenshots}
     evidence_timeline_block = "" if compact else _evidence_timeline_block(run, screenshots_by_step)
@@ -464,25 +236,7 @@ def render_run_report_html(
     artifact_links_block = "" if compact else _artifact_links_block(artifact_links)
     signal_processing_block = "" if compact else _signal_processing_block(run, report_output_dir, analysis_limits=analysis_limits)
     signals_block = "" if compact else _signals_block(signals)
-    # Finish the other sections before collecting SVGs: their retained text is
-    # part of scan/metadata admission, and analysis arrays need not coexist with
-    # the original previews.
-    preview_retained_bytes = retained_size([
-        rows, screenshots_block, acceptance_block, expectations_block, dmm_block,
-        sweep_block, frequency_response_block, artifact_links_block,
-        signal_processing_block, signals_block, evidence_timeline_block,
-        screenshots, signals, artifact_links, expectations, dmm_readings, sweep_rows,
-    ])
-    waveform_previews = (
-        [] if compact else _collect_waveform_previews(
-            run, analysis_limits=analysis_limits, retained_bytes=preview_retained_bytes,
-        )
-    )
-    evidence = _build_evidence_summary(run, expectations, dmm_readings, screenshots, waveform_previews)
-    waveform_previews_block = "" if compact else _waveform_previews_block(
-        waveform_previews, analysis_limits=analysis_limits,
-        retained_bytes=preview_retained_bytes,
-    )
+    waveform_previews_block = "" if compact else _waveform_previews_block(waveform_previews)
     evidence_summary_block = "" if compact else _evidence_summary_block(evidence)
     summary_note = "present" if run.summary_csv_path is not None else "missing"
     compact_note = (
@@ -494,11 +248,6 @@ def render_run_report_html(
     error_block = ""
     if error:
         error_block = f"<h2>运行错误 / Run error</h2><pre>{escape(str(error))}</pre>"
-    if metadata_warnings:
-        error_block += "".join(
-            f'<p class="warning">{escape(warning)}</p>'
-            for warning in dict.fromkeys(metadata_warnings)
-        )
     restore_block = ""
     if restore:
         restore_block = f"<p><b>恢复 / Restore:</b> {escape(str(restore.get('status', 'unknown')))}</p>"
@@ -521,30 +270,11 @@ def render_run_report_html(
             )
             if result.get("error"):
                 restore_block += f"<pre>{escape(str(result['error']))}</pre>"
-    values = dict(
-        title=escape(str(experiment.get('label', run.path.name))),
-        plotly_head=plotly_head_tag(plotly_url if not compact else None),
-        body_class=body_class, compact_note=compact_note,
-        summary_block=_summary_block(summary, compact=compact),
-        evidence_summary_block=evidence_summary_block,
-        evidence_timeline_block=evidence_timeline_block, artifact_links_block=artifact_links_block,
-        run_path=escape(str(run.path)), run_status=escape(run.status),
-        run_status_class=escape(run.status),
-        experiment_name=escape(str(experiment.get('name', ''))),
-        experiment_label=escape(str(experiment.get('label', ''))), summary_note=summary_note,
-        restore_block=restore_block, error_block=error_block, rows=rows,
-        dmm_block=dmm_block, sweep_block=sweep_block,
-        frequency_response_block=frequency_response_block,
-        signal_processing_block=signal_processing_block, acceptance_block=acceptance_block,
-        expectations_block=expectations_block, signals_block=signals_block,
-        waveform_previews_block=waveform_previews_block, screenshots_block=screenshots_block,
-        plotly_init=plotly_initializer(plotly_url if not compact else None),
-    )
-    template = """<!doctype html>
+    return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>WaveBench 运行报告 / Run report - {title}</title>
+<title>WaveBench 运行报告 / Run report - {escape(str(experiment.get('label', run.path.name)))}</title>
 <style>
 body {{ --bg: #f6f7f9; --surface: #ffffff; --text: #1f2933; --muted: #667085; --line: #d9e2ec; --brand: #2563eb; --ok-bg: #e3f9e5; --ok: #0b6b3a; --failed-bg: #ffe3e3; --failed: #a61b1b; --warning-bg: #fff3c4; --warning: #915930; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; line-height: 1.5; margin: 0; color: var(--text); background: var(--bg); }}
 main {{ max-width: 1180px; margin: 0 auto; padding: 2rem 1rem 3rem; }}
@@ -654,21 +384,21 @@ code {{ background: #f0f4f8; padding: 0.1rem 0.3rem; border-radius: 5px; }}
   body.pdf-compact .summary-card .value.ok, body.pdf-compact .summary-card .value.failed, body.pdf-compact .summary-card .value.warning {{ font-size: 8.5pt; padding: 0.04rem 0.3rem; }}
 }}
 </style>
-{plotly_head}
+{plotly_head_tag(plotly_url if not compact else None)}
 </head>
 <body class="{body_class}">
 <main>
 <h1>WaveBench 运行报告 <span class="muted">Run report</span></h1>
 <p class="muted">An offline hardware validation report.</p>
 {compact_note}
-{summary_block}
+{_summary_block(summary, compact=compact)}
 {evidence_summary_block}
 {evidence_timeline_block}
 {artifact_links_block}
 <article class="card meta-card">
-<p><b>运行目录 / Run directory:</b> <code>{run_path}</code></p>
-<p><b>状态 / Status:</b> <span class="badge {run_status_class}">{run_status}</span></p>
-<p><b>实验 / Experiment:</b> {experiment_name} / {experiment_label}</p>
+<p><b>运行目录 / Run directory:</b> <code>{escape(str(run.path))}</code></p>
+<p><b>状态 / Status:</b> <span class="badge {escape(run.status)}">{escape(run.status)}</span></p>
+<p><b>实验 / Experiment:</b> {escape(str(experiment.get('name', '')))} / {escape(str(experiment.get('label', '')))}</p>
 <p><b>summary.csv:</b> {summary_note}</p>
 {restore_block}
 </article>
@@ -692,17 +422,10 @@ code {{ background: #f0f4f8; padding: 0.1rem 0.3rem; border-radius: 5px; }}
 {waveform_previews_block}
 {screenshots_block}
 </main>
-{plotly_init}
+{plotly_initializer(plotly_url if not compact else None)}
 </body>
 </html>
 """
-    return bounded_format(
-        template, values, analysis_limits,
-        retained_bytes=retained_size([
-            waveform_previews, screenshots, signals, artifact_links, expectations,
-            dmm_readings, sweep_rows, metadata_warnings, screenshots_by_step, summary, evidence,
-        ]),
-    )
 
 
 def _build_report_manifest(
@@ -711,14 +434,11 @@ def _build_report_manifest(
     output_dir: Path,
     report_path: Path,
     interactive_asset_path: Path | None = None,
-    analysis_limits=None,
 ) -> dict[str, Any]:
-    warnings: list[str] = []
-    screenshots = _collect_screenshots(
-        run, output_dir, analysis_limits=analysis_limits, warnings=warnings
-    )
+    screenshots = _collect_screenshots(run, output_dir)
     capture_packages: list[dict[str, Any]] = []
     waveform_previews: list[dict[str, Any]] = []
+    warnings: list[str] = []
     for step in run.steps:
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
         package_text = artifact.get("package")
@@ -736,11 +456,7 @@ def _build_report_manifest(
         capture_packages.append(package_record)
         if not package_dir.exists():
             warnings.append(f"step {step_index}: capture package missing: {package}")
-        metadata = {}
-        metadata = _read_capture_metadata(
-            package_dir, artifact.get("metadata"), limits=analysis_limits, warnings=warnings,
-            retained_bytes=retained_size([screenshots, capture_packages, waveform_previews, warnings]),
-        )
+        metadata = _read_capture_metadata(package_dir, artifact.get("metadata"))
         for channel, npy_text, _summary in _metadata_waveform_npy_files(metadata):
             if npy_text:
                 npy_path = _resolve_capture_file_path(run.path, package_dir, str(npy_text))
@@ -2444,9 +2160,7 @@ def _analysis_manifest_entries(run: RunPackage, output_dir: Path) -> list[dict[s
 
 
 def _collect_artifact_links(
-    run: RunPackage, output_dir: Path, screenshots: list[ReportScreenshot],
-    *, analysis_limits=None, warnings: list[str] | None = None,
-    retained_bytes: int = 0,
+    run: RunPackage, output_dir: Path, screenshots: list[ReportScreenshot]
 ) -> list[ReportArtifactLink]:
     links = [
         ReportArtifactLink(
@@ -2558,11 +2272,7 @@ def _collect_artifact_links(
                     status=_availability_text(screenshot.path.exists()),
                 )
             )
-        metadata = {}
-        metadata = _read_capture_metadata(
-            package_dir, reference.metadata, limits=analysis_limits, warnings=warnings,
-            retained_bytes=retained_bytes + retained_size(links),
-        )
+        metadata = _read_capture_metadata(package_dir, reference.metadata)
         for channel, npy_text, _summary in _metadata_waveform_npy_files(metadata):
             if not npy_text:
                 continue
@@ -2637,40 +2347,15 @@ def _screenshots_block(screenshots: list[ReportScreenshot]) -> str:
 """
 
 
-def _waveform_previews_block(
-    previews: list[ReportWaveformPreview], *, analysis_limits=None, retained_bytes: int = 0,
-) -> str:
+def _waveform_previews_block(previews: list[ReportWaveformPreview]) -> str:
     if not previews:
         return ""
-    from wavebench.data.analysis_resources import AnalysisLimits
-
-    limits = analysis_limits or AnalysisLimits()
-    retained_bytes += retained_size(previews)
-    # Admit escaping, retained cards, joined output, and encoding before creating
-    # any cards. Count expansion without building escaped strings.
-    card_lengths = [
-        256 + len(item.svg) + escaped_length(item.title) + escaped_length(item.package)
-        + escaped_length(item.warning) for item in previews
-    ]
-    card_chars = sum(card_lengths)
-    largest = max(65535, max((
-        max(map(ord, text), default=0) for item in previews
-        for text in (item.title, item.package, item.svg, item.warning)
-    ), default=0))
-    width = 2 if largest <= 65535 else 4
-    encoding_width = 3 if largest <= 65535 else 4
-    estimated = (retained_bytes + width * card_chars + 80 * len(previews)
-                 + (2 * width + encoding_width) * (card_chars + 128)
-                 + 2 * width * max(card_lengths) + retained_size(card_lengths) + 4096)
-    limits.check("max_working_bytes", estimated,
-                 "waveform preview HTML assembly/encoding")
-    parts = ['<h2>波形预览 / Waveform previews</h2>\n<div class="waveform-grid">\n']
-    for item in previews:
-        parts.extend((_waveform_preview_card(item), "\n"))
-    parts.append("</div>\n")
-    check_text_assembly(parts, limits, retained_bytes=retained_bytes,
-                        stage="waveform preview HTML assembly/encoding")
-    return "".join(parts)
+    cards = "\n".join(_waveform_preview_card(item) for item in previews)
+    return f"""<h2>波形预览 / Waveform previews</h2>
+<div class="waveform-grid">
+{cards}
+</div>
+"""
 
 
 def _waveform_preview_card(preview: ReportWaveformPreview) -> str:
@@ -2729,38 +2414,15 @@ def _screenshot_card(screenshot: ReportScreenshot) -> str:
     )
 
 
-def _collect_waveform_previews(
-    run: RunPackage, *, analysis_limits=None, retained_bytes: int = 0,
-) -> list[ReportWaveformPreview]:
-    from wavebench.data.analysis_resources import AnalysisBudget, AnalysisLimits
-
-    limits = analysis_limits or AnalysisLimits()
+def _collect_waveform_previews(run: RunPackage) -> list[ReportWaveformPreview]:
     previews: list[ReportWaveformPreview] = []
-    budget = AnalysisBudget(limits)
     for step in run.steps:
-        # Release the previous capture's metadata and summary before the next
-        # bounded read. Otherwise they coexist during RHS evaluation.
-        metadata = {}
-        summary = {}
-        limits.check("max_working_bytes", retained_bytes + retained_size(previews),
-                     "retained waveform previews")
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
         package_text = artifact.get("package")
         if not package_text:
             continue
         package_dir = _resolve_artifact_path(run.path, str(package_text))
-        metadata_warnings: list[str] = []
-        metadata = _read_capture_metadata(
-            package_dir, artifact.get("metadata"), limits=limits, warnings=metadata_warnings,
-            retained_bytes=retained_bytes + retained_size(previews),
-        )
-        if metadata_warnings:
-            previews.append(ReportWaveformPreview(
-                step_index=str(step.get("index", "")), package=str(package_text), channel="",
-                title=f"Step {step.get('index', '')}", svg="",
-                warning=f"waveform preview unavailable: {metadata_warnings[0]}",
-            ))
-            continue
+        metadata = _read_capture_metadata(package_dir, artifact.get("metadata"))
         for channel, npy_text, summary in _metadata_waveform_npy_files(metadata):
             title = _waveform_preview_title(step.get("index", ""), channel, summary)
             if not npy_text:
@@ -2779,11 +2441,8 @@ def _collect_waveform_previews(
             svg = ""
             warning = ""
             try:
-                limits.check("max_report_curves", len(previews) + 1, "waveform preview")
-                svg = _load_waveform_preview(
-                    npy_path, budget,
-                    retained_bytes=retained_bytes + retained_size(previews) + retained_size(metadata),
-                )
+                waveform = np.load(npy_path)
+                svg = _waveform_svg(waveform)
             except Exception as exc:  # noqa: BLE001 - report generation should survive bad artifacts
                 warning = f"waveform preview unavailable: {type(exc).__name__}: {exc}"
             previews.append(
@@ -2797,44 +2456,6 @@ def _collect_waveform_previews(
                 )
             )
     return previews
-
-
-def _load_waveform_preview(npy_path: Path, budget, *, retained_bytes: int = 0) -> str:
-    from wavebench.data.analysis_io import BLOCK_ROWS, mapped_npy
-
-    max_points = 600
-    limits = budget.limits
-    with mapped_npy(npy_path, limits, columns=2) as (waveform, _):
-        count = waveform.shape[0]
-        # Two bounded passes preserve the existing finite-row filtering and
-        # evenly spaced selection, without copying or masking the entire input.
-        # Charge before scanning, so invalid data and later rendering failures
-        # cannot reset the work already admitted for this report.
-        budget.work_units += 2 * count
-        limits.check("max_work_units", budget.work_units, "waveform preview")
-        limits.check(
-            "max_working_bytes",
-            retained_bytes + 128 * (min(count, BLOCK_ROWS) + min(count, max_points)) + 65536,
-            "waveform preview",
-        )
-        finite_count = 0
-        for start in range(0, count, BLOCK_ROWS):
-            block = np.asarray(waveform[start:start + BLOCK_ROWS], dtype=float)
-            finite_count += int(np.count_nonzero(np.isfinite(block).all(axis=1)))
-        if finite_count < 2:
-            raise ValueError("need at least two finite waveform samples")
-        indices = np.linspace(0, finite_count - 1, min(finite_count, max_points)).astype(int)
-        selected = np.empty((indices.size, 2), dtype=float)
-        seen = 0
-        for start in range(0, count, BLOCK_ROWS):
-            block = np.asarray(waveform[start:start + BLOCK_ROWS], dtype=float)
-            block = block[np.isfinite(block).all(axis=1)]
-            left, right = np.searchsorted(indices, [seen, seen + len(block)])
-            if right > left:
-                selected[left:right] = block[indices[left:right] - seen]
-            seen += len(block)
-        svg = _waveform_svg(selected, max_points=max_points)
-    return svg
 
 
 def _metadata_waveform_npy_files(metadata: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
@@ -2932,27 +2553,7 @@ def _resolve_capture_file_path(run_path: Path, package_dir: Path, file_text: str
     return package_dir / file_text.replace("\\", "/")
 
 
-def _capture_file_references(files: Any):
-    """Include all capture file leaves, including per-channel file maps."""
-    if isinstance(files, dict):
-        for value in files.values():
-            yield from _capture_file_references(value)
-    elif isinstance(files, list):
-        for value in files:
-            yield from _capture_file_references(value)
-    elif isinstance(files, str) and files:
-        yield files
-
-
-def _resolve_capture_screenshot_path(run_path: Path, package_dir: Path, file_text: str) -> Path:
-    candidate = _resolve_artifact_path(run_path, file_text)
-    return candidate if candidate.exists() else package_dir / "screenshot.png"
-
-
-def _collect_signal_summaries(
-    run: RunPackage, *, analysis_limits=None, warnings: list[str] | None = None,
-    retained_bytes: int = 0,
-) -> list[ReportSignalSummary]:
+def _collect_signal_summaries(run: RunPackage) -> list[ReportSignalSummary]:
     summaries: list[ReportSignalSummary] = []
     for step in run.steps:
         artifact = step.get("artifact", {}) if isinstance(step.get("artifact"), dict) else {}
@@ -2960,18 +2561,13 @@ def _collect_signal_summaries(
         if not package_text:
             continue
         package_dir = _resolve_artifact_path(run.path, str(package_text))
-        metadata = {}
-        summary = {}
-        metadata = _read_capture_metadata(
-            package_dir, artifact.get("metadata"), limits=analysis_limits, warnings=warnings,
-            retained_bytes=retained_bytes + retained_size(summaries),
-        )
+        metadata = _read_capture_metadata(package_dir, artifact.get("metadata"))
         for summary in _metadata_signal_summaries(metadata):
-            quality_warnings = summary.get("quality_warnings", [])
-            if isinstance(quality_warnings, list):
-                warnings_text = " | ".join(str(item) for item in quality_warnings)
+            warnings = summary.get("quality_warnings", [])
+            if isinstance(warnings, list):
+                warnings_text = " | ".join(str(item) for item in warnings)
             else:
-                warnings_text = str(quality_warnings) if quality_warnings else ""
+                warnings_text = str(warnings) if warnings else ""
             summaries.append(
                 ReportSignalSummary(
                     step_index=str(step.get("index", "")),
@@ -3007,21 +2603,17 @@ def _metadata_signal_summaries(metadata: dict[str, Any]) -> list[dict[str, Any]]
     return []
 
 
-def _collect_screenshots(
-    run: RunPackage, output_dir: Path, *, analysis_limits=None, warnings: list[str] | None = None,
-) -> list[ReportScreenshot]:
+def _collect_screenshots(run: RunPackage, output_dir: Path) -> list[ReportScreenshot]:
     screenshots: list[ReportScreenshot] = []
     for reference in _capture_references(run):
         package_dir = _resolve_artifact_path(run.path, reference.package)
-        metadata = {}
-        metadata = _read_capture_metadata(
-            package_dir, reference.metadata, limits=analysis_limits, warnings=warnings,
-            retained_bytes=retained_size(screenshots),
-        )
+        metadata = _read_capture_metadata(package_dir, reference.metadata)
         screenshot_text = _metadata_screenshot_path(metadata)
         if not screenshot_text:
             continue
-        screenshot_path = _resolve_capture_screenshot_path(run.path, package_dir, screenshot_text)
+        screenshot_path = _resolve_artifact_path(run.path, screenshot_text)
+        if not screenshot_path.exists():
+            screenshot_path = package_dir / "screenshot.png"
         if not screenshot_path.exists():
             continue
         screenshots.append(
@@ -3035,16 +2627,15 @@ def _collect_screenshots(
     return screenshots
 
 
-def _capture_references(run: RunPackage, *, unique_packages: bool = True) -> list[ReportCaptureReference]:
+def _capture_references(run: RunPackage) -> list[ReportCaptureReference]:
     references: list[ReportCaptureReference] = []
-    seen: set[Any] = set()
+    seen: set[str] = set()
 
     def add(step_index: str, package: Any, metadata: Any) -> None:
         package_text = str(package or "").strip()
-        key = package_text if unique_packages else (package_text, str(metadata or ""))
-        if not package_text or key in seen:
+        if not package_text or package_text in seen:
             return
-        seen.add(key)
+        seen.add(package_text)
         references.append(
             ReportCaptureReference(
                 step_index=step_index,
@@ -3075,47 +2666,17 @@ def _capture_references(run: RunPackage, *, unique_packages: bool = True) -> lis
             row.get("capture_package"),
             row.get("metadata_path"),
         )
-    for response in run.frequency_responses:
-        for row in response.rows:
-            add(
-                f"frequency response {row.get('index', '')}",
-                row.get("capture_package"),
-                row.get("metadata_path"),
-            )
     return references
 
 
-def _capture_metadata_paths(package_dir: Path, metadata_text: Any) -> tuple[Path, Path]:
-    explicit = _resolve_artifact_path(package_dir, str(metadata_text)) if metadata_text else package_dir / "metadata.json"
-    return explicit, explicit if explicit.exists() else package_dir / "metadata.json"
-
-
-def _read_capture_metadata(
-    package_dir: Path, metadata_text: Any, *, limits=None, warnings: list[str] | None = None,
-    retained_bytes: int = 0, strict_resources: bool = False,
-) -> dict[str, Any]:
-    from wavebench.data.analysis_io import read_json_bounded
-    from wavebench.data.analysis_resources import AnalysisLimits
-    from wavebench.errors import DataError
-
-    _explicit, metadata_path = _capture_metadata_paths(package_dir, metadata_text)
+def _read_capture_metadata(package_dir: Path, metadata_text: Any) -> dict[str, Any]:
+    metadata_path = _resolve_artifact_path(package_dir, str(metadata_text)) if metadata_text else package_dir / "metadata.json"
+    if not metadata_path.exists():
+        metadata_path = package_dir / "metadata.json"
     try:
-        data = read_json_bounded(
-            metadata_path, limits or AnalysisLimits(), retained_bytes=retained_bytes,
-        )
-    except Exception as exc:  # noqa: BLE001 - reports retain unavailable evidence as warnings
-        # Output validation needs a complete inventory to protect external
-        # evidence. A budget rejection must never turn it into an empty one.
-        if strict_resources:
-            if isinstance(exc, DataError):
-                raise
-            if not isinstance(exc, FileNotFoundError):
-                raise ConfigError(f"cannot inventory original run evidence: {metadata_path}: {exc}") from exc
-        if warnings is not None:
-            warnings.append(f"capture metadata unavailable: {metadata_path}: {type(exc).__name__}: {exc}")
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return {}
-    if strict_resources and not isinstance(data, dict):
-        raise ConfigError(f"cannot inventory original run evidence: {metadata_path}: metadata must be an object")
     return data if isinstance(data, dict) else {}
 
 

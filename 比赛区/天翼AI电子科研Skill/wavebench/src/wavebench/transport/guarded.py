@@ -248,21 +248,6 @@ class GuardedAuditedTransport:
                 )
                 self._transition_after_failure(error, authorization)
                 raise error
-            exact_size_violation = (
-                operation == "read_exact" and len(result) != first_argument
-            )
-            delimited_frame_violation = operation == "read_until" and (
-                len(result) > max_bytes or not result.endswith(first_argument)
-            )
-            if exact_size_violation or delimited_frame_violation:
-                error = self._frame_contract_error(
-                    operation,
-                    replay,
-                    consumed_bytes=len(result),
-                )
-                self._transition_after_failure(error, authorization)
-                self._close_poisoned_backend()
-                raise error
             self._record_success(authorization, operation)
             return result
 
@@ -701,27 +686,6 @@ class GuardedAuditedTransport:
             attempts=0,
             reason_code=reason_code,
             consumed_bytes=0,
-            discarded_bytes=0,
-        )
-
-    @staticmethod
-    def _frame_contract_error(
-        operation: str,
-        replay: ReplayPolicy,
-        *,
-        consumed_bytes: int,
-    ) -> TransportIOError:
-        return TransportIOError(
-            "raw frame backend violated the result contract",
-            operation=operation,
-            phase=TransportPhase.PARSING,
-            replay_policy=replay,
-            command_transmission=CommandTransmission.SENT,
-            response_progress=ResponseProgress.COMPLETE,
-            synchronization=Synchronization.LOST,
-            attempts=1,
-            reason_code="frame_contract_violation",
-            consumed_bytes=consumed_bytes,
             discarded_bytes=0,
         )
 

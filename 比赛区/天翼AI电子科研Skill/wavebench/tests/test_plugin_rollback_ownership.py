@@ -7,7 +7,7 @@ import pytest
 
 from wavebench.errors import ConfigError
 from wavebench.plugins import install_paths
-from wavebench.plugins.lifecycle import EnvironmentInfo, PluginLifecycle
+from wavebench.plugins.lifecycle import EnvironmentInfo, InstalledPlugin, PluginLifecycle
 from test_plugin_lifecycle import _plugin_wheel
 from wavebench.plugins.package_inspect import inspect_plugin_wheel
 
@@ -72,3 +72,84 @@ def test_failed_install_without_distribution_can_finish_rollback(tmp_path, monke
     uninstall.assert_called_once_with("missing-plugin", allow_missing=True)
     assert manager._read_json(manager.ledger_path, "ledger") == ledger
     assert not manager.journal_path.exists()
+
+
+@pytest.mark.parametrize("operation", ["install", "upgrade", "downgrade", "remove"])
+def test_dry_run_rejects_pending_transaction_without_mutation(tmp_path, monkeypatch, operation):
+    manager = _manager(tmp_path)
+    package = inspect_plugin_wheel(_plugin_wheel(tmp_path, version="0.2.0"))
+    record = manager._package_record(package, manager._cache_wheel(package))
+    ledger = manager.empty_ledger() if operation == "install" else manager._with_record(
+        manager.empty_ledger(), record,
+    )
+    target = _plugin_wheel(tmp_path, version="0.1.0" if operation == "downgrade" else "0.3.0")
+    manager._write_json(manager.ledger_path, ledger)
+    manager._write_json(manager.journal_path, {"stage": "pip_finished"})
+    before = manager.ledger_path.read_bytes(), manager.journal_path.read_bytes()
+    monkeypatch.setattr(manager, "info", lambda driver: InstalledPlugin(
+        driver, package.distribution, package.version, "healthy",
+    ))
+    monkeypatch.setattr(manager, "_file_owners", lambda **kwargs: {})
+    pip = Mock()
+    monkeypatch.setattr(manager, "_pip_install", pip)
+    monkeypatch.setattr(manager, "_pip_uninstall", pip)
+    with pytest.raises(ConfigError, match="recover"):
+        getattr(manager, operation)("example.scope" if operation == "remove" else target, dry_run=True)
+    pip.assert_not_called()
+    assert (manager.ledger_path.read_bytes(), manager.journal_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("generation", [True, -1, "1", 1.0, None])
+def test_invalid_ledger_generation_is_rejected(tmp_path, generation):
+    manager = _manager(tmp_path)
+    ledger = manager.empty_ledger()
+    ledger["generation"] = generation
+    manager._write_json(manager.ledger_path, ledger)
+    before = manager.ledger_path.read_bytes()
+    with pytest.raises(ConfigError, match="generation"):
+        manager._load_ledger(manager.environment())
+    assert manager.ledger_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("damage", ["generation", "environment", "missing-before", "install-with-before"])
+def test_recover_validates_before_ledger_before_probing_or_writing(tmp_path, monkeypatch, damage):
+    manager = _manager(tmp_path)
+    package = inspect_plugin_wheel(_plugin_wheel(tmp_path, version="0.1.0"))
+    record = manager._package_record(package, manager._cache_wheel(package))
+    before = manager._with_record(manager.empty_ledger(), record)
+    operation = "remove"
+    if damage == "generation":
+        before["generation"] = True
+    elif damage == "environment":
+        before["environment"] = {"fingerprint": "foreign"}
+    elif damage == "missing-before":
+        before["plugins"] = {}
+    else:
+        operation = "install"
+    journal = manager._journal(environment=manager.environment(), operation=operation,
+                               stage="pip_finished", before_ledger=before, package=record)
+    manager._write_json(manager.ledger_path, manager.empty_ledger())
+    manager._write_json(manager.journal_path, journal)
+    original = manager.ledger_path.read_bytes(), manager.journal_path.read_bytes()
+    probe = Mock()
+    monkeypatch.setattr(manager, "_record_matches_environment", probe)
+    monkeypatch.setattr(manager, "_distribution_absent", probe)
+    with pytest.raises(ConfigError):
+        manager.recover()
+    probe.assert_not_called()
+    assert (manager.ledger_path.read_bytes(), manager.journal_path.read_bytes()) == original
+
+
+def test_short_cache_paths_still_check_full_digest_and_clean_failed_copy(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    package = inspect_plugin_wheel(_plugin_wheel(tmp_path, version="0.1.0"))
+    cached = manager._cache_wheel(package)
+    cached.write_bytes(b"corrupt cache")
+    assert manager._cache_wheel(package).read_bytes() == package.wheel_path.read_bytes()
+    assert cached.name == package.wheel_path.name
+    cached.unlink()
+    package.wheel_path.write_bytes(b"changed after inspection")
+    with pytest.raises(ConfigError, match="hash mismatch"):
+        manager._cache_wheel(package)
+    assert not cached.exists()
+    assert list(cached.parent.iterdir()) == []

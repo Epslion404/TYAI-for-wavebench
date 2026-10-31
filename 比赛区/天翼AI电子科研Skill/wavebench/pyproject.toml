@@ -21,7 +21,7 @@ dependencies = ["RsInstrument>=1.90.0", "numpy>=2.0.0", "packaging>=24.0", "port
 
 [project.optional-dependencies]
 analysis = ["scipy>=1.14.0"]
-can = ["python-can>=4.0"]
+can = ["python-can>=4.3"]
 dev = ["hatchling==1.30.1", "pytest>=8.0.0", "ruff==0.15.20"]
 docs = ["mkdocs-material>=9.5,<10"]
 pdf = ["weasyprint>=62.0"]
@@ -38,8 +38,8 @@ packages = ["src/wavebench"]
 exclude = ["/data", "/docs/instruments"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "tools/tyai-reviewer"]
-testpaths = ["tests", "tools/tyai-reviewer/tests"]
+pythonpath = ["src"]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100

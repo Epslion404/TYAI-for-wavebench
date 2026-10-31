@@ -2,7 +2,16 @@ import unittest
 
 from unittest.mock import patch
 
-from wavebench.discovery import PortProbe, _probe_scpi_socket, discover_network, parse_discovery_ports
+from wavebench.discovery import (
+    PortProbe,
+    _probe_scpi_socket,
+    discover_can_adapters,
+    discover_instruments,
+    discover_mdns_scpi,
+    discover_network,
+    discover_serial_ports,
+    parse_discovery_ports,
+)
 from wavebench.errors import ConfigError
 
 
@@ -72,6 +81,81 @@ class DiscoveryTests(unittest.TestCase):
     def test_discover_network_refuses_large_subnet_by_default(self):
         with self.assertRaisesRegex(ConfigError, "raise --max-hosts"):
             discover_network("198.18.0.0/15", timeout_ms=1)
+
+    def test_serial_enumeration_never_opens_or_probes_a_port(self):
+        class Port:
+            device = "COM7"
+            description = "USB serial adapter"
+            hwid = "USB VID:PID=1234:5678"
+
+        result = discover_serial_ports(port_lister=lambda: [Port()])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].protocol, "serial")
+        self.assertEqual(result[0].resource, "COM7")
+        self.assertIn("no probe bytes sent", result[0].note)
+
+    def test_can_enumeration_never_opens_a_bus_or_sends_a_frame(self):
+        result = discover_can_adapters(
+            config_lister=lambda: [
+                {"interface": "socketcan", "channel": "can0"},
+                {"interface": "virtual", "channel": "test", "fd": True},
+            ]
+        )
+
+        self.assertEqual([(item.protocol, item.resource) for item in result], [("can", "can0"), ("can-fd", "test")])
+        self.assertTrue(all("no CAN frames sent" in item.note for item in result))
+
+    def test_local_enumeration_does_not_trigger_tcp_scan(self):
+        serial_result = discover_serial_ports(port_lister=lambda: [])
+        can_result = discover_can_adapters(config_lister=lambda: [])
+        with (
+            patch("wavebench.discovery.discover_serial_ports", return_value=serial_result),
+            patch("wavebench.discovery.discover_can_adapters", return_value=can_result),
+            patch("wavebench.discovery.discover_network", side_effect=AssertionError("TCP must not scan")),
+        ):
+            self.assertEqual(
+                discover_instruments(
+                    subnet=None,
+                    include_visa=False,
+                    include_serial=True,
+                    include_can=True,
+                ),
+                [],
+            )
+
+    def test_mdns_discovery_is_advertisement_only_without_tcp_or_scpi(self):
+        class FakeSocket:
+            def __init__(self):
+                self.destination = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, _timeout):
+                pass
+
+            def setsockopt(self, *_args):
+                pass
+
+            def sendto(self, _payload, destination):
+                self.destination = destination
+
+            def recvfrom(self, _limit):
+                if not hasattr(self, "replied"):
+                    self.replied = True
+                    return b"dns-response", ("192.0.2.44", 5353)
+                raise TimeoutError
+
+        fake = FakeSocket()
+        results = discover_mdns_scpi(timeout_ms=1, socket_factory=lambda *_args: fake)
+
+        self.assertEqual(fake.destination, ("224.0.0.251", 5353))
+        self.assertEqual([(item.protocol, item.address) for item in results], [("mdns-scpi", "192.0.2.44")])
+        self.assertIn("no TCP connection or SCPI query sent", results[0].note)
 
 
 if __name__ == "__main__":

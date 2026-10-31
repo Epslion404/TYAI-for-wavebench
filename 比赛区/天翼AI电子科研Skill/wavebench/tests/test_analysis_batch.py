@@ -21,7 +21,7 @@ channel=1
 '''
     if second:
         text += f'[[entries]]\nid="second"\ncapture={json.dumps(str(capture))}\nchannel=1\n'
-    manifest.write_text(text, encoding="utf-8")
+    manifest.write_text(text)
     return manifest
 
 
@@ -35,7 +35,7 @@ def test_batch_success_verified_resume_and_tamper(tmp_path, analysis_input):
     with patch('wavebench.services.analysis_batch.run_analysis', side_effect=AssertionError('reprocessed')):
         resumed = run_batch(manifest, output, resume=True)
     assert resumed['status'] == 'ok'
-    (output / result['entries'][0]['directory'] / 'metrics.json').write_text('{}', encoding="utf-8")
+    (output / result['entries'][0]['directory'] / 'metrics.json').write_text('{}')
     with pytest.raises(ConfigError, match='artifacts changed'):
         run_batch(manifest, output, resume=True)
 
@@ -45,9 +45,7 @@ def test_batch_source_change_rejects_resume(tmp_path, analysis_input):
     manifest = batch_file(tmp_path, capture, recipe)
     output = tmp_path / 'results'
     run_batch(manifest, output)
-    (capture / 'metadata.json').write_text(
-        (capture / 'metadata.json').read_text(encoding="utf-8") + ' ', encoding="utf-8"
-    )
+    (capture / 'metadata.json').write_text((capture / 'metadata.json').read_text() + ' ')
     with pytest.raises(ConfigError, match='changed'):
         run_batch(manifest, output, resume=True)
 
@@ -78,10 +76,7 @@ def test_batch_cancel_then_resume(tmp_path, analysis_input):
 
 def test_batch_recipe_resources_are_tightened_by_aggregate(tmp_path, analysis_input):
     capture, recipe = analysis_input
-    recipe.write_text(
-        recipe.read_text(encoding="utf-8")+'\n[resources]\nmax_output_bytes=1000000\n',
-        encoding="utf-8",
-    )
+    recipe.write_text(recipe.read_text()+'\n[resources]\nmax_output_bytes=1000000\n')
     manifest = batch_file(tmp_path, capture, recipe)
     result=run_batch(manifest,tmp_path/'results')
     assert result['status']=='ok'
@@ -89,7 +84,7 @@ def test_batch_recipe_resources_are_tightened_by_aggregate(tmp_path, analysis_in
 
 def test_batch_failed_attempt_is_preserved_and_retried(tmp_path, analysis_input):
     capture,recipe=analysis_input
-    recipe.write_text(recipe.read_text(encoding="utf-8").replace('min=0.9','min=1.1'), encoding="utf-8")
+    recipe.write_text(recipe.read_text().replace('min=0.9','min=1.1'))
     manifest=batch_file(tmp_path,capture,recipe)
     output=tmp_path/'results'
     first=run_batch(manifest,output)
@@ -104,11 +99,11 @@ def test_batch_continue_source_failure_and_report(tmp_path, analysis_input):
     from wavebench.report.analysis import write_analysis_report
     capture,recipe=analysis_input
     manifest=batch_file(tmp_path,capture,recipe,second=True,duplicates='allow')
-    text=manifest.read_text(encoding="utf-8").replace('id="first"','id="first"').replace('channel=1','channel=99',1)
-    manifest.write_text(text, encoding="utf-8")
+    text=manifest.read_text().replace('id="first"','id="first"').replace('channel=1','channel=99',1)
+    manifest.write_text(text)
     result=run_batch(manifest,tmp_path/'results')
     assert [item['status'] for item in result['entries']]==['failed','ok']
-    html=write_analysis_report([tmp_path/'results'],tmp_path/'report.html').read_text(encoding="utf-8")
+    html=write_analysis_report([tmp_path/'results'],tmp_path/'report.html').read_text()
     assert 'polyline' in html
 
 
@@ -117,7 +112,7 @@ def test_inventory_never_reads_active_lock(tmp_path, monkeypatch):
     from wavebench.data.analysis_resources import AnalysisLimits
     (tmp_path / '.batch.lock').write_bytes(b'locked')
     artifact = tmp_path / 'result.json'
-    artifact.write_text('{}', encoding="utf-8")
+    artifact.write_text('{}')
     original = analysis_batch._sha256_file
     def hash_file(path):
         assert path.name != '.batch.lock', 'cannot read a Windows locked file'

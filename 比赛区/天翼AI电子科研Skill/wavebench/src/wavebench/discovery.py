@@ -1,11 +1,3 @@
-"""Device discovery: LAN/VISA plus serial ports and CAN adapters.
-
-The LAN scanner keeps its historical output shape.  Local device enumeration
-adds serial ports (pyserial ``list_ports``) and CAN adapters (python-can
-``interfaces``) as separate ``source`` values so downstream tools can tell
-network resources from locally connected buses.
-"""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,7 +13,6 @@ from wavebench.services.resource_lease import ResourceLease
 
 DEFAULT_DISCOVERY_PORTS = (5025, 5555, 111)
 SCPI_SOCKET_PORTS = {5025, 5555}
-MODBUS_TCP_PORTS = {502}
 
 
 @dataclass(frozen=True)
@@ -68,7 +59,7 @@ def parse_discovery_ports(text: str | Sequence[int]) -> tuple[int, ...]:
 
 def discover_instruments(
     *,
-    subnet: str,
+    subnet: str | None = None,
     ports: str | Sequence[int] = DEFAULT_DISCOVERY_PORTS,
     timeout_ms: int = 300,
     workers: int = 64,
@@ -76,23 +67,149 @@ def discover_instruments(
     query_idn: bool = True,
     idn_only: bool = False,
     include_visa: bool = True,
+    include_serial: bool = False,
+    include_can: bool = False,
+    include_mdns: bool = False,
 ) -> list[DiscoveryResult]:
-    parsed_ports = parse_discovery_ports(ports)
+    if subnet is None and not (include_visa or include_serial or include_can or include_mdns):
+        raise ConfigError("select a TCP subnet, VISA, serial, CAN, or mDNS discovery source")
     results: list[DiscoveryResult] = []
     if include_visa:
         results.extend(discover_visa_resources(query_idn=query_idn, timeout_ms=timeout_ms))
-    results.extend(
-        discover_network(
-            subnet,
-            ports=parsed_ports,
-            timeout_ms=timeout_ms,
-            workers=workers,
-            max_hosts=max_hosts,
-            query_idn=query_idn,
-            include_open=not idn_only,
+    if include_serial:
+        results.extend(discover_serial_ports())
+    if include_can:
+        results.extend(discover_can_adapters())
+    if include_mdns:
+        results.extend(discover_mdns_scpi(timeout_ms=timeout_ms))
+    if subnet:
+        results.extend(
+            discover_network(
+                subnet,
+                ports=ports,
+                timeout_ms=timeout_ms,
+                workers=workers,
+                max_hosts=max_hosts,
+                query_idn=query_idn,
+                include_open=not idn_only,
+            )
         )
-    )
     return _dedupe_results(results)
+
+
+def discover_serial_ports(
+    *,
+    port_lister: Callable[[], Iterable[object]] | None = None,
+) -> list[DiscoveryResult]:
+    """List local serial adapters without opening a port or writing probe bytes."""
+    if port_lister is None:
+        try:
+            from serial.tools import list_ports  # type: ignore[import-not-found]
+        except Exception:
+            return []
+        port_lister = list_ports.comports
+    results: list[DiscoveryResult] = []
+    try:
+        ports = port_lister()
+    except Exception:
+        return []
+    for port in ports:
+        resource = str(getattr(port, "device", "")).strip()
+        if not resource:
+            continue
+        description = str(getattr(port, "description", "")).strip()
+        hwid = str(getattr(port, "hwid", "")).strip()
+        details = "; ".join(item for item in (description, hwid) if item)
+        results.append(
+            DiscoveryResult(
+                address="",
+                port=None,
+                protocol="serial",
+                resource=resource,
+                source="serial",
+                status="listed",
+                note=(details + "; " if details else "") + "enumerated only; no probe bytes sent",
+            )
+        )
+    return sorted(results, key=_result_sort_key)
+
+
+def discover_can_adapters(
+    *,
+    config_lister: Callable[[], Iterable[object]] | None = None,
+) -> list[DiscoveryResult]:
+    """List local python-can adapter configurations without opening a bus or sending frames."""
+    if config_lister is None:
+        try:
+            import can  # type: ignore[import-not-found]
+        except Exception:
+            return []
+        config_lister = can.detect_available_configs
+    try:
+        configurations = config_lister()
+    except Exception:
+        return []
+    results: list[DiscoveryResult] = []
+    for configuration in configurations:
+        if not isinstance(configuration, dict):
+            continue
+        channel = str(configuration.get("channel", "")).strip()
+        if not channel:
+            continue
+        interface = str(configuration.get("interface", "")).strip()
+        fd = bool(configuration.get("fd", False))
+        note_parts = [part for part in (interface, "enumerated only; no CAN frames sent") if part]
+        results.append(
+            DiscoveryResult(
+                address="",
+                port=None,
+                protocol="can-fd" if fd else "can",
+                resource=channel,
+                source="can",
+                status="listed",
+                note="; ".join(note_parts),
+            )
+        )
+    return sorted(results, key=_result_sort_key)
+
+
+def discover_mdns_scpi(
+    *,
+    timeout_ms: int = 1000,
+    socket_factory: Callable[..., socket.socket] | None = None,
+) -> list[DiscoveryResult]:
+    """Query `_scpi._tcp.local` via mDNS without opening TCP or sending SCPI."""
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 1:
+        raise ConfigError("mDNS timeout_ms must be >= 1")
+    factory = socket_factory or socket.socket
+    name = b"\x05_scpi\x04_tcp\x05local\x00"
+    query = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x0c\x00\x01"
+    addresses: set[str] = set()
+    try:
+        with factory(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+            sock.settimeout(timeout_ms / 1000.0)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            sock.sendto(query, ("224.0.0.251", 5353))
+            while True:
+                try:
+                    _, sender = sock.recvfrom(9000)
+                except TimeoutError:
+                    break
+                addresses.add(str(sender[0]))
+    except OSError:
+        return []
+    return [
+        DiscoveryResult(
+            address=address,
+            port=None,
+            protocol="mdns-scpi",
+            resource=f"mdns://{address}/_scpi._tcp.local",
+            source="mdns",
+            status="listed",
+            note="DNS-SD advertisement only; no TCP connection or SCPI query sent",
+        )
+        for address in sorted(addresses, key=lambda value: int(ipaddress.ip_address(value)))
+    ]
 
 
 def discover_network(
@@ -278,192 +395,14 @@ def _open_port_result(address: str, port: int) -> DiscoveryResult:
             status="open",
             note="VXI-11 RPC port open; verify with idn",
         )
-    if port in MODBUS_TCP_PORTS:
-        return DiscoveryResult(
-            address=address,
-            port=port,
-            protocol="modbus-tcp",
-            resource=f"TCPIP::{address}::{port}::SOCKET",
-            source="network",
-            status="open",
-            note="Modbus/TCP port open; not treated as a SCPI instrument",
-        )
     return DiscoveryResult(
         address=address,
         port=port,
-        protocol="unknown",
+        protocol="tcp",
         resource=f"TCPIP::{address}::{port}::SOCKET",
         source="network",
         status="open",
-        note="unsupported protocol; not treated as an instrument",
     )
-
-
-def discover_serial_ports(
-    *,
-    list_ports: Callable[[], Iterable[object]] | None = None,
-) -> list[DiscoveryResult]:
-    """Enumerate local serial ports (COM/tty) as discovery results.
-
-    Missing or unauthorized enumeration surfaces a structured ConfigError
-    instead of silently returning an empty list.  A fake ``list_ports`` is used
-    by offline tests; when an injectable enumerator is supplied, pyserial is
-    not imported so the optional dependency stays optional for offline runs.
-    """
-    if list_ports is None:
-        try:
-            from serial.tools import list_ports as serial_list_ports
-        except ImportError as exc:
-            raise ConfigError(
-                "serial enumeration requires pyserial; run: python -m pip install pyserial"
-            ) from exc
-        list_ports = serial_list_ports.comports
-    try:
-        ports = list(list_ports())
-    except Exception as exc:
-        raise ConfigError(f"unable to enumerate serial ports: {exc}") from exc
-    results: list[DiscoveryResult] = []
-    for port in ports:
-        device = getattr(port, "device", None)
-        if not device:
-            continue
-        description = str(getattr(port, "description", "") or "")
-        hwid = str(getattr(port, "hwid", "") or "")
-        results.append(
-            DiscoveryResult(
-                address=device,
-                port=None,
-                protocol="serial",
-                resource=device,
-                source="serial",
-                status="listed",
-                idn=None,
-                note=_serial_protocol_note(hwid, description),
-            )
-        )
-    return sorted(results, key=_result_sort_key)
-
-
-def discover_can_adapters(
-    *,
-    can_module: object | None = None,
-    list_interfaces: Callable[[], Iterable[object]] | None = None,
-) -> list[DiscoveryResult]:
-    """Enumerate actually available CAN adapter configurations.
-
-    Without an injected enumerator this calls python-can ``detect_available_configs``
-    (if the optional extra is installed) so results reflect real detected
-    interface/channel pairs rather than the backend registry.  When
-    ``list_interfaces`` or ``can_module`` is supplied, python-can is never
-    imported, keeping the optional hardware dependency out of offline tests.
-
-    No adapter, missing permission, or missing python-can yields a structured
-    result (``status="none"`` or ConfigError) instead of misleading positives.
-    """
-    if list_interfaces is None and can_module is None:
-        try:
-            import can
-        except ImportError as exc:
-            raise ConfigError(
-                "CAN enumeration requires python-can; run: python -m pip install wavebench[can]"
-            ) from exc
-        module = can
-    else:
-        module = can_module
-    if list_interfaces is not None:
-        try:
-            entries = list(list_interfaces())
-        except Exception as exc:
-            raise ConfigError(f"unable to enumerate CAN adapters: {exc}") from exc
-    else:
-        detect = getattr(module, "detect_available_configs", None)
-        if not callable(detect):
-            raise ConfigError("python-can does not provide adapter detection")
-        try:
-            entries = list(detect())
-        except Exception as exc:
-            raise ConfigError(f"unable to enumerate CAN adapters: {exc}") from exc
-    results: list[DiscoveryResult] = []
-    for entry in entries:
-        interface = ""
-        channel = None
-        if isinstance(entry, str):
-            interface = entry
-        else:
-            interface_value = (
-                entry.get("interface") if isinstance(entry, dict) else getattr(entry, "interface", "")
-            )
-            channel_value = (
-                entry.get("channel") if isinstance(entry, dict) else getattr(entry, "channel", "")
-            )
-            interface = str(interface_value or "")
-            # Preserve numeric channel 0: only None/empty means no channel.
-            channel = (
-                None
-                if channel_value is None or channel_value == ""
-                else str(channel_value)
-            )
-        if not interface:
-            continue
-        resource = f"can://{interface}" if channel is None else f"can://{interface}/{channel}"
-        results.append(
-            DiscoveryResult(
-                address=interface,
-                port=None,
-                protocol="can",
-                resource=resource,
-                source="can",
-                status="listed",
-                idn=None,
-                note=(
-                    f"CAN adapter {interface}" + (f" channel {channel}" if channel is not None else "")
-                ),
-            )
-        )
-    if not results:
-        return [
-            DiscoveryResult(
-                address="",
-                port=None,
-                protocol="can",
-                resource="can://none",
-                source="can",
-                status="none",
-                idn=None,
-                note="no CAN adapter detected or permission denied",
-            )
-        ]
-    return sorted(results, key=_result_sort_key)
-
-
-def _serial_protocol_note(hwid: str, description: str) -> str:
-    normalized = f"{hwid} {description}".upper()
-    if "USB" in normalized:
-        return "USB serial adapter"
-    if "PCI" in normalized:
-        return "PCI serial port"
-    return "serial port"
-
-
-def discover_local_devices(
-    *,
-    include_serial: bool = True,
-    include_can: bool = True,
-    list_ports: Callable[[], Iterable[object]] | None = None,
-    list_can_interfaces: Callable[[], Iterable[str]] | None = None,
-) -> list[DiscoveryResult]:
-    """Enumerate locally connected serial ports and CAN interfaces.
-
-    Returns an empty list only when both enumeration paths are disabled; any
-    enumeration that fails (missing dependency, no permission) raises a
-    structured ConfigError rather than returning an empty list.
-    """
-    results: list[DiscoveryResult] = []
-    if include_serial:
-        results.extend(discover_serial_ports(list_ports=list_ports))
-    if include_can:
-        results.extend(discover_can_adapters(list_interfaces=list_can_interfaces))
-    return _dedupe_results(results)
 
 
 def _query_visa_idn(manager: object, resource: str, timeout_ms: int) -> str | None:

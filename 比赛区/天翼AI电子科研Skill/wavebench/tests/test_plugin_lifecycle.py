@@ -6,9 +6,9 @@ from hashlib import sha256
 import io
 import json
 import ntpath
+import posixpath
 import os
 from pathlib import Path
-import posixpath
 import subprocess
 import sys
 import sysconfig
@@ -1015,62 +1015,6 @@ def test_install_refuses_file_owned_by_another_distribution(tmp_path):
     assert not lifecycle.state_dir.exists()
 
 
-@pytest.mark.parametrize("path_rules", [ntpath, posixpath], ids=["windows", "posix"])
-def test_shared_file_paths_merge_case_alias_owners(monkeypatch, path_rules):
-    monkeypatch.setattr(install_paths, "_path", path_rules)
-    owners = {
-        "Plugin/data.txt": ("managed-plugin",),
-        "plugin/DATA.txt": ("foreign-plugin",),
-    }
-    overlap = PluginLifecycle._shared_file_path(
-        ["Plugin/data.txt"], owners, ignored_distribution="Managed_Plugin"
-    )
-    assert overlap == ("Plugin/data.txt" if path_rules is ntpath else None)
-    assert PluginLifecycle._shared_file_path(
-        ["./Plugin/data.txt"], {"Plugin/data.txt": ("foreign-plugin",)}
-    ) == "./Plugin/data.txt"
-
-
-@pytest.mark.parametrize("dry_run", [True, False])
-def test_install_case_alias_conflict_precedes_any_write(tmp_path, monkeypatch, dry_run):
-    monkeypatch.setattr(install_paths, "_path", ntpath)
-    python = _target_venv(tmp_path)
-    wheel = _plugin_wheel(tmp_path, version="0.1.0")
-    package = inspect_plugin_wheel(wheel)
-    lifecycle = PluginLifecycle(python_executable=python)
-    monkeypatch.setattr(lifecycle, "_inventory", lambda **kwargs: {})
-    monkeypatch.setattr(lifecycle, "_file_owners", lambda **kwargs: {
-        path.upper(): ("foreign-plugin",) for path in package.member_paths
-    })
-    pip_calls = []
-    monkeypatch.setattr(lifecycle, "_pip_install", pip_calls.append)
-    with pytest.raises(ConfigError, match="overlaps files"):
-        lifecycle.install(wheel, dry_run=dry_run)
-    assert pip_calls == []
-    assert not lifecycle.ledger_path.exists()
-    assert not lifecycle.journal_path.exists()
-    if dry_run:
-        assert not lifecycle.state_dir.exists()
-
-
-def test_rollback_refuses_case_alias_owned_by_another_distribution(tmp_path, monkeypatch):
-    monkeypatch.setattr(install_paths, "_path", ntpath)
-    wheel = _plugin_wheel(tmp_path, version="0.1.0")
-    package = inspect_plugin_wheel(wheel)
-    lifecycle = object.__new__(PluginLifecycle)
-    monkeypatch.setattr(lifecycle, "_file_owners", lambda **kwargs: {
-        path.upper(): ("foreign-plugin",) for path in package.member_paths
-    })
-    pip_calls = []
-    monkeypatch.setattr(lifecycle, "_pip_install", pip_calls.append)
-    with pytest.raises(ConfigError, match="recovery required") as error:
-        lifecycle._rollback_install(
-            wheel, {"distribution": package.distribution}, {}, {}, RuntimeError("postflight")
-        )
-    assert "overlaps files" in str(error.value.__cause__)
-    assert pip_calls == []
-
-
 def test_install_refuses_unreadable_distribution_ownership(tmp_path):
     python = _target_venv(tmp_path)
     foreign = _plugin_wheel(
@@ -1308,3 +1252,59 @@ def test_recover_refuses_unknown_partial_state(tmp_path):
         lifecycle.recover()
 
     assert lifecycle.journal_path.exists()
+
+
+@pytest.mark.parametrize("path_rules", [ntpath, posixpath], ids=["windows", "posix"])
+def test_shared_file_paths_merge_case_alias_owners(monkeypatch, path_rules):
+    monkeypatch.setattr(install_paths, "_path", path_rules)
+    owners = {
+        "Plugin/data.txt": ("managed-plugin",),
+        "plugin/DATA.txt": ("foreign-plugin",),
+    }
+    overlap = PluginLifecycle._shared_file_path(
+        ["Plugin/data.txt"], owners, ignored_distribution="Managed_Plugin"
+    )
+    assert overlap == ("Plugin/data.txt" if path_rules is ntpath else None)
+    assert PluginLifecycle._shared_file_path(
+        ["./Plugin/data.txt"], {"Plugin/data.txt": ("foreign-plugin",)}
+    ) == "./Plugin/data.txt"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_install_case_alias_conflict_precedes_any_write(tmp_path, monkeypatch, dry_run):
+    monkeypatch.setattr(install_paths, "_path", ntpath)
+    python = _target_venv(tmp_path)
+    wheel = _plugin_wheel(tmp_path, version="0.1.0")
+    package = inspect_plugin_wheel(wheel)
+    lifecycle = PluginLifecycle(python_executable=python)
+    monkeypatch.setattr(lifecycle, "_inventory", lambda **kwargs: {})
+    monkeypatch.setattr(lifecycle, "_file_owners", lambda **kwargs: {
+        path.upper(): ("foreign-plugin",) for path in package.member_paths
+    })
+    pip_calls = []
+    monkeypatch.setattr(lifecycle, "_pip_install", pip_calls.append)
+    with pytest.raises(ConfigError, match="overlaps files"):
+        lifecycle.install(wheel, dry_run=dry_run)
+    assert pip_calls == []
+    assert not lifecycle.ledger_path.exists()
+    assert not lifecycle.journal_path.exists()
+    if dry_run:
+        assert not lifecycle.state_dir.exists()
+
+
+def test_rollback_refuses_case_alias_owned_by_another_distribution(tmp_path, monkeypatch):
+    monkeypatch.setattr(install_paths, "_path", ntpath)
+    wheel = _plugin_wheel(tmp_path, version="0.1.0")
+    package = inspect_plugin_wheel(wheel)
+    lifecycle = object.__new__(PluginLifecycle)
+    monkeypatch.setattr(lifecycle, "_file_owners", lambda **kwargs: {
+        path.upper(): ("foreign-plugin",) for path in package.member_paths
+    })
+    pip_calls = []
+    monkeypatch.setattr(lifecycle, "_pip_install", pip_calls.append)
+    with pytest.raises(ConfigError, match="recovery required") as error:
+        lifecycle._rollback_install(
+            wheel, {"distribution": package.distribution}, {}, {}, RuntimeError("postflight")
+        )
+    assert "overlaps files" in str(error.value.__cause__)
+    assert pip_calls == []

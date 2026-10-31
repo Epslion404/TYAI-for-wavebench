@@ -150,9 +150,6 @@ class RunResult:
     run_json_path: Path
     summary_csv_path: Path
     steps: list[RunStepRecord]
-    # Shared with RunInstrumentServices: close happens after construction,
-    # so this list is populated when session close fails (session_close_failed).
-    close_errors: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -846,24 +843,10 @@ class RunService:
                             plan, step, run_dir=run_dir, services=services, plan_hash=plan_hash
                         )
                     except _FrequencyResponseExecutionError as exc:
-                        response = exc.record.artifact.get("frequency_response")
-                        stop_condition = (
-                            isinstance(response, dict) and response.get("stop_reason") is not None
-                        )
-                        if isinstance(exc.cause, (TransportIOError, SessionHealthError)) or stop_condition:
-                            # An explicit stop condition is an expected partial result:
-                            # keep the points, stop cause and resume evidence even when
-                            # the plan has no safety gate enabled.
-                            step_failure = exc.cause
-                            record = exc.record
-                        elif isinstance(exc.cause, WaveBenchError) and self._safety_gate_for_step(
-                            plan, step
-                        )["enabled"]:
-                            # 与直接抛出 WaveBenchError 的步骤保持一致：包装异常不能绕过已启用的安全门。
-                            step_failure = exc.cause
-                            record = exc.record
-                        else:
+                        if not isinstance(exc.cause, (TransportIOError, SessionHealthError)):
                             raise
+                        step_failure = exc.cause
+                        record = exc.record
                         record = replace(
                             record,
                             artifact={
@@ -926,9 +909,6 @@ class RunService:
                     }
                     trigger_status = record.status
                     if gate_triggered:
-                        # OFF 写入结果不明确或门内中断时，恢复也必须保留已触发的门。
-                        safety_gate_step = step
-                        safety_gate_config = safety_gate
                         try:
                             gate_result = self._apply_safety_gate(step, safety_gate, services=services)
                         except Exception as exc:  # noqa: BLE001 - retain gate failure in run artifact
@@ -951,6 +931,8 @@ class RunService:
                     write_step_record(steps_dir, record)
                     self._update_frequency_responses_manifest(run_dir, record)
                     if gate_triggered:
+                        safety_gate_step = step
+                        safety_gate_config = safety_gate
                         run_failure = {
                             "type": "SafetyGateFailure",
                             "code": "safety_gate_failed",
@@ -997,23 +979,13 @@ class RunService:
             except KeyboardInterrupt as exc:
                 restore_error = restore_source_state(
                     restore_state,
-                    force_off_channels=tuple((safety_gate_config or {}).get("source_channels", ())),
                     source_service_factory=lambda: self._source_service(services=services),
-                )
-                post_restore_gate = (
-                    self._post_restore_safety_gate(
-                        safety_gate_step, safety_gate_config, services=services
-                    )
-                    if restore_state is not None
-                    else None
                 )
                 refresh_provenance()
                 interruption_error: dict[str, Any] = {
                     "type": "KeyboardInterrupt",
                     "message": str(exc) or "run interrupted by user",
                 }
-                if post_restore_gate is not None:
-                    interruption_error["safety_gate"] = {"post_restore": post_restore_gate}
                 if restore_error is not None:
                     interruption_error["cause"] = dict(interruption_error)
                     interruption_error["type"] = "RestoreError"
@@ -1053,15 +1025,7 @@ class RunService:
                 )
                 restore_error = restore_source_state(
                     restore_state,
-                    force_off_channels=tuple((safety_gate_config or {}).get("source_channels", ())),
                     source_service_factory=lambda: self._source_service(services=services),
-                )
-                post_restore_gate = (
-                    self._post_restore_safety_gate(
-                        safety_gate_step, safety_gate_config, services=services
-                    )
-                    if restore_state is not None
-                    else None
                 )
                 refresh_provenance()
                 failure_error: dict[str, Any]
@@ -1069,8 +1033,6 @@ class RunService:
                     failure_error = error_envelope(failure)
                 else:
                     failure_error = {"type": type(failure).__name__, "message": str(failure)}
-                if post_restore_gate is not None:
-                    failure_error["safety_gate"] = {"post_restore": post_restore_gate}
                 terminal_error = failure_error
                 write_run_files(
                     plan=plan,
@@ -1094,17 +1056,30 @@ class RunService:
                 force_off_channels=tuple((safety_gate_config or {}).get("source_channels", ())),
                 source_service_factory=lambda: self._source_service(services=services),
             )
-            post_restore_gate = (
-                self._post_restore_safety_gate(
-                    safety_gate_step, safety_gate_config, services=services
-                )
-                if restore_state is not None
-                else None
-            )
-            if post_restore_gate is not None and run_failure is not None:
-                gate_error = run_failure.get("safety_gate")
-                if isinstance(gate_error, dict):
-                    gate_error["post_restore"] = post_restore_gate
+            if (
+                safety_gate_step is not None
+                and safety_gate_config is not None
+                and restore_state is not None
+            ):
+                try:
+                    post_restore_gate = self._apply_safety_gate(
+                        safety_gate_step,
+                        safety_gate_config,
+                        services=services,
+                    )
+                except Exception as exc:  # noqa: BLE001 - retain final OFF evidence
+                    payload = error_envelope(
+                        exc,
+                        operation=f"safety_gate.post_restore.{safety_gate_step.index}",
+                    )
+                    post_restore_gate = {
+                        "status": "failed",
+                        "error": payload,
+                    }
+                if run_failure is not None:
+                    gate_error = run_failure.get("safety_gate")
+                    if isinstance(gate_error, dict):
+                        gate_error["post_restore"] = post_restore_gate
             if restore_error is not None:
                 restore_failure: dict[str, Any] = {
                     "type": "ConfigError",
@@ -1151,7 +1126,6 @@ class RunService:
                 run_json_path=run_json_path,
                 summary_csv_path=summary_csv_path,
                 steps=records,
-                close_errors=services.close_errors,
             )
 
         if not analysis_steps or run_failure is not None or services.close_errors:
@@ -1264,7 +1238,6 @@ class RunService:
             run_json_path=run_json_path,
             summary_csv_path=summary_csv_path,
             steps=records,
-            close_errors=services.close_errors,
         )
 
     @contextmanager
@@ -1353,35 +1326,13 @@ class RunService:
             if channel not in channels:
                 channels.append(channel)
 
-        def add_step(item: RunStep) -> None:
+        if step.kind.startswith("source.") or step.kind == "sweep.frequency_response":
+            add(step.fields.get("source_channel") or step.fields.get("channel"))
+        for item in plan.steps:
             if item.kind.startswith("source.") or item.kind == "sweep.frequency_response":
                 add(item.fields.get("source_channel") or item.fields.get("channel"))
-                for channel in item.fields.get("channels", ()):
-                    add(channel)
-                # Only these operations resolve an omitted scalar to the configured output.
-                if (
-                    item.kind in {
-                        "source.status", "source.set_freq", "source.set_func",
-                        "source.set_vpp", "source.set_duty", "source.output",
-                        "source.arb_load", "sweep.frequency_response",
-                    }
-                    and item.fields.get("source_channel") is None
-                    and item.fields.get("channel") is None
-                    and self.config.source is not None
-                ):
-                    add(self.config.source.default_channel)
-
-        add_step(step)
-        for item in plan.steps:
-            add_step(item)
         for channel in plan.restore.source_channels:
             add(channel)
-        if (
-            plan.restore.source_state
-            and not plan.restore.source_channels
-            and self.config.source is not None
-        ):
-            add(self.config.source.default_channel)
         if not channels and "source" in self._plan_instruments(plan) and self.config.source is not None:
             add(self.config.source.default_channel)
         return channels
@@ -1404,26 +1355,6 @@ class RunService:
         if not channels and "power" in self._plan_instruments(plan) and self.config.power is not None:
             add(self.config.power.default_channel)
         return channels
-
-    def _post_restore_safety_gate(
-        self,
-        safety_gate_step: RunStep | None,
-        safety_gate_config: dict[str, Any] | None,
-        *,
-        services: RunInstrumentServices,
-    ) -> dict[str, Any] | None:
-        """安全门触发过时，恢复源状态后重压 OFF，避免按原快照恢复绕开安全门。"""
-        if safety_gate_step is None or safety_gate_config is None:
-            return None
-        try:
-            return self._apply_safety_gate(safety_gate_step, safety_gate_config, services=services)
-        except Exception as exc:  # noqa: BLE001 - retain final OFF evidence
-            return {
-                "status": "failed",
-                "error": error_envelope(
-                    exc, operation=f"safety_gate.post_restore.{safety_gate_step.index}"
-                ),
-            }
 
     def _apply_safety_gate(
         self,
@@ -2746,7 +2677,6 @@ class RunService:
         calibration_csv_path: Path | None = None,
         calibration_json_path: Path | None = None,
         fixed_point_paths: dict[str, Path] | None = None,
-        resume: dict[str, Any] | None = None,
         stop_conditions: dict[str, Any] | None = None,
         stop_reason: str | None = None,
     ) -> _FrequencyResponseExecutionError:
@@ -2764,7 +2694,6 @@ class RunService:
             calibration_csv_path=calibration_csv_path,
             calibration_json_path=calibration_json_path,
             fixed_point_paths=fixed_point_paths,
-            resume=resume,
             stop_conditions=stop_conditions,
             stop_reason=stop_reason,
             error=cause,
@@ -3018,16 +2947,6 @@ class RunService:
                 "attempts": attempts,
                 "consistency": consistency,
             }
-            if quality_gate:
-                final_warnings = list(artifact["quality"]["warnings"])
-                trusted = artifact["quality"].get("trusted_by_consistency") is True
-                artifact["quality_gate"] = {
-                    "status": "failed" if final_warnings and not trusted else "ok",
-                    "warnings": final_warnings,
-                    "consistency_status": consistency["status"],
-                }
-                if trusted:
-                    artifact["quality_gate"]["trusted_by_consistency"] = True
         elif quality_gate:
             artifact["quality_gate"] = {
                 "status": "warning" if warnings else "ok",
@@ -3036,7 +2955,7 @@ class RunService:
         if "expect" in step.fields:
             artifact["expect"] = evaluate_expect(artifact.get("quality", {}), step.fields["expect"])
         if "expect_fft" in step.fields:
-            fft_summary = capture_fft_summary(capture, analysis_limits=self.analysis_limits)
+            fft_summary = capture_fft_summary(capture)
             artifact["fft"] = fft_summary
             artifact["expect_fft"] = evaluate_expect(fft_summary, step.fields["expect_fft"])
         return artifact
