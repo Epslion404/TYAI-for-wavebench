@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
+from time import monotonic
 
 from wavebench.config import load_config
 from wavebench.errors import ConfigError, WaveBenchError
@@ -35,6 +36,7 @@ if _TEXTUAL_IMPORT_ERROR is None:
     DEFAULT_TUI_LOG_PATH = Path("data/tui/wavebench-tui.log")
     TUI_LOG_MAX_LINES = 10_000
     TUI_LOG_KEEP_LINES_AFTER_TRIM = 1_000
+    TUI_SHUTDOWN_CLOSE_TIMEOUT_S = 5.0
     POWER_CHANNEL_STYLES = {
         1: "white on #1f2a44",
         2: "white on #1f3a2e",
@@ -207,6 +209,7 @@ if _TEXTUAL_IMPORT_ERROR is None:
             self._persisted_log_lines: set[str] = set()
             self._refresh_timer = None
             self._shutting_down = False
+            self._shutdown_close_threads: list[tuple[str, Thread, list[BaseException]]] = []
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -296,21 +299,81 @@ if _TEXTUAL_IMPORT_ERROR is None:
                 self._refresh_source(skip_if_busy=True)
 
         async def action_quit(self) -> None:
+            if self._shutting_down:
+                return
             self._shutting_down = True
             if self._refresh_timer is not None:
                 self._refresh_timer.stop()
             self.workers.cancel_all()
-            close_power = getattr(self.power_adapter, "close", None)
-            if close_power is not None:
-                close_power()
-            close_dmm = getattr(self.dmm_adapter, "close", None)
-            if close_dmm is not None:
-                close_dmm()
-            close_source = getattr(self.source_adapter, "close", None)
-            if close_source is not None:
-                close_source()
+            self._close_adapter_after_pending_io("power", self.power_adapter, self._power_adapter_lock)
+            self._close_adapter_after_pending_io("dmm", self.dmm_adapter, self._dmm_adapter_lock)
+            self._close_adapter_after_pending_io("source", self.source_adapter, self._source_adapter_lock)
             self._append_persistent_log_line("TUI session stopping / TUI 会话停止")
             self.exit()
+
+        def _close_adapter_after_pending_io(
+            self,
+            adapter_name: str,
+            adapter: object,
+            adapter_lock: Lock,
+        ) -> None:
+            """Close an adapter after any operation that already holds its lock.
+
+            The close runs outside the UI thread: a blocked read must not make
+            quit unresponsive. Operations waiting for the lock see
+            ``_shutting_down`` after acquiring it and do not start I/O. The
+            top-level ``run`` function joins registered close threads before
+            returning, so a normal process exit does not discard cleanup.
+            """
+            close = getattr(adapter, "close", None)
+            if close is None:
+                return
+            errors: list[BaseException] = []
+
+            def _locked_close() -> None:
+                try:
+                    with adapter_lock:
+                        close()
+                except BaseException as exc:
+                    errors.append(exc)
+
+            thread = Thread(
+                target=_locked_close,
+                name=f"wavebench-tui-close-{adapter_name}",
+                daemon=True,
+            )
+            self._shutdown_close_threads.append((adapter_name, thread, errors))
+            thread.start()
+
+        def wait_for_shutdown_cleanup(
+            self,
+            *,
+            timeout_s: float = TUI_SHUTDOWN_CLOSE_TIMEOUT_S,
+        ) -> bool:
+            """Join adapter cleanup after the Textual UI loop has stopped.
+
+            A close that is still waiting on an uninterruptible adapter
+            operation cannot be forced safely. Record that incomplete cleanup
+            and return failure instead of silently allowing it to be lost at
+            process exit.
+            """
+            deadline = monotonic() + timeout_s
+            complete = True
+            for adapter_name, thread, errors in self._shutdown_close_threads:
+                remaining = max(0.0, deadline - monotonic())
+                thread.join(remaining)
+                if thread.is_alive():
+                    self._append_persistent_log_line(
+                        f"TUI shutdown cleanup timed out for {adapter_name} adapter"
+                    )
+                    complete = False
+                    continue
+                if errors:
+                    self._append_persistent_log_line(
+                        f"TUI shutdown cleanup failed for {adapter_name} adapter: {errors[0]}"
+                    )
+                    complete = False
+            return complete
 
         async def _run_daemon_operation(self, operation: Callable[[], object]) -> object:
             loop = asyncio.get_running_loop()
@@ -444,6 +507,8 @@ if _TEXTUAL_IMPORT_ERROR is None:
         ) -> Callable[[], PowerPanelState]:
             def _locked_operation() -> PowerPanelState:
                 with self._power_adapter_lock:
+                    if self._shutting_down:
+                        raise RuntimeError("TUI is shutting down; adapter operation was not started")
                     return operation()
 
             return _locked_operation
@@ -454,6 +519,8 @@ if _TEXTUAL_IMPORT_ERROR is None:
         ) -> Callable[[], DmmPanelState]:
             def _locked_operation() -> DmmPanelState:
                 with self._dmm_adapter_lock:
+                    if self._shutting_down:
+                        raise RuntimeError("TUI is shutting down; adapter operation was not started")
                     return operation()
 
             return _locked_operation
@@ -508,6 +575,8 @@ if _TEXTUAL_IMPORT_ERROR is None:
         ) -> Callable[[], SourcePanelState]:
             def _locked_operation() -> SourcePanelState:
                 with self._source_adapter_lock:
+                    if self._shutting_down:
+                        raise RuntimeError("TUI is shutting down; adapter operation was not started")
                     return operation()
 
             return _locked_operation
@@ -964,4 +1033,4 @@ def run(
         log_path=log_path,
     )
     app.run()
-    return 0
+    return 0 if app.wait_for_shutdown_cleanup() else 1
