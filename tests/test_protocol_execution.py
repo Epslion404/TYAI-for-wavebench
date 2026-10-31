@@ -167,6 +167,43 @@ class FakeTransport:
         )
 
 
+class ClockedTransport(FakeTransport):
+    """Simulate reads that take wall time on the injected clock."""
+
+    def __init__(self, response: bytes = b"", *, delay: float, clock: FakeClock) -> None:
+        super().__init__(response)
+        self.delay = delay
+        self.clock = clock
+
+    def read_exact(
+        self,
+        size: int,
+        *,
+        timeout_ms: int | None = None,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> bytes:
+        result = super().read_exact(size, timeout_ms=timeout_ms, replay=replay)
+        self.clock.now += self.delay
+        return result
+
+    def read_until(
+        self,
+        delimiter: bytes,
+        *,
+        max_bytes: int,
+        timeout_ms: int | None = None,
+        replay: ReplayPolicy = ReplayPolicy.NO_REPLAY,
+    ) -> bytes:
+        result = super().read_until(
+            delimiter,
+            max_bytes=max_bytes,
+            timeout_ms=timeout_ms,
+            replay=replay,
+        )
+        self.clock.now += self.delay
+        return result
+
+
 def runtime_for(declaration_value, transport, *, clock=None):
     clock = clock or FakeClock()
     return DeclarativeProtocolRuntime(
@@ -442,6 +479,44 @@ class TestResponseFailureAndSessionHealth:
 
         with pytest.raises(SessionHealthError):
             runtime.request("read")
+
+    def test_trickled_response_cannot_exceed_the_declared_timeout(self):
+        # 1 ms per byte would satisfy every individual read budget, but the
+        # declared 3 ms covers the whole response.
+        clock = FakeClock()
+        fake = ClockedTransport(b"\x02" * 20 + b"\n", delay=0.001, clock=clock)
+        guarded = GuardedAuditedTransport(fake)
+        declared = declaration(
+            [{"name": "read", "request_hex": "A501", "response_timeout_ms": 3}]
+        )
+        runtime = runtime_for(declared, guarded, clock=clock)
+
+        with pytest.raises(TransportIOError) as raised:
+            runtime.request("read")
+
+        assert raised.value.reason_code == "frame_read_timeout"
+        assert raised.value.phase is TransportPhase.READING
+        assert raised.value.command_transmission is CommandTransmission.SENT
+        assert clock.now >= 0.003
+        assert len(fake.exact_reads) <= 4
+        assert guarded.session_state.health is SessionHealth.POISONED
+
+    def test_late_complete_response_is_rejected_as_a_timeout(self):
+        clock = FakeClock()
+        fake = ClockedTransport(b"\xa5\x02\n", delay=0.02, clock=clock)
+        guarded = GuardedAuditedTransport(fake)
+        declared = declaration(
+            [{"name": "read", "request_hex": "A501", "response_timeout_ms": 3}],
+            escape_hex=None,
+        )
+        runtime = runtime_for(declared, guarded, clock=clock)
+
+        with pytest.raises(TransportIOError) as raised:
+            runtime.request("read")
+
+        assert raised.value.reason_code == "frame_read_timeout"
+        assert raised.value.response_progress is ResponseProgress.PARTIAL
+        assert guarded.session_state.health is SessionHealth.POISONED
 
     def test_read_side_preflight_failure_after_send_poisons_the_session(self):
         # send_frame succeeds, so the request is on the bus even though the

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 from wavebench.errors import ConfigError, TransportIOError
 from wavebench.transport.base import InstrumentTransport
@@ -94,7 +94,8 @@ class DeclarativeProtocolRuntime:
 
         Unknown names and replay policies other than ``NO_REPLAY`` fail before
         any byte is sent.  The response budget is the request's
-        ``response_timeout_ms`` overriding the frame-level default.
+        ``response_timeout_ms`` overriding the frame-level default, and it
+        covers the whole response read, including byte-at-a-time framing.
         """
 
         definition = self._request_definition(name)
@@ -162,7 +163,7 @@ class DeclarativeProtocolRuntime:
             expected = self._expected_frame_bytes(header)
             remainder = expected - len(header)
             if remainder:
-                header += self._read_exact(remainder, deadline)
+                header += self._read_exact(remainder, deadline, consumed_bytes=len(header))
             return self._split(header)
         return self._read_delimited(deadline)
 
@@ -176,6 +177,7 @@ class DeclarativeProtocolRuntime:
                 timeout_ms=self._remaining_ms(deadline),
                 replay=ReplayPolicy.NO_REPLAY,
             )
+            self._ensure_within_deadline(deadline, len(wire))
             return self._split(wire)
         return self._read_escaped_delimited(deadline)
 
@@ -194,7 +196,7 @@ class DeclarativeProtocolRuntime:
         wire = bytearray()
         after_escape = False
         while True:
-            wire += self._read_exact(1, deadline)
+            wire += self._read_exact(1, deadline, consumed_bytes=len(wire))
             byte = wire[-1]
             if after_escape:
                 after_escape = False
@@ -244,18 +246,49 @@ class DeclarativeProtocolRuntime:
             self._mark_desynchronized("protocol_frame_invalid")
             raise
 
-    def _read_exact(self, size: int, deadline: float) -> bytes:
-        return self._transport.read_exact(
+    def _read_exact(self, size: int, deadline: float, *, consumed_bytes: int = 0) -> bytes:
+        timeout_ms = self._remaining_ms(deadline, consumed_bytes=consumed_bytes)
+        wire = self._transport.read_exact(
             size,
-            timeout_ms=self._remaining_ms(deadline),
+            timeout_ms=timeout_ms,
             replay=ReplayPolicy.NO_REPLAY,
         )
+        self._ensure_within_deadline(deadline, consumed_bytes + len(wire))
+        return wire
 
-    def _remaining_ms(self, deadline: float) -> int:
-        # The transport requires a positive timeout; a zero/negative remainder
-        # becomes a 1 ms read so the backend still produces the structured
-        # timeout that drives session health.
-        return max(int((deadline - self._clock()) * 1000.0), 1)
+    def _remaining_ms(self, deadline: float, *, consumed_bytes: int = 0) -> int:
+        # The declared timeout covers the whole response, not just one backend
+        # call.  A peer that trickles bytes fast enough to satisfy every 1 ms
+        # budget would otherwise be able to exceed it indefinitely.
+        remaining = deadline - self._clock()
+        if remaining <= 0.0:
+            self._raise_response_timeout(consumed_bytes)
+        return max(int(remaining * 1000.0), 1)
+
+    def _ensure_within_deadline(self, deadline: float, consumed_bytes: int) -> None:
+        # Also check after a read: a backend may ignore ``timeout_ms`` and
+        # return a complete frame late.  That is still a timeout.
+        if self._clock() > deadline:
+            self._raise_response_timeout(consumed_bytes)
+
+    def _raise_response_timeout(self, consumed_bytes: int) -> NoReturn:
+        error = TransportIOError(
+            "declared protocol response timed out",
+            operation="protocol.request",
+            phase=TransportPhase.READING,
+            replay_policy=ReplayPolicy.NO_REPLAY,
+            command_transmission=CommandTransmission.SENT,
+            response_progress=(
+                ResponseProgress.PARTIAL if consumed_bytes > 0 else ResponseProgress.NONE
+            ),
+            synchronization=Synchronization.UNPROVEN,
+            attempts=1,
+            reason_code="frame_read_timeout",
+            consumed_bytes=consumed_bytes,
+            discarded_bytes=consumed_bytes,
+        )
+        self._mark_desynchronized("protocol_response_timeout")
+        raise error
 
     def _wait_for_gap(self) -> None:
         gap_ms = self._frame.inter_frame_gap_ms

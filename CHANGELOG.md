@@ -9,7 +9,7 @@
 - M1 CAN/CAN-FD 传输后端：`transport/can_transport.py`（`CanTransport`），`python-can>=4.0` 进 `wavebench[can]` 可选 extra；经 `TRANSPORT_FACTORIES` 注册；离线 virtual 总线测试覆盖打不开、超时、长度不符、总线错误、SCPI 操作 `raw_frame_unsupported`、`close()` 幂等与会话污染。
 - M1 设备枚举与发现：`discovery.py` 新增串口枚举（pyserial `list_ports`）、CAN 适配器枚举（python-can `interface`）、本地设备合并入口与端口协议标注（Modbus/TCP 502 标 `modbus-tcp`、未知端口标 `unknown`，非 SCPI 端口只提示不当作仪器）；CLI `net discover` 新增 `--serials`／`--can`／`--force`／`--summary`。
 - M2 声明式协议完整化：`FrameDefinition` 支持 `escape_hex`（delimiter 单字节转义，孤立 escape 结构化失败）、流拆帧 `extract_stream_frame`（跨分包累积、拒绝内部未转义分隔符、声明长度超预算立即失败）、`encode_request` 与 `[[protocol.requests]]` 请求映射（命名请求固定帧 + 可选响应超时）。
-- M2 请求执行层：`plugins/protocol_runtime.py` 的 `DeclarativeProtocolRuntime` 将 `[[protocol.requests]]` 绑定到 `InstrumentTransport`：`encode_request` 生成请求帧、`send_frame(NO_REPLAY)` 发送、按 framing 拆响应；应用请求级/帧级响应超时与 `inter_frame_gap_ms`；未知请求、不可编码请求帧与非 `NO_REPLAY` 策略在 I/O 前拒绝；传输失败保持结构化错误，拆帧失败污染 guarded session。
+- M2 请求执行层：`plugins/protocol_runtime.py` 的 `DeclarativeProtocolRuntime` 将 `[[protocol.requests]]` 绑定到 `InstrumentTransport`：`encode_request` 生成请求帧、`send_frame(NO_REPLAY)` 发送、按 framing 拆响应；应用请求级/帧级响应超时与 `inter_frame_gap_ms`；响应超时覆盖整个读取过程（逐字节读取也不会顺延）；未知请求、不可编码请求帧与非 `NO_REPLAY` 策略在 I/O 前拒绝；传输失败保持结构化错误，拆帧失败污染 guarded session。
 - 传输/协议/发现测试矩阵：新增 `tests/test_can_transport.py`、`tests/test_device_discovery.py`、`tests/test_protocol_runtime.py`、`tests/test_protocol_execution.py`，演进 `test_transport_backends.py`（`can` 已注册、未知后端用 `udp`）与 `test_plugin_protocol.py`（escape 支持）。
 
 ## v0.8.0 — 2026-07-24

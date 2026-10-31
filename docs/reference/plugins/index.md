@@ -43,7 +43,9 @@ header 和精确长度；分隔符 framing 以首个未转义分隔符结束，�
 （`[[protocol.requests]]`：命名请求的固定帧与响应超时）与解码原语。
 `DeclarativeProtocolRuntime` 是请求映射的执行入口：它用 `encode_request` 构造
 请求帧，经 `send_frame` 以 `NO_REPLAY` 发出，再按声明的 framing 拆分响应，
-并应用请求级/帧级响应超时与 `inter_frame_gap_ms`。未知请求、无法编码的请求帧
+并应用请求级/帧级响应超时与 `inter_frame_gap_ms`。响应超时覆盖整个响应读取，
+逐字节扫描也不会因单次读取预算而顺延；超时后返回结构化错误并污染 guarded session。
+未知请求、无法编码的请求帧
 和非 `NO_REPLAY` 策略在 I/O 前拒绝；传输失败保持结构化 `TransportIOError`，
 由 guarded session 按同步状态污染连接；响应拆帧失败同样污染 guarded session。
 采样解码以及 CLI/驱动对运行时的接入仍由后续协议合同定义。
