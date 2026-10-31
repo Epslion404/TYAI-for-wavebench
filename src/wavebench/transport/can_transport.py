@@ -53,7 +53,7 @@ class CanTransport:
         logger: CommandLogger | None = None,
         *,
         resource: str | None = None,
-        channel: str | None = None,
+        channel: str | int | None = None,
         bitrate: int = 500_000,
         arbitration_id: int = 0x100,
         is_extended_id: bool = False,
@@ -74,7 +74,9 @@ class CanTransport:
             channel_value = resource_channel
         else:
             channel_value = resource_interface
-        if not channel_value:
+        if isinstance(channel_value, str):
+            channel_value = channel_value.strip()
+        if channel_value is None or channel_value == "" or isinstance(channel_value, bool):
             raise ConfigError("can:// resource must include a channel name")
         if isinstance(bitrate, bool) or not isinstance(bitrate, int) or bitrate <= 0:
             raise ConfigError("can bitrate must be a positive integer")

@@ -6,6 +6,8 @@ All coverage uses the virtual interface and never touches a real adapter.
 
 from __future__ import annotations
 
+import sys
+import types
 import unittest
 from unittest.mock import patch
 
@@ -24,6 +26,50 @@ from wavebench.transport.contracts import (
     TransportPhase,
 )
 from wavebench.transport.guarded import GuardedAuditedTransport
+
+
+_FAKE_CAN_MODULE = None
+
+
+def setUpModule():
+    """Keep the optional backend tests runnable without python-can installed."""
+    global _FAKE_CAN_MODULE
+    try:
+        import can  # noqa: F401
+    except ModuleNotFoundError:
+        module = types.ModuleType("can")
+        interface = types.ModuleType("can.interface")
+
+        class FakeMessage:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeBus:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.sent = []
+
+            def send(self, message):
+                self.sent.append(message)
+
+            def recv(self, timeout=None):
+                return None
+
+            def shutdown(self):
+                pass
+
+        interface.Bus = FakeBus
+        module.interface = interface
+        module.Message = FakeMessage
+        sys.modules["can"] = module
+        sys.modules["can.interface"] = interface
+        _FAKE_CAN_MODULE = module
+
+
+def tearDownModule():
+    if _FAKE_CAN_MODULE is not None:
+        sys.modules.pop("can.interface", None)
+        sys.modules.pop("can", None)
 
 
 class FakeCanSession:
@@ -131,6 +177,11 @@ class CanTransportOpenTests(unittest.TestCase):
         kwargs = bus.call_args.kwargs
         self.assertEqual(kwargs.get("interface"), "virtual")
         self.assertEqual(kwargs.get("channel"), "can0")
+
+    def test_open_preserves_numeric_zero_channel(self):
+        with patch("can.interface.Bus") as bus:
+            CanTransport.open(resource="can://kvaser/0", channel=0)
+        self.assertEqual(bus.call_args.kwargs.get("channel"), 0)
 
     def test_open_without_python_can_is_structured(self):
         with patch.dict("sys.modules", {"can": None}):
