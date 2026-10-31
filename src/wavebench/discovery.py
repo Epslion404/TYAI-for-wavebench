@@ -307,17 +307,19 @@ def discover_serial_ports(
 
     Missing or unauthorized enumeration surfaces a structured ConfigError
     instead of silently returning an empty list.  A fake ``list_ports`` is used
-    by offline tests.
+    by offline tests; when an injectable enumerator is supplied, pyserial is
+    not imported so the optional dependency stays optional for offline runs.
     """
+    if list_ports is None:
+        try:
+            from serial.tools import list_ports as serial_list_ports
+        except ImportError as exc:
+            raise ConfigError(
+                "serial enumeration requires pyserial; run: python -m pip install pyserial"
+            ) from exc
+        list_ports = serial_list_ports.comports
     try:
-        from serial.tools import list_ports as serial_list_ports
-    except ImportError as exc:
-        raise ConfigError(
-            "serial enumeration requires pyserial; run: python -m pip install pyserial"
-        ) from exc
-    enumerator = list_ports or serial_list_ports.comports
-    try:
-        ports = list(enumerator())
+        ports = list(list_ports())
     except Exception as exc:
         raise ConfigError(f"unable to enumerate serial ports: {exc}") from exc
     results: list[DiscoveryResult] = []
@@ -345,50 +347,85 @@ def discover_serial_ports(
 def discover_can_adapters(
     *,
     can_module: object | None = None,
-    list_interfaces: Callable[[], Iterable[str]] | None = None,
+    list_interfaces: Callable[[], Iterable[object]] | None = None,
 ) -> list[DiscoveryResult]:
-    """Enumerate python-can interfaces available on this host.
+    """Enumerate actually available CAN adapter configurations.
 
-    ``can_module`` lets offline tests inject a fake python-can package.  The
-    default path lists the python-can ``BACKENDS`` registry (interfaces that
-    can be imported by this install); it never opens or claims a bus.
+    Without an injected enumerator this calls python-can ``detect_available_configs``
+    (if the optional extra is installed) so results reflect real detected
+    interface/channel pairs rather than the backend registry.  When
+    ``list_interfaces`` or ``can_module`` is supplied, python-can is never
+    imported, keeping the optional hardware dependency out of offline tests.
+
+    No adapter, missing permission, or missing python-can yields a structured
+    result (``status="none"`` or ConfigError) instead of misleading positives.
     """
-    try:
-        import can
-    except ImportError as exc:
-        raise ConfigError(
-            "CAN enumeration requires python-can; run: python -m pip install wavebench[can]"
-        ) from exc
-    module = can_module or can
-    interfaces: Iterable[str]
-    if list_interfaces is not None:
-        interfaces = list_interfaces()
+    if list_interfaces is None and can_module is None:
+        try:
+            import can
+        except ImportError as exc:
+            raise ConfigError(
+                "CAN enumeration requires python-can; run: python -m pip install wavebench[can]"
+            ) from exc
+        module = can
     else:
-        interface_module = getattr(module, "interface", None)
-        backends = getattr(interface_module, "BACKENDS", None)
-        if isinstance(backends, dict):
-            interfaces = [str(name) for name in backends]
-        elif isinstance(backends, (list, tuple, set, frozenset)):
-            interfaces = [str(name) for name in backends]
+        module = can_module
+    if list_interfaces is not None:
+        try:
+            entries = list(list_interfaces())
+        except Exception as exc:
+            raise ConfigError(f"unable to enumerate CAN adapters: {exc}") from exc
+    else:
+        detect = getattr(module, "detect_available_configs", None)
+        if not callable(detect):
+            raise ConfigError("python-can does not provide adapter detection")
+        try:
+            entries = list(detect())
+        except Exception as exc:
+            raise ConfigError(f"unable to enumerate CAN adapters: {exc}") from exc
+    results: list[DiscoveryResult] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            interface, channel = entry, None
         else:
-            interfaces = [
-                name
-                for name in dir(interface_module)
-                if not name.startswith("_") and not callable(getattr(interface_module, name, None))
-            ]
-    results = [
-        DiscoveryResult(
-            address=name,
-            port=None,
-            protocol="can",
-            resource=f"can://{name}",
-            source="can",
-            status="listed",
-            idn=None,
-            note="CAN interface available (python-can)",
+            interface_value = (
+                entry.get("interface") if isinstance(entry, dict) else getattr(entry, "interface", "")
+            )
+            channel_value = (
+                entry.get("channel") if isinstance(entry, dict) else getattr(entry, "channel", "")
+            )
+            interface = str(interface_value or "")
+            channel = str(channel_value or "")
+        if not interface:
+            continue
+        resource = f"can://{interface}" if not channel else f"can://{interface}/{channel}"
+        results.append(
+            DiscoveryResult(
+                address=interface,
+                port=None,
+                protocol="can",
+                resource=resource,
+                source="can",
+                status="listed",
+                idn=None,
+                note=(
+                    f"CAN adapter {interface}" + (f" channel {channel}" if channel else "")
+                ),
+            )
         )
-        for name in interfaces
-    ]
+    if not results:
+        return [
+            DiscoveryResult(
+                address="",
+                port=None,
+                protocol="can",
+                resource="can://none",
+                source="can",
+                status="none",
+                idn=None,
+                note="no CAN adapter detected or permission denied",
+            )
+        ]
     return sorted(results, key=_result_sort_key)
 
 

@@ -36,11 +36,19 @@ class FakeCanSession:
         self.shutdown_calls = 0
         self.error_on_recv: Exception | None = None
         self.error_on_send: Exception | None = None
+        self.error_frame = False
+        self.flush_discard_count = 0
 
     def send(self, message: object) -> None:
         if self.error_on_send is not None:
             raise self.error_on_send
         self.sent.append(message)
+
+    def flush_tx_buffer(self) -> None:
+        # Simulate python-can's discard semantics: calling this after send
+        # drops queued frames.  CanTransport must not invoke it.
+        self.sent.clear()
+        self.flush_discard_count += 1
 
     def recv(self, timeout=None) -> object | None:
         if self.error_on_recv is not None:
@@ -49,16 +57,22 @@ class FakeCanSession:
             return None
         if self.reply is None:
             return None
-        return _message(self.reply)
+        return _message(self.reply, error_frame=self.error_frame)
 
     def shutdown(self) -> None:
         self.shutdown_calls += 1
 
 
-def _message(data: bytes) -> object:
+def _message(data: bytes, *, error_frame: bool = False) -> object:
     import can
 
-    return can.Message(arbitration_id=0x100, data=bytes(data), is_extended_id=False, is_fd=False)
+    return can.Message(
+        arbitration_id=0x100,
+        data=bytes(data),
+        is_extended_id=False,
+        is_fd=False,
+        is_error_frame=error_frame,
+    )
 
 
 class CanTransportOpenTests(unittest.TestCase):
@@ -92,6 +106,17 @@ class CanTransportOpenTests(unittest.TestCase):
         self.assertEqual(transport.max_frame_bytes, _MAX_CANFD_DATA_BYTES)
         bus.assert_called_once()
 
+    def test_open_passes_fd_to_bus_constructor(self):
+        with patch("can.interface.Bus") as bus:
+            CanTransport.open(
+                resource="can://fd-bus",
+                is_fd=True,
+                options={"can_interface": "socketcan"},
+            )
+        kwargs = bus.call_args.kwargs
+        self.assertIs(kwargs.get("fd"), True)
+        self.assertEqual(kwargs.get("interface"), "socketcan")
+
     def test_open_without_python_can_is_structured(self):
         with patch.dict("sys.modules", {"can": None}):
             with self.assertRaises(ConnectionError) as raised:
@@ -119,6 +144,18 @@ class CanTransportFrameTests(unittest.TestCase):
 
         self.assertEqual(len(session.sent), 1)
         self.assertEqual(bytes(session.sent[0].data), b"\x01\x02")
+        self.assertEqual(session.flush_discard_count, 0)
+
+    def test_send_frame_does_not_flush_the_transmit_queue(self):
+        # flush_tx_buffer is python-can's discard-queued-transmissions operation;
+        # calling it after a successful send would drop the frame.
+        session = FakeCanSession(reply=b"")
+        transport = CanTransport("can://can0", session, CommandLogger(), max_frame_bytes=8)
+
+        transport.send_frame(b"\x01", max_bytes=8)
+
+        self.assertEqual(len(session.sent), 1)
+        self.assertEqual(session.flush_discard_count, 0)
 
     def test_send_frame_rejects_oversized_and_replay(self):
         transport = CanTransport("can://can0", FakeCanSession(), CommandLogger(), max_frame_bytes=2)
@@ -151,6 +188,15 @@ class CanTransportFrameTests(unittest.TestCase):
         self.assertEqual(raised.exception.command_transmission, CommandTransmission.SENT)
         self.assertEqual(raised.exception.response_progress, ResponseProgress.COMPLETE)
         self.assertEqual(raised.exception.synchronization, Synchronization.LOST)
+
+    def test_read_exact_rejects_controller_error_frame(self):
+        session = FakeCanSession(reply=b"\x01\x02")
+        session.error_frame = True
+        transport = CanTransport("can://can0", session, CommandLogger())
+        with self.assertRaises(TransportIOError) as raised:
+            transport.read_exact(2, timeout_ms=100)
+        self.assertEqual(raised.exception.reason_code, "frame_bus_error")
+        self.assertEqual(raised.exception.command_transmission, CommandTransmission.SENT)
 
     def test_read_until_is_unsupported_on_raw_can(self):
         transport = CanTransport("can://can0", FakeCanSession(), CommandLogger())

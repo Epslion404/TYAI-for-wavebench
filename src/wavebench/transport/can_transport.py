@@ -92,6 +92,7 @@ class CanTransport:
                 interface=(options or {}).get("can_interface", "virtual"),
                 channel=channel_value,
                 bitrate=bitrate,
+                fd=is_fd,
             )
         except Exception as exc:
             raise ConnectionError(f"failed to open CAN bus {channel_value}: {exc}") from exc
@@ -142,15 +143,9 @@ class CanTransport:
                 raise OSError(
                     f"short CAN frame write: sent {sent} of {len(frame)} bytes"
                 )
-            # ``flush_tx_buffer`` may exist as a BusABC default without being
-            # implemented by every backend (python-can virtual raises
-            # NotImplementedError).  A flush failure must not turn a successful
-            # frame transmission into a bus error; the send is the truth.
-            if hasattr(self.session, "flush_tx_buffer"):
-                try:
-                    self.session.flush_tx_buffer()
-                except Exception:
-                    pass
+            # Deliberately no flush_tx_buffer here: python-can defines it as
+            # discarding pending transmissions, not waiting for delivery, so
+            # calling it after a successful send would drop queued frames.
         except TransportIOError:
             raise
         except Exception as exc:
@@ -196,6 +191,20 @@ class CanTransport:
                 synchronization=Synchronization.UNPROVEN,
                 attempts=1,
                 reason_code="frame_timeout",
+                consumed_bytes=0,
+                discarded_bytes=0,
+            )
+        if getattr(message, "is_error_frame", False):
+            raise TransportIOError(
+                "can controller reported an error frame",
+                operation="read_exact",
+                phase=TransportPhase.READING,
+                replay_policy=replay,
+                command_transmission=CommandTransmission.SENT,
+                response_progress=ResponseProgress.NONE,
+                synchronization=Synchronization.UNPROVEN,
+                attempts=1,
+                reason_code="frame_bus_error",
                 consumed_bytes=0,
                 discarded_bytes=0,
             )

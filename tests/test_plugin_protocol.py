@@ -223,6 +223,27 @@ def test_escape_encode_stuffs_delimiter_and_escape_bytes():
     assert encoded == b"A1\x5c\x0a\x5c\x5c2\x5c\x0a"
 
 
+def test_encode_request_keeps_unescaped_terminator():
+    contract = definition("delimiter", escape_hex="5C")
+    assert contract.encode_request(b"A123") == b"A123\n"
+
+
+def test_validate_unescapes_checksum_region_before_crc():
+    # Logical header+payload 416500 has CRC16/Modbus little-endian 0a84; the
+    # valid escaped wire 4165005c0a840a must validate (CRC byte 0a is escaped).
+    contract = definition("delimiter", escape_hex="5C", checksum="crc16_modbus")
+    wire = bytes.fromhex("4165005c0a840a")
+    assert contract.validate_frame(wire) == wire
+
+
+def test_extract_rejects_oversized_candidate_before_delimiter():
+    contract = definition("delimiter", escape_hex="5C", max_frame_bytes=16)
+    with pytest.raises(TransportIOError) as raised:
+        contract.extract_stream_frame(b"A" + b"x" * 100)
+    payload = error_envelope(raised.value)
+    assert payload["details"]["reason_code"] == "frame_too_large"
+
+
 @pytest.mark.parametrize("framing,changes,wire", [
     ("fixed", {}, b"A123"),
     ("delimiter", {}, b"A123\n"),

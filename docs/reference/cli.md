@@ -32,8 +32,8 @@ python -m wavebench --json <domain> <command> ...
 本地设备枚举通过附加选项加入同一输出：
 - `--serials`：枚举本机串口（pyserial `list_ports`），`source=serial`、`protocol=serial`；
   无 pyserial 或无权限时给结构化错误，而不是空列表。
-- `--can`：枚举 python-can 可用接口（`source=can`、`protocol=can`，资源形如 `can://<name>`）；
-  需要 `pip install wavebench[can]`。
+- `--can`：枚举 python-can 检测到的真实适配器配置（`source=can`、`protocol=can`，资源形如 `can://<interface>/<channel>`）；
+  需要 `pip install wavebench[can]`。无适配器或检测失败时输出 `status=none` 的结构化结果，而不是误导性列表。
 - `--summary`：追加一行按 source 与 protocol 聚合的摘要。
 - `--json`：结果以 `wavebench.cli.result.v1` 输出，字段与表头一致。
 

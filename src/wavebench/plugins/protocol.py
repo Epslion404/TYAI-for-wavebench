@@ -126,52 +126,64 @@ class FrameDefinition:
         trailer = len(self.delimiter or b"")
         crc_bytes = 2 if self.checksum == "crc16_modbus" else 0
         minimum = self.header_bytes + crc_bytes + trailer
+        # Escape stuffing changes the wire length, so length/CRC accounting runs
+        # on the decoded logical frame while the returned value stays the wire.
+        logical = self._unescape_wire(frame) if self.escape is not None else frame
+        logical_size = len(logical)
         if self.framing == "fixed":
-            if size != self.fixed_length:
+            if logical_size != self.fixed_length:
                 raise _frame_error("frame_length_invalid", size)
         elif self.framing == "length_prefixed":
             assert self.length_offset is not None and self.length_bytes is not None
             assert self.length_endian is not None
             end = self.length_offset + self.length_bytes
-            declared = int.from_bytes(frame[self.length_offset:end], self.length_endian)
+            declared = int.from_bytes(logical[self.length_offset:end], self.length_endian)
             body = declared if self.length_includes_header else self.header_bytes + declared
             if body < self.header_bytes:
                 raise _frame_error("frame_length_invalid", size)
             expected = body + crc_bytes + trailer
             if expected > self.max_frame_bytes:
                 raise _frame_error("frame_too_large", size)
-            if size != expected:
+            if logical_size != expected:
                 raise _frame_error("frame_length_invalid", size)
-        if size < minimum:
+        if logical_size < minimum:
             raise _frame_error("frame_length_invalid", size)
         if self.delimiter is not None:
-            if not frame.endswith(self.delimiter):
+            if not logical.endswith(self.delimiter):
                 raise _frame_error("frame_delimiter_missing", size)
             if self.framing == "delimiter":
-                self._check_single_delimiter(frame, size, trailer)
+                self._check_single_delimiter(frame, self.escape, size, trailer)
         if crc_bytes:
-            payload_end = size - trailer - crc_bytes
-            expected_crc = int.from_bytes(frame[payload_end:payload_end + 2], "little")
-            crc_source = frame[:payload_end]
-            if self.escape is not None:
-                crc_source = self._unescape_crc_source(frame[:payload_end])
-            if _crc16_modbus(crc_source) != expected_crc:
+            payload_end = logical_size - trailer - crc_bytes
+            expected_crc = int.from_bytes(logical[payload_end:payload_end + 2], "little")
+            if _crc16_modbus(logical[:payload_end]) != expected_crc:
                 raise _frame_error("frame_checksum_failed", size)
         return frame
 
-    def _check_single_delimiter(self, frame: bytes, size: int, trailer: int) -> None:
-        """Delimiter framing must contain exactly one unescaped trailing delimiter."""
-        if self.escape is None:
-            if frame.find(self.delimiter) != size - trailer:
+    def _check_single_delimiter(
+        self,
+        wire: bytes,
+        escape: bytes | None,
+        size: int,
+        trailer: int,
+    ) -> None:
+        """Delimiter framing must contain exactly one unescaped trailing delimiter.
+
+        Scans the *wire* bytes, skipping escape-stuffed pairs, so a delimiter
+        byte that was escaped inside the payload does not count as a second
+        terminator.
+        """
+        if escape is None:
+            if wire.find(self.delimiter) != size - trailer:
                 raise _frame_error("frame_multiple_delimiters", size)
             return
-        escape_byte = self.escape[0]
+        escape_byte = escape[0]
         assert self.delimiter is not None
         delimiter_byte = self.delimiter[0]
         index = 0
         body_end = size - trailer
         while index < body_end:
-            byte = frame[index]
+            byte = wire[index]
             if byte == escape_byte:
                 if index + 1 >= body_end:
                     raise _frame_error("frame_escape_isolated", size)
@@ -180,14 +192,6 @@ class FrameDefinition:
             if byte == delimiter_byte:
                 raise _frame_error("frame_multiple_delimiters", size)
             index += 1
-
-    def _unescape_crc_source(self, data: bytes) -> bytes:
-        """Decode the CRC-covered region for checksum validation."""
-        if self.escape is None:
-            return data
-        if self.framing == "delimiter":
-            return self._unescape_wire(data)
-        return data
 
     def extract_stream_frame(self, buffer: bytes) -> tuple[bytes | None, bytes]:
         """Extract the first complete frame from a stream buffer.
@@ -233,30 +237,51 @@ class FrameDefinition:
         assert delimiter is not None
         escape = self.escape[0] if self.escape is not None else None
         index = 0
+        candidate_start = 0
+        current_len = 0
         while index < len(buffer):
+            # Enforce the frame-size budget before the delimiter arrives so an
+            # oversized unterminated frame fails instead of accumulating forever.
+            if current_len > self.max_frame_bytes:
+                raise _frame_error(
+                    "frame_too_large",
+                    current_len,
+                )
             byte = buffer[index]
             if escape is not None and byte == escape:
                 if index + 1 >= len(buffer):
                     return None, buffer
+                current_len += 2
                 index += 2
                 continue
             if buffer.startswith(delimiter, index):
-                candidate = buffer[: index + len(delimiter)]
-                if len(candidate) > self.max_frame_bytes:
-                    raise _frame_error("frame_too_large", len(candidate))
+                candidate = buffer[candidate_start : index + len(delimiter)]
+                if current_len + len(delimiter) > self.max_frame_bytes:
+                    raise _frame_error(
+                        "frame_too_large",
+                        current_len + len(delimiter),
+                    )
                 self.validate_frame(candidate)
                 return candidate, buffer[index + len(delimiter) :]
+            current_len += 1
             index += 1
         return None, buffer
 
     def encode_request(self, payload: bytes) -> bytes:
-        """Build a wire frame from a logical payload (escape-aware)."""
+        """Build a wire frame from a logical payload (escape-aware).
+
+        For delimiter framing, ``payload`` is the logical frame content (magic,
+        header, body and checksum) without the framing terminator.  Embedded
+        delimiters are escape-stuffed and one unescaped terminator is appended.
+        Other framings build the wire from the logical payload directly.
+        """
         if not isinstance(payload, bytes):
             raise ConfigError("protocol request payload must be bytes")
         if self.escape is not None and self.framing == "delimiter":
-            payload = self._encode_escape(payload)
-        # Reuse the validation path so a payload that cannot form a legal frame
-        # (wrong length, oversized, magic absent) fails before transmission.
+            delimiter = self.delimiter or b""
+            encoded_body = self._encode_escape(payload)
+            wire = encoded_body + delimiter
+            return self.validate_frame(wire)
         return self.validate_frame(payload)
 
 

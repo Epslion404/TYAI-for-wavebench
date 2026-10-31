@@ -219,6 +219,50 @@ class TransportBackendDispatchTests(unittest.TestCase):
         opened.transport.close()
         opened.transport.close()  # guarded close is idempotent
 
+    def test_can_channel_override_conflict_fails_before_io(self):
+        class Driver:
+            def idn(self):
+                return "EXAMPLE,CAN"
+
+            def close(self):
+                pass
+
+        descriptor = InstrumentDescriptor(
+            driver_id="example.can.conflict",
+            kind="scope",
+            display_name="Example CAN conflict",
+            manufacturer="Example",
+            models=("CAN",),
+            aliases=(),
+            capabilities=("scope.idn",),
+            idn_patterns=("EXAMPLE,CAN",),
+            backends=("can",),
+            resource_schemes=("can",),
+            option_specs=(),
+            permissions=("instrument.io",),
+            factory=lambda context: (context.open_transport(), Driver())[1],
+        )
+
+        with (
+            self.assertRaisesRegex(ConfigError, "conflicts with the configured resource"),
+            patch(
+                "wavebench.instruments.factory.resolve_instrument_descriptor",
+                return_value=descriptor,
+            ),
+        ):
+            open_instrument_driver(
+                driver_reference="example.can.conflict",
+                expected_kind="scope",
+                resource="can://channel-A",
+                configured_backend="can",
+                timeout_ms=1000,
+                opc_timeout_ms=1000,
+                read_retry_attempts=1,
+                read_retry_delay_ms=0,
+                logger=CommandLogger(),
+                options={"can_channel": "channel-B"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

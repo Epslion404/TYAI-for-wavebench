@@ -48,6 +48,12 @@ class SerialDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "pyserial"):
                 discover_serial_ports()
 
+    def test_injected_serial_enumerator_never_imports_pyserial(self):
+        with patch.dict("sys.modules", {"serial": None, "serial.tools": None, "serial.tools.list_ports": None}):
+            results = discover_serial_ports(list_ports=lambda: [FakePort("COM9")])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].resource, "COM9")
+
     def test_enumerator_failure_is_structured_error(self):
         def boom():
             raise PermissionError("access denied")
@@ -68,15 +74,47 @@ class CanDiscoveryTests(unittest.TestCase):
         self.assertEqual(virtual.protocol, "can")
         self.assertEqual(virtual.status, "listed")
 
-    def test_default_enumerates_backends_registry(self):
+    def test_default_enumerates_detected_configs(self):
         try:
-            from can.interface import BACKENDS
+            import can
+            can.detect_available_configs()
         except ImportError:
             self.skipTest("python-can not installed")
         results = discover_can_adapters()
-        resources = {item.resource for item in results}
-        self.assertIn("can://virtual", resources)
-        self.assertGreaterEqual(len(results), len(BACKENDS))
+        # Real detection yields interface[/channel] resources, not bare backend names.
+        self.assertTrue(any(item.protocol == "can" and item.status == "listed" for item in results))
+        self.assertTrue(all(item.resource.startswith("can://") for item in results))
+
+    def test_injected_enumerator_never_imports_python_can(self):
+        # Providing a fake enumerator must not import the optional package.
+        with patch.dict("sys.modules", {"can": None}):
+            results = discover_can_adapters(
+                list_interfaces=lambda: [{"interface": "socketcan", "channel": "can0"}],
+            )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].resource, "can://socketcan/can0")
+        self.assertEqual(results[0].status, "listed")
+
+    def test_injected_detected_config_shape(self):
+        class FakeDetect:
+            @staticmethod
+            def detect_available_configs():
+                return [{"interface": "pcan", "channel": "PCAN_USBBUS1"}]
+
+        with patch.dict("sys.modules", {"can": None}):
+            results = discover_can_adapters(can_module=FakeDetect)
+        self.assertEqual([item.resource for item in results], ["can://pcan/PCAN_USBBUS1"])
+
+    def test_no_adapter_yields_structured_none_result(self):
+        class FakeDetect:
+            @staticmethod
+            def detect_available_configs():
+                return []
+
+        results = discover_can_adapters(can_module=FakeDetect)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "none")
+        self.assertIn("no CAN adapter", results[0].note)
 
     def test_missing_python_can_is_structured_error(self):
         with patch.dict("sys.modules", {"can": None}):

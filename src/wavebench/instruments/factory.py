@@ -234,6 +234,15 @@ def _validate_resource_scheme(resource: str, supported: tuple[str, ...]) -> None
     )
 
 
+def _can_resource_channel(resource: str) -> str | None:
+    """Return the channel component of a ``can://<channel>`` resource."""
+    stripped = resource.strip()
+    if not stripped.startswith("can://"):
+        return None
+    channel = stripped[len("can://"):]
+    return channel or None
+
+
 def _normalize_rsinstrument_socket_resource(resource: str) -> str:
     stripped = resource.strip()
     socket_match = re.fullmatch(
@@ -322,11 +331,20 @@ def _open_can(request: TransportRequest) -> InstrumentTransport:
     """
     options = dict(request.options or {})
     is_fd = bool(options.get("can_fd", False))
+    channel_override = options.get("can_channel")
+    if channel_override is not None:
+        resource_channel = _can_resource_channel(request.resource)
+        if resource_channel is not None and str(channel_override) != resource_channel:
+            raise ConfigError(
+                f"can_channel {channel_override!r} conflicts with the configured "
+                f"resource {request.resource!r}; remove the override so the lease "
+                "identity matches the opened channel"
+            )
     return CanTransport.open(
         request.serial_config,
         logger=request.logger,
         resource=request.resource,
-        channel=options.get("can_channel"),
+        channel=channel_override,
         bitrate=int(options.get("can_bitrate", 500_000)),
         arbitration_id=int(options.get("can_arbitration_id", 0x100)),
         is_extended_id=bool(options.get("can_extended_id", False)),
