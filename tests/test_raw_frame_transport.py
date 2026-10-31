@@ -7,6 +7,7 @@ from wavebench.errors import SessionHealthError, TransportIOError
 from wavebench.logging import CommandLogger
 from wavebench.transport.guarded import GuardedAuditedTransport
 from wavebench.transport.serial_transport import SerialTransport
+from wavebench.transport.session import SessionPurpose, SessionTransactionCoordinator
 
 
 class _SerialSession:
@@ -115,6 +116,100 @@ def test_guarded_transport_poisoned_when_complete_frame_arrives_after_deadline(m
     assert raised.value.reason_code == "frame_read_timeout"
     assert raised.value.consumed_bytes == 2
     assert transport.session_state.health.value == "poisoned"
+
+
+def test_read_denied_after_authorized_send_poisons_the_session(monkeypatch) -> None:
+    now = [100.0]
+    monkeypatch.setattr("wavebench.transport.session.time.monotonic", lambda: now[0])
+
+    class FrameSession:
+        timeout = 1.0
+
+        def __init__(self) -> None:
+            self.reads = [b"\xAA\xBB"]
+
+        def send_frame(
+            self,
+            frame: bytes,
+            *,
+            max_bytes: int,
+            replay=None,
+        ) -> None:
+            pass
+
+        def read_exact(self, size: int, *, timeout_ms=None, replay=None) -> bytes:
+            return self.reads.pop(0)
+
+        def close(self) -> None:
+            pass
+
+    transport = GuardedAuditedTransport(FrameSession())
+    coordinator = SessionTransactionCoordinator(transport.session_state)
+    with coordinator.authorize(
+        operation_id="raw-exchange",
+        purpose=SessionPurpose.RECOVERY,
+        allowed_io={"send_frame", "read_exact"},
+        fields={"identity"},
+        timeout_ms=10,
+        max_steps=2,
+    ):
+        transport.send_frame(b"\x01", max_bytes=4)
+        now[0] += 0.02
+        with pytest.raises(SessionHealthError):
+            transport.read_exact(2)
+
+    assert transport.session_state.health.value == "poisoned"
+    with pytest.raises(SessionHealthError):
+        transport.read_exact(2)
+
+
+def test_expired_unrelated_authorization_keeps_a_completed_exchange_healthy(
+    monkeypatch,
+) -> None:
+    now = [100.0]
+    monkeypatch.setattr("wavebench.transport.session.time.monotonic", lambda: now[0])
+
+    class FrameSession:
+        timeout = 1.0
+
+        def __init__(self) -> None:
+            self.reads = [b"\xAA\xBB"]
+
+        def send_frame(self, frame: bytes, *, max_bytes: int, replay=None) -> None:
+            pass
+
+        def read_exact(self, size: int, *, timeout_ms=None, replay=None) -> bytes:
+            return self.reads.pop(0)
+
+        def close(self) -> None:
+            pass
+
+    transport = GuardedAuditedTransport(FrameSession())
+    coordinator = SessionTransactionCoordinator(transport.session_state)
+    with coordinator.authorize(
+        operation_id="raw-exchange",
+        purpose=SessionPurpose.RECOVERY,
+        allowed_io={"send_frame", "read_exact"},
+        fields={"identity"},
+        timeout_ms=1000,
+        max_steps=2,
+    ):
+        transport.send_frame(b"\x01", max_bytes=4)
+        assert transport.read_exact(2) == b"\xAA\xBB"
+
+    with coordinator.authorize(
+        operation_id="unrelated-phase",
+        purpose=SessionPurpose.RECOVERY,
+        allowed_io={"read_exact"},
+        fields={"identity"},
+        timeout_ms=10,
+        max_steps=1,
+    ):
+        now[0] += 0.02
+        with pytest.raises(SessionHealthError):
+            transport.read_exact(2)
+
+    assert transport.session_state.health.value == "healthy"
 
 
 def test_read_until_returns_delimited_frame_across_packets() -> None:

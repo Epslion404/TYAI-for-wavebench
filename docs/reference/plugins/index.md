@@ -47,7 +47,8 @@ header 和精确长度；分隔符 framing 以首个未转义分隔符结束，�
 逐字节扫描也不会因单次读取预算而顺延；超时后返回结构化错误并污染 guarded session。
 未知请求、无法编码的请求帧
 和非 `NO_REPLAY` 策略在 I/O 前拒绝；传输失败保持结构化 `TransportIOError`，
-由 guarded session 按同步状态污染连接；响应拆帧失败同样污染 guarded session。
+由 guarded session 按同步状态污染连接；响应拆帧失败同样污染 guarded session；
+请求已发送但读侧被拒（如授权过期）也会污染 session，避免下一请求误收残留响应。
 采样解码以及 CLI/驱动对运行时的接入仍由后续协议合同定义。
 
 ```python

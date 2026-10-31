@@ -25,7 +25,11 @@ from wavebench.transport.contracts import (
     TransportPhase,
 )
 from wavebench.transport.guarded import GuardedAuditedTransport
-from wavebench.transport.session import SessionHealth
+from wavebench.transport.session import (
+    SessionHealth,
+    SessionPurpose,
+    SessionTransactionCoordinator,
+)
 
 
 METADATA = {
@@ -517,6 +521,44 @@ class TestResponseFailureAndSessionHealth:
         assert raised.value.reason_code == "frame_read_timeout"
         assert raised.value.response_progress is ResponseProgress.PARTIAL
         assert guarded.session_state.health is SessionHealth.POISONED
+
+    def test_expired_authorization_after_send_blocks_the_next_request(self, monkeypatch):
+        # A slow send consumes the authorization's deadline before the read.
+        now = [100.0]
+
+        class SlowSendTransport(FakeTransport):
+            def send_frame(self, frame, *, max_bytes, replay=ReplayPolicy.NO_REPLAY):
+                super().send_frame(frame, max_bytes=max_bytes, replay=replay)
+                now[0] += 0.02
+
+        monkeypatch.setattr(
+            "wavebench.transport.session.time.monotonic",
+            lambda: now[0],
+        )
+        fake = SlowSendTransport(b"\xa5\x02\n")
+        guarded = GuardedAuditedTransport(fake)
+        coordinator = SessionTransactionCoordinator(guarded.session_state)
+        runtime = runtime_for(
+            declaration([{"name": "read", "request_hex": "A501"}], escape_hex=None),
+            guarded,
+        )
+
+        with coordinator.authorize(
+            operation_id="raw-exchange",
+            purpose=SessionPurpose.RECOVERY,
+            allowed_io={"send_frame", "read_until"},
+            fields={"identity"},
+            timeout_ms=10,
+            max_steps=2,
+        ):
+            with pytest.raises(SessionHealthError):
+                runtime.request("read")
+
+        assert fake.until_reads == []
+        assert guarded.session_state.health is SessionHealth.POISONED
+        with pytest.raises(SessionHealthError):
+            runtime.request("read")
+        assert fake.until_reads == []
 
     def test_read_side_preflight_failure_after_send_poisons_the_session(self):
         # send_frame succeeds, so the request is on the bus even though the
