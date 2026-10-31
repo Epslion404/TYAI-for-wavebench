@@ -5,6 +5,7 @@
 ```text
 天翼AI电子科研Skill/
 ├─ SKILL.md                         TeleAgent 技能说明和安全工作流
+├─ references/                      按任务加载的命令、安全、协议、波形和排障说明
 ├─ agents/openai.yaml               Agent 元数据
 ├─ src/tianyi_electronics_skill/    轻量设备发现、SCPI 读取和信号分析入口
 ├─ examples/                        无硬件演示数据
@@ -12,6 +13,9 @@
 ├─ pyproject.toml                   安装配置
 └─ wavebench/                       原完整 WaveBench 项目（驱动、计划、报告和文档）
 ```
+
+`references/` 按任务加载：命令与输出契约、真实设备安全与错误、协议/CAN/bridge、波形与分析、故障排查。
+
 
 ## 安装
 
