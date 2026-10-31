@@ -44,6 +44,14 @@ def load_config(path: Path) -> dict:
         raise ValueError("Invalid poll or review timeout")
     if not 1 <= config.get("workers", 1) <= 8:
         raise ValueError("Workers must be between 1 and 8")
+    base = path.resolve().parent
+    for field in ("repository_path", "policy_path", "state_dir", "opencode", "hardware_python"):
+        value = config.get(field)
+        if isinstance(value, str) and value.strip():
+            candidate = Path(value.strip()).expanduser()
+            if not candidate.is_absolute():
+                candidate = base / candidate
+            config[field] = str(candidate.resolve())
     for field in ("repository_path", "policy_path", "opencode"):
         if not Path(config[field]).exists():
             raise ValueError(f"Missing {field}: {config[field]}")
@@ -388,7 +396,11 @@ class Runner:
         from github_source import GitHubSource
         from queue_store import QueueStore
         self.config = config
-        self.state = Path(config["state_dir"])
+        state = Path(config["state_dir"]).expanduser()
+        if not state.is_absolute():
+            state = (Path.cwd() / state).resolve()
+        config["state_dir"] = str(state)
+        self.state = state
         self.store = QueueStore(self.state / "reviews.sqlite3")
         self.source = GitHubSource(repo=config["repository"], proxy=config["proxy"], gh=config["gh"])
         self.host = OpenCodeProcess(config)

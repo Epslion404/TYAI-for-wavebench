@@ -20,7 +20,10 @@ configuration are ignored by git.
 
 Copy `reviewer.example.json` to a local `reviewer.json` and fill in host paths.
 `reviewer.json` is gitignored and must not be committed. The scheduler only
-accepts `Epslion404/TYAI-for-wavebench`.
+accepts `Epslion404/TYAI-for-wavebench`. Relative path fields
+(`repository_path`, `policy_path`, `state_dir`, `opencode`, `hardware_python`)
+are resolved against the directory containing `reviewer.json` before startup,
+so the child host always receives an absolute `TYAI_RTM_STATE_DIR`.
 
 Run from this directory:
 

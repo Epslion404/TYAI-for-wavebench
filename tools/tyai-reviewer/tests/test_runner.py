@@ -56,6 +56,62 @@ def test_config_rejects_unrelated_repository(tmp_path):
         runner.load_config(path)
 
 
+def test_relative_config_paths_are_absolute_before_child_cwd_changes(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    policy = tmp_path / "policy.md"
+    policy.write_text("policy", encoding="utf-8")
+    host = tmp_path / "host"
+    host.write_text("", encoding="utf-8")
+    cfg = config(tmp_path)
+    cfg["gh"] = "gh"
+    cfg.update(
+        repository_path="../repo",
+        policy_path="../policy.md",
+        opencode="../host",
+        state_dir=".state",
+    )
+    config_path = config_dir / "reviewer.json"
+    runner.write_json(config_path, cfg)
+
+    monkeypatch.chdir(tmp_path)
+    loaded = runner.load_config(config_path)
+    expected_state = (config_dir / ".state").resolve()
+    assert Path(loaded["repository_path"]) == repo.resolve()
+    assert Path(loaded["policy_path"]) == policy.resolve()
+    assert Path(loaded["opencode"]) == host.resolve()
+    assert Path(loaded["state_dir"]) == expected_state
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    obj = runner.Runner(loaded)
+    assert obj.state == expected_state
+
+    captured = {}
+    class Host:
+        def run(self, prompt, cwd, log, title, on_session, **kwargs):
+            captured["state_dir"] = kwargs["extra_env"]["TYAI_RTM_STATE_DIR"]
+            runner.write_json(prompt.parent / "receipt.json", receipt())
+            return {"returncode": 0, "session_id": "ses_offline", "agent_errors": []}
+    obj.host = Host()
+
+    def workspace(_cfg, _event, folder):
+        result = folder / "workspace"
+        result.mkdir()
+        return result
+
+    monkeypatch.setattr(runner, "prepare_workspace", workspace)
+    job_id = obj.store.enqueue(event())
+    obj.dispatch_one()
+
+    assert obj.store.get_job(job_id)["status"] == "done"
+    assert Path(captured["state_dir"]).is_absolute()
+    assert Path(captured["state_dir"]) == expected_state
+
+
 def test_atomic_json_preserves_chinese(tmp_path):
     path = tmp_path / "report.json"
     runner.write_json(path, {"summary": "评审完成"})
