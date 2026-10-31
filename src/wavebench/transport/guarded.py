@@ -25,6 +25,9 @@ from .session import InstrumentSessionState, SessionAuthorization, SessionHealth
 
 
 AUDIT_SCHEMA = "wavebench.instrument_io.v1"
+
+_RAW_FRAME_NEVER_SENT = object()
+
 @dataclass
 class AuditCounters:
     """Counters are mutated only while the session transaction lock is held."""
@@ -84,6 +87,15 @@ class GuardedAuditedTransport:
     construction_latched: bool = False
     _closed: bool = field(default=False, init=False, repr=False)
     _bounded_binary_backend_verified: bool = field(default=False, init=False, repr=False)
+    # The authorization (or None) of the last successful raw frame send.  The
+    # guard cannot see a declared frame boundary, so a read rejected while that
+    # same authorization is still active could otherwise leave the response to
+    # be consumed by a later exchange.
+    _raw_frame_authorization: object = field(
+        default=_RAW_FRAME_NEVER_SENT,
+        init=False,
+        repr=False,
+    )
 
     def __setattr__(self, name: str, value: object) -> None:
         # A guard and its session state form one connection epoch.  Rebinding
@@ -162,6 +174,7 @@ class GuardedAuditedTransport:
                 raise
             self.counters.binary_write_transmitted += 1
             self.counters.binary_write_completed += 1
+            self._raw_frame_authorization = authorization
             self._record_success(authorization, "send_frame")
 
     def read_exact(
@@ -207,14 +220,23 @@ class GuardedAuditedTransport:
             replay = ReplayPolicy(replay)
             self._check_access(operation)
             self.counters.binary_query_calls += 1
-            authorization = self._gate(operation)
+            try:
+                authorization = self._gate(operation)
+            except (SessionHealthError, TransportIOError):
+                # An expired/consumed authorization (or a construction latch)
+                # rejects the read before the backend runs, so the sent
+                # frame's response is never consumed.
+                self._poison_orphaned_response()
+                raise
             backend_read = getattr(self.inner, operation, None)
             if not callable(backend_read):
+                self._poison_orphaned_response()
                 raise self._frame_preflight_error(operation, replay, "raw_frame_unsupported")
             effective_timeout_ms = timeout_ms
             if authorization is not None:
                 remaining_ms = int(max(authorization.deadline - time.monotonic(), 0.0) * 1000.0)
                 if remaining_ms < 1:
+                    self._poison_orphaned_response()
                     raise self._deadline_preflight_error(operation, replay)
                 effective_timeout_ms = min(
                     authorization.io_timeout_ms,
@@ -645,6 +667,29 @@ class GuardedAuditedTransport:
         self.session_state.degrade(target, reason=reason)
         if self.session_state.health is not current:
             self.counters.session_health_transitions += 1
+
+    def _poison_orphaned_response(self) -> None:
+        """Poison after a read is rejected while a sent frame's response is open.
+
+        The guard cannot know how many reads one declared response needs, so a
+        read-side rejection under the authorization that sent the frame leaves
+        the byte stream at a position it cannot prove.  These preflight
+        failures never reach the backend, so ``_transition_after_failure``
+        cannot observe them.
+        """
+
+        if self._raw_frame_authorization is _RAW_FRAME_NEVER_SENT:
+            return
+        if self._raw_frame_authorization is not self.session_state._active_authorization():
+            return
+        current = self.session_state.health
+        if current in {SessionHealth.POISONED, SessionHealth.CLOSED}:
+            return
+        self.session_state.degrade(
+            SessionHealth.POISONED,
+            reason="raw_frame_response_pending",
+        )
+        self.counters.session_health_transitions += 1
 
     def _denied(self, operation: str) -> AccessDeniedError:
         return AccessDeniedError(

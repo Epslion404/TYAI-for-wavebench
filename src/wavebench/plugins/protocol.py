@@ -6,11 +6,11 @@ length_includes_header=true; it never counts CRC or delimiter. CRC covers the
 header and payload, is little endian, and precedes the delimiter. Fixed length
 counts the whole frame. All framings require the complete declared header.
 
-Delimiter framing terminates at the FIRST delimiter, including one in the header
-or CRC: embedded delimiters and concatenated frames are rejected. For a length
-prefixed frame a delimiter is a trailer, so payload delimiters are allowed.
-escape_hex is unsupported and fails closed at declaration time: no byte-stuffing
-encoding has been agreed. Drivers must not interpret it as an inert annotation.
+Delimiter framing terminates at the first unescaped delimiter. A single-byte
+escape_hex may stuff the delimiter and the escape byte itself: an isolated
+escape is a structured failure, and embedded unescaped delimiters and
+concatenated frames are rejected. For a length prefixed frame a delimiter is a
+trailer, so payload delimiters are allowed.
 
 Manifests are bounded to 1 MiB, headers/frames to 64 MiB. Length fields occupy
 1, 2 or 4 bytes wholly inside the header and count bytes without scaling. Timing
@@ -19,10 +19,12 @@ fields never default to None; booleans are not accepted as integer quantities.
 Sample/endian/checksum declarations use closed allowlists below. A supplied
 length is checked against these bounds before any payload allocation or decoding.
 
-This module returns original wire bytes and opens no transport. Request mapping,
-payload decoding, stream splitting and executable driver selection are outside
-this contract. Parsing failures use Core's bounded, payload-free transport error
-attributes; they describe a supplied response, not an actual transmission here.
+This module returns original wire bytes and opens no transport. Sample decoding
+and executable driver selection are outside this contract;
+``wavebench.plugins.protocol_runtime`` transmits declared requests and splits
+their responses over a supplied transport. Parsing failures use Core's bounded,
+payload-free transport error attributes; they describe a supplied response, not
+an actual transmission here.
 """
 
 from __future__ import annotations
@@ -193,6 +195,33 @@ class FrameDefinition:
                 raise _frame_error("frame_multiple_delimiters", size)
             index += 1
 
+    def expected_frame_bytes(self, header: bytes) -> int:
+        """Return the full wire length declared by a length-prefixed header.
+
+        ``header`` must contain at least ``header_bytes``.  The declared length
+        is checked against the frame budget before the caller allocates or
+        reads the remainder, so an oversized declaration fails immediately.
+        """
+
+        if not isinstance(header, bytes):
+            raise ConfigError("protocol frame header must be bytes")
+        assert self.framing == "length_prefixed"
+        assert self.length_offset is not None and self.length_bytes is not None
+        assert self.length_endian is not None
+        if len(header) < self.header_bytes:
+            raise _frame_error("frame_header_incomplete", len(header))
+        end = self.length_offset + self.length_bytes
+        declared = int.from_bytes(header[self.length_offset:end], self.length_endian)
+        body = declared if self.length_includes_header else self.header_bytes + declared
+        if body < self.header_bytes:
+            raise _frame_error("frame_length_invalid", len(header))
+        trailer = len(self.delimiter or b"")
+        crc_bytes = 2 if self.checksum == "crc16_modbus" else 0
+        expected = body + crc_bytes + trailer
+        if expected > self.max_frame_bytes:
+            raise _frame_error("frame_too_large", len(header))
+        return expected
+
     def extract_stream_frame(self, buffer: bytes) -> tuple[bytes | None, bytes]:
         """Extract the first complete frame from a stream buffer.
 
@@ -214,18 +243,9 @@ class FrameDefinition:
             self.validate_frame(candidate)
             return candidate, remaining
         assert self.framing == "length_prefixed"
-        assert self.length_offset is not None and self.length_bytes is not None
-        assert self.length_endian is not None
         if len(buffer) < self.header_bytes:
             return None, buffer
-        end = self.length_offset + self.length_bytes
-        declared = int.from_bytes(buffer[self.length_offset:end], self.length_endian)
-        body = declared if self.length_includes_header else self.header_bytes + declared
-        trailer = len(self.delimiter or b"")
-        crc_bytes = 2 if self.checksum == "crc16_modbus" else 0
-        expected = body + crc_bytes + trailer
-        if expected > self.max_frame_bytes:
-            raise _frame_error("frame_too_large", len(buffer))
+        expected = self.expected_frame_bytes(buffer)
         if len(buffer) < expected:
             return None, buffer
         candidate, remaining = buffer[:expected], buffer[expected:]
@@ -294,11 +314,10 @@ class FrameDefinition:
         """
         if not isinstance(payload, bytes):
             raise ConfigError("protocol request payload must be bytes")
-        if self.escape is not None and self.framing == "delimiter":
+        if self.framing == "delimiter":
             delimiter = self.delimiter or b""
-            encoded_body = self._encode_escape(payload)
-            wire = encoded_body + delimiter
-            return self.validate_frame(wire)
+            body = self._encode_escape(payload) if self.escape is not None else payload
+            return self.validate_frame(body + delimiter)
         return self.validate_frame(payload)
 
 
@@ -373,6 +392,14 @@ def _parse_protocol_plugin(raw: Any) -> DeclarativeProtocolPlugin:
     if plugin.api_version != SUPPORTED_PLUGIN_API_VERSION:
         raise ConfigError(f"unsupported api_version {plugin.api_version!r}")
     requests = _parse_requests(raw["protocol"])
+    for definition in requests:
+        try:
+            frame.encode_request(definition.request_hex)
+        except TransportIOError as exc:
+            raise ConfigError(
+                f"protocol.requests entry {definition.name!r} is not a valid "
+                f"{frame.framing} request frame: {exc.reason_code}"
+            ) from exc
     return DeclarativeProtocolPlugin(plugin, frame, requests=requests)
 
 
