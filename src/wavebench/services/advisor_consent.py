@@ -71,8 +71,9 @@ _JSON_MAX_TOKENS = 4096
 _JSON_MAX_DECODES = 8
 _JSON_LIMIT = "[REDACTED_JSON_LIMIT]"
 _ENCODED_TEXT = "[REDACTED_ENCODED_TEXT]"
+_COLLISION_KEY = "[REDACTED_KEY_COLLISION]"
 _REDACTION_MARKERS = frozenset({
-    "[REDACTED]", _JSON_LIMIT, _ENCODED_TEXT, "[REDACTED_UNTRUSTED_TEXT]",
+    "[REDACTED]", _JSON_LIMIT, _ENCODED_TEXT, _COLLISION_KEY, "[REDACTED_UNTRUSTED_TEXT]",
 })
 # Embedded escaped JSON is not a complete document we can safely interpret.
 # Unicode escapes also allow a field name to evade the plain-text key matcher.
@@ -281,11 +282,24 @@ def _redact_sensitive_text(value: str) -> str:
 
 
 def redact_sensitive(value: Any) -> Any:
+    """递归脱敏结构化值；Mapping 的字段名与值使用同一文本规则。
+
+    字段名本身也是不可信文本：先按 ``_redact_sensitive_text`` 处理，再判断是否
+    遮蔽整个值（仍由原字段名决定）。不同原字段名脱敏后撞名时，该层 mapping
+    替换为单条 ``{[REDACTED_KEY_COLLISION]: [REDACTED_ENCODED_TEXT]}``，保持
+    mapping 类型，避免 preview/client/artifact 的结构字段退化成字符串；不覆盖、
+    不择一，也不与既有 marker 键合并，外层同级的普通字段保留。
+    """
     if isinstance(value, Mapping):
-        return {
-            str(key): "[REDACTED]" if _is_sensitive_key(key) else redact_sensitive(item)
-            for key, item in value.items()
-        }
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            safe_key = _redact_sensitive_text(str(key))
+            if safe_key in safe:
+                return {_COLLISION_KEY: _ENCODED_TEXT}
+            safe[safe_key] = (
+                "[REDACTED]" if _is_sensitive_key(key) else redact_sensitive(item)
+            )
+        return safe
     if isinstance(value, (list, tuple)):
         return [redact_sensitive(item) for item in value]
     if isinstance(value, str):

@@ -121,6 +121,8 @@ Decision artifact 的 `reason`、requested model 与 reported model 在构造时
 
 Python mapping 中的敏感键（忽略大小写，`-` 归一为 `_`，包含 `api_key`、`apikey`、`authorization`、`credential`、`password`、`secret` 或 `token`）对应的**整个值**替换为 `[REDACTED]`，不解析该值。普通文本继续识别 `token=...` 等标签、带引号的 Bearer 值和转义引号；未闭合的值只遮蔽本行，无引号的值以空白为界，逗号或花括号不会结束凭据。
 
+mapping 的**字段名本身**也按同一文本规则脱敏，并递归覆盖嵌套 mapping 与数组；是否遮蔽整个值仍由**原字段名**判定。例如 `{"token=AUDIT_DUMMY": "private"}` 的键和值都会变为 `[REDACTED]`。不同原字段名（包括非字符串键的 `str()` 结果）脱敏后撞名，或与已有固定 marker 键撞名时，该层 mapping 替换为单条 `{"[REDACTED_KEY_COLLISION]": "[REDACTED_ENCODED_TEXT]"}`，保持 mapping 类型，不覆盖、不择一，也不与 marker 键合并；外层同级的普通字段保留。未触发文本脱敏的普通字段名保持原样。
+
 完整 JSON 文本（去掉前导 JSON 空白后以 `"`、`{` 或 `[` 开始）在预算内通过标准 JSON 解码、敏感键脱敏再编码；例如 key 的 `\u0061uthorization` 会按 `authorization` 处理。每一层 JSON string 的类型与编码层数保持不变，输入 `str` 不会变成 Python dict。预算内没有脱敏变化的合法 JSON 保留原始字节；发生变化的 JSON 用标准 `json.dumps(..., ensure_ascii=True)` 重编码，所以空白和 Unicode 转义形式可能改变，非敏感字段的内容保留。
 
 解码后的 JSON key 本身也是文本，使用同一共享预算与脱敏规则；例如 `{"token=dummy": "private"}` 的字段名和值都会变为 `[REDACTED]`。是否遮蔽整个值仍由原字段名判定。若两个不同 key 脱敏后成为同名，整个原始字符串替换为 `[REDACTED_ENCODED_TEXT]`，不选择其中一个值或静默丢弃字段；同字符串中的普通诊断也会被省略。
@@ -142,7 +144,7 @@ Python mapping 中的敏感键（忽略大小写，`-` 归一为 `_`，包含 `a
 
 任一输入、输出或稳定性校验预算耗尽（或复验结果发生变化），整个原始字符串替换为 `[REDACTED_JSON_LIMIT]`，不会回退到旧文本正则或保留已处理前缀/未处理后缀；此时该字符串中的诊断也会丢失。超过预算的 JSON 候选即使没有凭据也会被省略。普通非 JSON 长诊断没有该长度截断，继续进行与输入长度成比例的文本匹配。
 
-`[REDACTED]`、`[REDACTED_JSON_LIMIT]`、`[REDACTED_ENCODED_TEXT]`、`[REDACTED_UNTRUSTED_TEXT]` 四个固定 marker 原样保留，不花费 JSON 解码次数。已知 marker token 后接空白与普通后缀（例如 `[REDACTED] diagnosis=keep`）按普通文本规则处理，后缀中的凭据仍需脱敏；不会因为数组中有多个这样的脱敏值而在下一轮多消耗 JSON 尝试。其它以 `[` 开头的字符串和 marker 相似文本仍使用原来的候选与保守规则，不能借用 marker 前缀跳过凭据检查。
+`[REDACTED]`、`[REDACTED_JSON_LIMIT]`、`[REDACTED_ENCODED_TEXT]`、`[REDACTED_KEY_COLLISION]`、`[REDACTED_UNTRUSTED_TEXT]` 五个固定 marker 原样保留，不花费 JSON 解码次数。已知 marker token 后接空白与普通后缀（例如 `[REDACTED] diagnosis=keep`）按普通文本规则处理，后缀中的凭据仍需脱敏；不会因为数组中有多个这样的脱敏值而在下一轮多消耗 JSON 尝试。其它以 `[` 开头的字符串和 marker 相似文本仍使用原来的候选与保守规则，不能借用 marker 前缀跳过凭据检查。
 
 除上述开头 token 加后缀外，自由文本中嵌入的转义 JSON 片段不提供通用还原保证。无法解析的完整 JSON string 候选、或回退文本按普通标签规则脱敏后仍出现「反斜杠转义引号 + 空白 + 冒号」/`\uXXXX` 标记时，整个字符串保守替换为 `[REDACTED_ENCODED_TEXT]`，同样会丢失其中的普通诊断。没有这些编码标记的普通文本、单引号字段和非完整普通 JSON 继续使用上述按行/引号规则。插件应优先用结构化 mapping 表达凭据，不能将这些有限规则解释为任意编码、自由文本或任意 payload 的安全保证。
 
