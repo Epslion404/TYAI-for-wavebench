@@ -171,7 +171,12 @@ class TransportBackendDispatchTests(unittest.TestCase):
         self.assertEqual(captured["serial_config"].baudrate, 115200)
 
     def test_declared_can_scope_opens_through_core_factory_with_virtual_bus(self):
-        """A descriptor declaring ``can`` backend opens a real python-can virtual bus."""
+        """A descriptor declaring ``can`` backend opens a transport through the factory.
+
+        Uses an injected CanTransport.open so the default dev environment does
+        not need the optional python-can extra; the factory contract (descriptor
+        backends, resource scheme, options forwarding) is what is verified.
+        """
 
         class Driver:
             def idn(self):
@@ -195,10 +200,33 @@ class TransportBackendDispatchTests(unittest.TestCase):
             permissions=("instrument.io",),
             factory=lambda context: (context.open_transport(), Driver())[1],
         )
+        captured = {}
 
-        with patch(
-            "wavebench.instruments.factory.resolve_instrument_descriptor",
-            return_value=descriptor,
+        class FakeCan:
+            resource = "can://offline-factory-can"
+
+            def __init__(self, *args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+
+            @classmethod
+            def open(cls, *args, **kwargs):
+                captured["open_args"] = args
+                captured["open_kwargs"] = kwargs
+                return cls()
+
+            def close(self):
+                pass
+
+        with (
+            patch(
+                "wavebench.instruments.factory.resolve_instrument_descriptor",
+                return_value=descriptor,
+            ),
+            patch(
+                "wavebench.instruments.factory.CanTransport.open",
+                side_effect=FakeCan.open,
+            ),
         ):
             opened = open_instrument_driver(
                 driver_reference="example.can.scope",
@@ -210,12 +238,14 @@ class TransportBackendDispatchTests(unittest.TestCase):
                 read_retry_attempts=1,
                 read_retry_delay_ms=0,
                 logger=CommandLogger(),
-                options={"can_interface": "virtual"},
+                options={"can_interface": "virtual", "can_fd": True},
                 access="read_write",
             )
 
         self.assertEqual(opened.driver.idn(), "EXAMPLE,CAN")
         self.assertEqual(opened.transport.resource, "can://offline-factory-can")
+        self.assertIs(captured["open_kwargs"]["resource"], "can://offline-factory-can")
+        self.assertIs(captured["open_kwargs"]["is_fd"], True)
         opened.transport.close()
         opened.transport.close()  # guarded close is idempotent
 

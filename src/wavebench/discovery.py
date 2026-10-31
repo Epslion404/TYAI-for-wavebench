@@ -385,8 +385,10 @@ def discover_can_adapters(
             raise ConfigError(f"unable to enumerate CAN adapters: {exc}") from exc
     results: list[DiscoveryResult] = []
     for entry in entries:
+        interface = ""
+        channel = None
         if isinstance(entry, str):
-            interface, channel = entry, None
+            interface = entry
         else:
             interface_value = (
                 entry.get("interface") if isinstance(entry, dict) else getattr(entry, "interface", "")
@@ -395,10 +397,15 @@ def discover_can_adapters(
                 entry.get("channel") if isinstance(entry, dict) else getattr(entry, "channel", "")
             )
             interface = str(interface_value or "")
-            channel = str(channel_value or "")
+            # Preserve numeric channel 0: only None/empty means no channel.
+            channel = (
+                None
+                if channel_value is None or channel_value == ""
+                else str(channel_value)
+            )
         if not interface:
             continue
-        resource = f"can://{interface}" if not channel else f"can://{interface}/{channel}"
+        resource = f"can://{interface}" if channel is None else f"can://{interface}/{channel}"
         results.append(
             DiscoveryResult(
                 address=interface,
@@ -409,7 +416,7 @@ def discover_can_adapters(
                 status="listed",
                 idn=None,
                 note=(
-                    f"CAN adapter {interface}" + (f" channel {channel}" if channel else "")
+                    f"CAN adapter {interface}" + (f" channel {channel}" if channel is not None else "")
                 ),
             )
         )

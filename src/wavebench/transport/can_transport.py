@@ -62,17 +62,18 @@ class CanTransport:
         max_frame_bytes: int = _MAX_CAN_DATA_BYTES,
         options: dict[str, object] | None = None,
     ) -> "CanTransport":
-        try:
-            import can
-        except ImportError as exc:
-            raise ConnectionError(
-                "python-can is not installed. Run: python -m pip install wavebench[can]"
-            ) from exc
         logger = logger or CommandLogger()
         resource_value = resource or (config.resource if config is not None else None) or ""
         if not resource_value.startswith("can://"):
             raise ConfigError("can backend resource must use the can://<channel> scheme")
-        channel_value = channel or (resource_value[len("can://"):] or None)
+        resource_interface, resource_channel = _split_can_resource(resource_value)
+        interface_value = str((options or {}).get("can_interface") or resource_interface or "virtual")
+        if channel is not None:
+            channel_value = channel
+        elif resource_channel is not None:
+            channel_value = resource_channel
+        else:
+            channel_value = resource_interface
         if not channel_value:
             raise ConfigError("can:// resource must include a channel name")
         if isinstance(bitrate, bool) or not isinstance(bitrate, int) or bitrate <= 0:
@@ -88,8 +89,14 @@ class CanTransport:
                 f"can max_frame_bytes must be 1..{_MAX_CANFD_DATA_BYTES if is_fd else _MAX_CAN_DATA_BYTES}"
             )
         try:
+            import can
+        except ImportError as exc:
+            raise ConnectionError(
+                "python-can is not installed. Run: python -m pip install wavebench[can]"
+            ) from exc
+        try:
             session = can.interface.Bus(
-                interface=(options or {}).get("can_interface", "virtual"),
+                interface=interface_value,
                 channel=channel_value,
                 bitrate=bitrate,
                 fd=is_fd,
@@ -376,10 +383,21 @@ def _valid_frame_size(size: int, *, is_fd: bool) -> bool:
     return 1 <= size <= maximum
 
 
-def _parse_can_resource(resource: str) -> str:
+def _split_can_resource(resource: str) -> tuple[str | None, str | None]:
+    """Split ``can://<interface>/<channel>`` or ``can://<channel>``.
+
+    Empty parts are treated as absent so a numeric zero channel is preserved
+    while a missing component stays ``None``.
+    """
     if not resource.startswith("can://"):
         raise ConfigError("can backend resource must use the can://<channel> scheme")
-    return resource[len("can://"):].strip() or ""
+    suffix = resource[len("can://"):]
+    if "/" in suffix:
+        interface_raw, channel_raw = suffix.split("/", 1)
+        interface = interface_raw.strip() or None
+        channel = channel_raw.strip() if channel_raw.strip() != "" else None
+        return interface, channel
+    return None, suffix.strip() or None
 
 
-__all__ = ["CanTransport", "_MAX_CAN_DATA_BYTES", "_MAX_CANFD_DATA_BYTES", "_parse_can_resource"]
+__all__ = ["CanTransport", "_MAX_CAN_DATA_BYTES", "_MAX_CANFD_DATA_BYTES", "_split_can_resource"]

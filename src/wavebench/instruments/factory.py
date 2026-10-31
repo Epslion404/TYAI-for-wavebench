@@ -235,12 +235,18 @@ def _validate_resource_scheme(resource: str, supported: tuple[str, ...]) -> None
 
 
 def _can_resource_channel(resource: str) -> str | None:
-    """Return the channel component of a ``can://<channel>`` resource."""
+    """Return the channel component of a ``can://<interface>/<channel>`` resource.
+
+    Matches ``_split_can_resource`` in the can transport so the factory's lease
+    identity and the opened channel always agree.
+    """
     stripped = resource.strip()
     if not stripped.startswith("can://"):
         return None
-    channel = stripped[len("can://"):]
-    return channel or None
+    suffix = stripped[len("can://"):]
+    if "/" in suffix:
+        return suffix.split("/", 1)[1].strip() or None
+    return suffix.strip() or None
 
 
 def _normalize_rsinstrument_socket_resource(resource: str) -> str:

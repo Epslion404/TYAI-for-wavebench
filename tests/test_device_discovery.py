@@ -105,6 +105,16 @@ class CanDiscoveryTests(unittest.TestCase):
             results = discover_can_adapters(can_module=FakeDetect)
         self.assertEqual([item.resource for item in results], ["can://pcan/PCAN_USBBUS1"])
 
+    def test_numeric_zero_channel_is_preserved(self):
+        class FakeDetect:
+            @staticmethod
+            def detect_available_configs():
+                return [{"interface": "kvaser", "channel": 0}]
+
+        with patch.dict("sys.modules", {"can": None}):
+            results = discover_can_adapters(can_module=FakeDetect)
+        self.assertEqual(results[0].resource, "can://kvaser/0")
+
     def test_no_adapter_yields_structured_none_result(self):
         class FakeDetect:
             @staticmethod

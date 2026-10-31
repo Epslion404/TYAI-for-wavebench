@@ -117,6 +117,21 @@ class CanTransportOpenTests(unittest.TestCase):
         self.assertIs(kwargs.get("fd"), True)
         self.assertEqual(kwargs.get("interface"), "socketcan")
 
+    def test_open_parses_interface_and_channel_from_resource(self):
+        with patch("can.interface.Bus") as bus:
+            transport = CanTransport.open(resource="can://socketcan/can0")
+        kwargs = bus.call_args.kwargs
+        self.assertEqual(kwargs.get("interface"), "socketcan")
+        self.assertEqual(kwargs.get("channel"), "can0")
+        self.assertEqual(transport.resource, "can://socketcan/can0")
+
+    def test_open_single_segment_uses_default_interface(self):
+        with patch("can.interface.Bus") as bus:
+            CanTransport.open(resource="can://can0")
+        kwargs = bus.call_args.kwargs
+        self.assertEqual(kwargs.get("interface"), "virtual")
+        self.assertEqual(kwargs.get("channel"), "can0")
+
     def test_open_without_python_can_is_structured(self):
         with patch.dict("sys.modules", {"can": None}):
             with self.assertRaises(ConnectionError) as raised:

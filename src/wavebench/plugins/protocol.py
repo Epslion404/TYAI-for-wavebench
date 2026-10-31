@@ -239,10 +239,13 @@ class FrameDefinition:
         index = 0
         candidate_start = 0
         current_len = 0
+        max_body = self.max_frame_bytes - len(delimiter)
         while index < len(buffer):
-            # Enforce the frame-size budget before the delimiter arrives so an
-            # oversized unterminated frame fails instead of accumulating forever.
-            if current_len > self.max_frame_bytes:
+            # Enforce the frame-size budget before/while scanning so an
+            # oversized unterminated frame fails instead of accumulating.
+            # A complete frame is body (+escaped bytes) + one delimiter, so once
+            # the current body consumes the whole budget there is no legal frame.
+            if current_len > max_body:
                 raise _frame_error(
                     "frame_too_large",
                     current_len,
@@ -250,6 +253,13 @@ class FrameDefinition:
             byte = buffer[index]
             if escape is not None and byte == escape:
                 if index + 1 >= len(buffer):
+                    # Trailing escape: even if it were a delimiter it would push
+                    # this candidate over budget; reject if so.
+                    if current_len + 2 > max_body:
+                        raise _frame_error(
+                            "frame_too_large",
+                            current_len + 2,
+                        )
                     return None, buffer
                 current_len += 2
                 index += 2
@@ -265,6 +275,13 @@ class FrameDefinition:
                 return candidate, buffer[index + len(delimiter) :]
             current_len += 1
             index += 1
+        # Unterminated: reject when the accumulated body already exceeds what
+        # any complete frame could legally occupy.
+        if current_len > max_body:
+            raise _frame_error(
+                "frame_too_large",
+                current_len,
+            )
         return None, buffer
 
     def encode_request(self, payload: bytes) -> bytes:

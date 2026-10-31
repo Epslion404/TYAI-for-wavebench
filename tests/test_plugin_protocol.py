@@ -244,6 +244,25 @@ def test_extract_rejects_oversized_candidate_before_delimiter():
     assert payload["details"]["reason_code"] == "frame_too_large"
 
 
+@pytest.mark.parametrize("wire", [
+    b"A" + b"x" * 16,          # 17 body bytes, budget 16, no delimiter
+    b"A" + b"x" * 15 + b"\\",  # exactly at budget then a trailing escape
+])
+def test_extract_rejects_exact_budget_overflow_before_delimiter(wire):
+    contract = definition("delimiter", escape_hex="5C", max_frame_bytes=16)
+    with pytest.raises(TransportIOError) as raised:
+        contract.extract_stream_frame(wire)
+    payload = error_envelope(raised.value)
+    assert payload["details"]["reason_code"] == "frame_too_large"
+
+
+def test_extract_keeps_legal_truncated_frame_pending():
+    contract = definition("delimiter", escape_hex="5C", max_frame_bytes=16)
+    frame, remaining = contract.extract_stream_frame(b"A123")
+    assert frame is None
+    assert remaining == b"A123"
+
+
 @pytest.mark.parametrize("framing,changes,wire", [
     ("fixed", {}, b"A123"),
     ("delimiter", {}, b"A123\n"),
