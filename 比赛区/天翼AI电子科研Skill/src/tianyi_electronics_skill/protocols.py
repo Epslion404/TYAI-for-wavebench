@@ -45,11 +45,11 @@ def _finite_number(value: Any, field: str, *, positive: bool = False) -> float:
     return number
 
 
-def _samples(values: Any) -> list[float]:
+def _samples(values: Any, *, allow_empty: bool = False) -> list[float]:
     if not isinstance(values, (list, tuple)):
         raise ProtocolDecodeError("samples must be an array")
     samples = [_finite_number(value, "samples[]") for value in values]
-    if not samples:
+    if not samples and not allow_empty:
         raise ProtocolDecodeError("samples must not be empty")
     return samples
 
@@ -146,7 +146,10 @@ class CanAdapter(Adapter):
             raise ValueError("CAN ID 必须位于 0..0x1FFFFFFF")
         samples = payload.get("samples", list(data))
         outer_metadata, device_errors = _metadata_with_errors(metadata, payload.get("device_errors"))
-        return NormalizedFrame(self.name, source, time.time(), _samples(samples),
+        # CAN DLC=0 is a legal frame: normalization keeps empty samples and the
+        # ID/data metadata. Insufficient samples are rejected at the analysis
+        # entry (`analyze_samples`), not at the frame boundary.
+        return NormalizedFrame(self.name, source, time.time(), _samples(samples, allow_empty=True),
                                _sample_rate(payload.get("sample_rate_hz")),
                                {**outer_metadata, "can_id": can_id, "data_hex": data.hex()}, device_errors)
 
@@ -239,7 +242,9 @@ class BinaryManifestAdapter(Adapter):
 
 class ProtocolRegistry:
     def __init__(self):
-        self.adapters: list[Adapter] = [JsonWaveformAdapter(), CanAdapter()]
+        # CAN is more specific than the generic JSON waveform shape: a CAN frame
+        # may also carry an explicit `samples` list, so it must win a tie.
+        self.adapters: list[Adapter] = [CanAdapter(), JsonWaveformAdapter()]
     def load_manifests(self, directory: str | Path) -> int:
         root = Path(directory)
         if not root.is_dir():
